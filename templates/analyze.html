@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}Analyze{% endblock %}
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-search me-2" style="color:var(--accent)"></i>Individual Stock Analysis</h4>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label class="form-label text-muted small">Ticker Symbol</label>
+        <input class="form-control" id="tickerInput" value="{{ prefill }}"
+               placeholder="e.g. NVDA" style="width:120px;text-transform:uppercase"
+               oninput="this.value=this.value.toUpperCase()"
+               onkeydown="if(event.key==='Enter')analyze()">
+      </div>
+      <div class="col-auto">
+        <label class="form-label text-muted small">Account Size ($)</label>
+        <input class="form-control" id="accountInput" type="number" value="100000" style="width:140px">
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-accent" onclick="analyze()"><i class="bi bi-play-fill me-1"></i>Analyze</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Loading -->
+<div id="loading" class="text-center py-5 d-none">
+  <div class="spinner-border text-info spinner-glow" style="width:3rem;height:3rem"></div>
+  <div class="mt-3 text-muted">Fetching data and running SEPA analysis…</div>
+</div>
+
+<!-- Error -->
+<div id="errBox" class="alert alert-danger d-none"></div>
+
+<!-- Result -->
+<div id="result" class="d-none">
+  <div class="row g-3 mb-3" id="summaryCards"></div>
+
+  <div class="row g-3">
+    <!-- TT Checklist -->
+    <div class="col-12 col-md-5">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-check2-all me-2"></i>Trend Template (TT1-TT10)</div>
+        <div class="card-body p-0">
+          <ul class="list-group list-group-flush" id="ttList"></ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- SEPA Scores -->
+    <div class="col-12 col-md-3">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-pie-chart me-2"></i>SEPA Pillar Scores</div>
+        <div class="card-body" id="sepaScores"></div>
+      </div>
+    </div>
+
+    <!-- VCP -->
+    <div class="col-12 col-md-4">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-activity me-2"></i>VCP Analysis</div>
+        <div class="card-body" id="vcpBox"></div>
+      </div>
+    </div>
+
+    <!-- Fundamentals -->
+    <div class="col-12 col-md-6">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-bank me-2"></i>Fundamentals Checklist</div>
+        <div class="card-body p-0">
+          <ul class="list-group list-group-flush" id="fundList"></ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Position Sizing -->
+    <div class="col-12 col-md-6">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-calculator me-2"></i>Position Sizing</div>
+        <div class="card-body" id="posBox"></div>
+      </div>
+    </div>
+
+    <!-- Recommendation -->
+    <div class="col-12">
+      <div class="card" id="recCard">
+        <div class="card-header"><i class="bi bi-lightbulb me-2"></i>Recommendation</div>
+        <div class="card-body" id="recBox"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function analyze() {
+  const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
+  const acct   = parseFloat(document.getElementById('accountInput').value) || 100000;
+  if (!ticker) { toast('Enter a ticker symbol', false); return; }
+
+  document.getElementById('result').classList.add('d-none');
+  document.getElementById('errBox').classList.add('d-none');
+  document.getElementById('loading').classList.remove('d-none');
+
+  const r = await fetch('/api/analyze', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ticker, account_size: acct})
+  }).then(x=>x.json());
+
+  pollJob(`/api/analyze/status/${r.job_id}`,
+    data => renderResult(data, ticker),
+    err  => {
+      document.getElementById('loading').classList.add('d-none');
+      document.getElementById('errBox').textContent = `Error: ${err}`;
+      document.getElementById('errBox').classList.remove('d-none');
+    }
+  );
+}
+
+function renderResult(d, ticker) {
+  document.getElementById('loading').classList.add('d-none');
+  if (!d) { toast('No result returned', false); return; }
+
+  const score  = d.sepa_score || 0;
+  const rec    = d.recommendation || {};
+  const tt     = d.trend_template || {};
+  const vcp    = d.vcp || {};
+  const pos    = d.position || {};
+  const funds  = d.fundamentals || {};
+  const scored = d.scored_pillars || {};
+  const cls    = scoreClass(score);
+
+  // Summary cards
+  document.getElementById('summaryCards').innerHTML = `
+    <div class="col-6 col-md-3"><div class="metric-card">
+      <div class="metric-val ${cls}">${Number(score).toFixed(1)}</div>
+      <div class="metric-lbl">SEPA Score</div>
+    </div></div>
+    <div class="col-6 col-md-3"><div class="metric-card">
+      <div class="metric-val">${fmtInt(d.rs_rank)}</div>
+      <div class="metric-lbl">RS Rank</div>
+    </div></div>
+    <div class="col-6 col-md-3"><div class="metric-card">
+      <div class="metric-val ${vcp.is_valid_vcp ? 'score-high' : 'score-low'}">${vcp.grade||'—'}</div>
+      <div class="metric-lbl">VCP Grade</div>
+    </div></div>
+    <div class="col-6 col-md-3"><div class="metric-card">
+      <div class="metric-val" style="color:${rec.action==='BUY'?'var(--success)':rec.action==='AVOID'?'var(--danger)':'var(--warning)'}">${rec.action||'—'}</div>
+      <div class="metric-lbl">Action</div>
+    </div></div>`;
+
+  // TT Checklist
+  const ttItems = [
+    ['TT1', 'Price > SMA150', tt.tt1],
+    ['TT2', 'Price > SMA200', tt.tt2],
+    ['TT3', 'SMA150 > SMA200', tt.tt3],
+    ['TT4', 'SMA200 Trend Rising (22d)', tt.tt4],
+    ['TT5', 'SMA50 > SMA150 & SMA200', tt.tt5],
+    ['TT6', 'Price > SMA50', tt.tt6],
+    ['TT7', 'Price >25% above 52W Low', tt.tt7],
+    ['TT8', 'Price within 25% of 52W High', tt.tt8],
+    ['TT9', `RS Rank ≥ 70 (actual: ${fmtInt(d.rs_rank)})`, tt.tt9],
+    ['TT10','Sector in top 35%', tt.tt10],
+  ];
+  document.getElementById('ttList').innerHTML = ttItems.map(([id, lbl, pass]) =>
+    `<li class="list-group-item d-flex justify-content-between align-items-center py-2" style="background:transparent;border-color:#21262d">
+      <span class="text-muted small">${id}: ${lbl}</span>
+      ${pass ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>'}
+    </li>`
+  ).join('');
+
+  // SEPA pillar scores
+  document.getElementById('sepaScores').innerHTML = Object.entries(scored).map(([k, v]) => {
+    const pct = Math.round(v);
+    const bar = `<div class="progress mt-1 mb-2" style="height:6px">
+      <div class="progress-bar ${pct>=70?'bg-success':pct>=50?'bg-warning':'bg-danger'}"
+           style="width:${pct}%"></div></div>`;
+    return `<div><div class="d-flex justify-content-between"><span class="small text-capitalize">${k}</span><span class="small fw-bold">${pct}</span></div>${bar}</div>`;
+  }).join('');
+
+  // VCP box
+  document.getElementById('vcpBox').innerHTML = `
+    <div class="mb-2"><strong>Valid VCP:</strong> ${vcp.is_valid_vcp ? '<span class="text-success">YES ✓</span>' : '<span class="text-danger">NO</span>'}</div>
+    <div><strong>Score:</strong> ${vcp.vcp_score||0}/100 &nbsp; <strong>Grade:</strong> ${vcp.grade||'—'}</div>
+    <div class="mt-2 text-muted small">
+      T-count: ${vcp.t_count||0} &nbsp;|&nbsp;
+      Base: ${vcp.base_weeks||0}w &nbsp;|&nbsp;
+      Depth: ${fmtPct(vcp.base_depth_pct)}
+    </div>
+    <div class="mt-1 text-muted small">
+      ${vcp.pivot_price ? `Pivot: <strong style="color:var(--accent)">$${Number(vcp.pivot_price).toFixed(2)}</strong>` : ''}
+    </div>
+    <div class="mt-2 small">
+      ATR contracting: ${vcp.atr_contracting ? '✓' : '✗'} &nbsp;
+      BB contracting: ${vcp.bb_contracting ? '✓' : '✗'} &nbsp;
+      Vol dry-up: ${vcp.vol_dry ? '✓' : '✗'}
+    </div>
+    ${(vcp.notes||[]).length ? `<div class="mt-2 text-muted small">${vcp.notes.map(n=>`• ${n}`).join('<br>')}</div>` : ''}`;
+
+  // Fundamentals
+  const fundChecks = funds.checks || [];
+  document.getElementById('fundList').innerHTML = fundChecks.length ?
+    fundChecks.map(c =>
+      `<li class="list-group-item py-2" style="background:transparent;border-color:#21262d">
+        <span class="small">${c}</span></li>`
+    ).join('') :
+    '<li class="list-group-item text-muted py-3" style="background:transparent">No fundamental data available.</li>';
+
+  // Position sizing
+  document.getElementById('posBox').innerHTML = pos ? `
+    <div class="row g-2 text-center">
+      <div class="col-6"><div class="metric-card p-2">
+        <div class="fw-bold" style="font-size:20px">$${Number(pos.entry||0).toFixed(2)}</div>
+        <div class="metric-lbl">Entry Price</div>
+      </div></div>
+      <div class="col-6"><div class="metric-card p-2">
+        <div class="fw-bold text-danger" style="font-size:20px">$${Number(pos.stop||0).toFixed(2)}</div>
+        <div class="metric-lbl">Stop Loss</div>
+      </div></div>
+      <div class="col-6"><div class="metric-card p-2">
+        <div class="fw-bold text-success" style="font-size:20px">${fmtInt(pos.shares)}</div>
+        <div class="metric-lbl">Shares</div>
+      </div></div>
+      <div class="col-6"><div class="metric-card p-2">
+        <div class="fw-bold" style="font-size:20px">$${Number(pos.position_value||0).toLocaleString('en',{maximumFractionDigits:0})}</div>
+        <div class="metric-lbl">Position Value</div>
+      </div></div>
+    </div>
+    <div class="mt-3 text-muted small">
+      Risk: $${Number(pos.risk_dollar||0).toFixed(0)} (${fmtPct(pos.risk_pct)}) &nbsp;|&nbsp;
+      R:R ${Number(pos.rr||0).toFixed(1)}:1 &nbsp;|&nbsp;
+      Target $${Number(pos.target||0).toFixed(2)}
+    </div>
+    <button class="btn btn-sm btn-outline-success mt-3 w-100"
+      onclick="prefillPosition('${ticker}',${pos.entry||0},${pos.shares||0},${pos.stop||0},${pos.target||0})">
+      <i class="bi bi-plus-circle me-1"></i>Add to Positions
+    </button>` : '<p class="text-muted">Position data unavailable.</p>';
+
+  // Recommendation
+  const colours = {BUY:'success', WATCH:'info', MONITOR:'warning', AVOID:'danger'};
+  const c = colours[rec.action] || 'secondary';
+  document.getElementById('recBox').innerHTML = `
+    <div class="alert alert-${c} mb-2">${rec.action||'N/A'}: ${rec.description||''}</div>
+    ${(rec.reasons||[]).map(r=>`<div class="text-muted small">• ${r}</div>`).join('')}
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-sm btn-primary" onclick="addToWatchlist('${ticker}')">
+        <i class="bi bi-bookmark-plus me-1"></i>Add to Watchlist
+      </button>
+      ${rec.action === 'BUY' ? `
+        <button class="btn btn-sm btn-success" onclick="prefillPosition('${ticker}',${pos?.entry||0},${pos?.shares||0},${pos?.stop||0},${pos?.target||0})">
+          <i class="bi bi-plus-circle me-1"></i>Create Position
+        </button>
+      ` : ''}
+    </div>`;
+
+  document.getElementById('result').classList.remove('d-none');
+}
+
+function prefillPosition(ticker, entry, shares, stop, target) {
+  const params = new URLSearchParams({ticker, entry, shares, stop, target});
+  window.location.href = `/positions?prefill=${encodeURIComponent(JSON.stringify({ticker,entry,shares,stop,target}))}`;
+}
+
+async function addToWatchlist(ticker) {
+  const r = await fetch('/api/watchlist/add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ticker})
+  }).then(x => x.json());
+  
+  if (r.job_id) {
+    pollJob(`/api/watchlist/add/status/${r.job_id}`,
+      ()  => toast(`✅ ${ticker} added to watchlist`, true),
+      err => toast(`Error: ${err}`, false)
+    );
+  } else {
+    toast(`Error: ${r.error || 'Failed to add to watchlist'}`, false);
+  }
+}
+
+// Auto-run if prefill ticker provided
+window.addEventListener('DOMContentLoaded', () => {
+  const t = document.getElementById('tickerInput').value;
+  if (t) analyze();
+});
+</script>
+{% endblock %}

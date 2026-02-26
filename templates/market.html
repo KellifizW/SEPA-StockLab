@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Market Environment{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-bar-chart-line me-2" style="color:var(--accent)"></i>Market Environment</h4>
+  <button class="btn btn-accent" id="btnAssess" onclick="runAssess()">
+    <i class="bi bi-play-fill me-1"></i>Assess Market
+  </button>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card" style="background:#0d1520">
+      <div class="card-body py-3 text-muted small">
+        Analyses SPY, QQQ, IWM &amp; DIA — classifies market regime, counts distribution days,
+        measures breadth (% stocks above SMA200), and maps to action parameters for position sizing &amp; aggressiveness.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="loading" class="text-center py-5 d-none">
+  <div class="spinner-border text-info spinner-glow" style="width:3rem;height:3rem"></div>
+  <div class="mt-3 text-muted">Fetching index data and computing market metrics…</div>
+</div>
+
+<div id="result" class="d-none">
+
+  <!-- Regime banner -->
+  <div id="regimeBanner" class="card mb-3 p-3">
+    <div class="d-flex align-items-center gap-3 flex-wrap">
+      <div id="regimeEmoji" style="font-size:2.5rem"></div>
+      <div>
+        <div id="regimeName" class="fw-bold" style="font-size:1.4rem"></div>
+        <div id="regimeDate" class="text-muted small"></div>
+      </div>
+      <div class="ms-auto text-end" id="actionNote" style="max-width:350px; font-size:0.85rem"></div>
+    </div>
+  </div>
+
+  <!-- Index metrics -->
+  <div class="row g-3 mb-3" id="indexCards"></div>
+
+  <!-- Key indicators -->
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-md-4">
+      <div class="card">
+        <div class="card-header">Distribution Days</div>
+        <div class="card-body text-center">
+          <div id="distDays" class="display-4 fw-bold"></div>
+          <div class="text-muted small mt-1">SPY last 25 sessions &nbsp;(≥5 = warning)</div>
+          <div class="mt-2 text-muted small">QQQ: <span id="qqqDist"></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-4">
+      <div class="card">
+        <div class="card-header">Market Breadth</div>
+        <div class="card-body text-center">
+          <div id="breadth" class="display-4 fw-bold"></div>
+          <div class="text-muted small mt-1">% US stocks above SMA200</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-4">
+      <div class="card">
+        <div class="card-header">New High / (NH+NL)</div>
+        <div class="card-body text-center">
+          <div id="nhNl" class="display-4 fw-bold"></div>
+          <div class="text-muted small mt-1">52-week new highs ratio</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Action matrix + sector leaders -->
+  <div class="row g-3">
+    <div class="col-12 col-md-6">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-sliders me-2"></i>Action Matrix</div>
+        <div class="card-body" id="actionMatrix"></div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-building me-2"></i>Sector Performance</div>
+        <div class="card-body" id="sectorBox"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function runAssess() {
+  document.getElementById('btnAssess').disabled = true;
+  document.getElementById('loading').classList.remove('d-none');
+  document.getElementById('result').classList.add('d-none');
+
+  const r = await fetch('/api/market/run', {method:'POST'}).then(x=>x.json());
+  pollJob(`/api/market/status/${r.job_id}`,
+    data => {
+      document.getElementById('loading').classList.add('d-none');
+      document.getElementById('btnAssess').disabled = false;
+      renderMarket(data);
+    },
+    err => {
+      document.getElementById('loading').classList.add('d-none');
+      document.getElementById('btnAssess').disabled = false;
+      toast(`Error: ${err}`, false);
+    }
+  );
+}
+
+function renderMarket(d) {
+  const emojis = {BULL_CONFIRMED:'🟢',BULL_UNCONFIRMED:'🟢',TRANSITION:'🟡',
+                  BOTTOM_FORMING:'🔵',BEAR_RALLY:'🟡',BEAR_CONFIRMED:'🔴',UNKNOWN:'⚪'};
+  const colours= {BULL_CONFIRMED:'#3fb950',BULL_UNCONFIRMED:'#3fb950',
+                  TRANSITION:'#e3b341',BOTTOM_FORMING:'#58a6ff',
+                  BEAR_RALLY:'#e3b341',BEAR_CONFIRMED:'#f85149',UNKNOWN:'#8b949e'};
+  const regimeClass = {BULL_CONFIRMED:'regime-bull',BULL_UNCONFIRMED:'regime-bull',
+                        TRANSITION:'regime-trans',BOTTOM_FORMING:'regime-bottom',
+                        BEAR_RALLY:'regime-trans',BEAR_CONFIRMED:'regime-bear',UNKNOWN:''};
+
+  const regime = d.regime || 'UNKNOWN';
+  document.getElementById('regimeBanner').className = `card mb-3 p-3 ${regimeClass[regime]||''}`;
+  document.getElementById('regimeEmoji').textContent = emojis[regime]||'⚪';
+  document.getElementById('regimeName').style.color = colours[regime]||'#fff';
+  document.getElementById('regimeName').textContent  = regime.replace(/_/g,' ');
+  document.getElementById('regimeDate').textContent  = `Assessed: ${d.assessed_at||''}`;
+  document.getElementById('actionNote').textContent  = d.action_matrix?.note||'';
+
+  // Index cards
+  const indices = [
+    ['SPY','S&P 500',d.spy_trend],
+    ['QQQ','NASDAQ',d.qqq_trend],
+    ['IWM','Russell 2000',d.iwm_trend],
+  ];
+  const idxHtml = indices.map(([sym,name,t]) => {
+    if (!t||t.status==='NO DATA') return '';
+    const sc = t.trend_score||0;
+    const clr = t.status==='UPTREND' ? '#3fb950' : t.status==='WEAKENING' ? '#e3b341' : '#f85149';
+    const smas = Object.entries(t.above_smas||{}).map(([k,v])=>
+      `<span class="badge ${v?'bg-success':'bg-danger'} me-1">${k.replace('sma','SMA')}</span>`
+    ).join('');
+    return `<div class="col-6 col-md-4">
+      <div class="card">
+        <div class="card-body text-center py-2">
+          <div class="text-muted small">${sym} — ${name}</div>
+          <div class="fw-bold mt-1" style="color:${clr}">${t.status}</div>
+          <div class="mt-1 small">Score ${sc}/4 &nbsp;|&nbsp; YTD ${t.ytd_pct>0?'+':''}${Number(t.ytd_pct||0).toFixed(1)}%</div>
+          <div class="mt-1">${smas}</div>
+          <div class="mt-1 text-muted small">From 52wH: ${Number(t.pct_from_52w_high||0).toFixed(1)}%</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('indexCards').innerHTML = idxHtml;
+
+  // Dist days
+  const dd = d.distribution_days ?? '—';
+  const ddClr = dd >= 6 ? '#f85149' : dd >= 4 ? '#e3b341' : '#3fb950';
+  document.getElementById('distDays').style.color = ddClr;
+  document.getElementById('distDays').textContent  = dd;
+  document.getElementById('qqqDist').textContent   = d.qqq_dist_days ?? '—';
+
+  // Breadth
+  const br = d.breadth_pct;
+  const brClr = br>=60?'#3fb950':br>=40?'#e3b341':'#f85149';
+  document.getElementById('breadth').style.color = brClr;
+  document.getElementById('breadth').textContent  = br!=null ? br+'%' : '—';
+
+  // NH/NL
+  const nh = d.nh_nl_ratio;
+  const nhClr = nh>=60?'#3fb950':nh>=40?'#e3b341':'#f85149';
+  document.getElementById('nhNl').style.color = nhClr;
+  document.getElementById('nhNl').textContent  = nh!=null ? nh+'%' : '—';
+
+  // Action matrix
+  const am = d.action_matrix || {};
+  document.getElementById('actionMatrix').innerHTML = `
+    <div class="row g-2 text-center mb-3">
+      <div class="col-6"><div class="metric-card p-2"><div class="fw-bold fs-4">${am.max_open_positions??'—'}</div><div class="metric-lbl">Max Positions</div></div></div>
+      <div class="col-6"><div class="metric-card p-2"><div class="fw-bold fs-4">${am.max_portfolio_pct??'—'}%</div><div class="metric-lbl">Max Deployment</div></div></div>
+    </div>
+    <div><strong>Stop Mode:</strong> <span class="badge bg-secondary">${am.stop_mode||'—'}</span></div>
+    <div class="mt-2 text-muted small">${am.note||''}</div>`;
+
+  // Sectors
+  const leading  = d.leading_sectors||[];
+  const lagging  = d.lagging_sectors||[];
+  document.getElementById('sectorBox').innerHTML = `
+    ${leading.length ? `<div class="mb-2"><strong class="text-success">Leading:</strong><br/>${leading.map(s=>`<span class="badge" style="background:#1b6e2e;color:#3fb950;margin:2px">${s}</span>`).join('')}</div>` : ''}
+    ${lagging.length ? `<div><strong class="text-danger">Lagging:</strong><br/>${lagging.map(s=>`<span class="badge" style="background:#3e0a0a;color:#f85149;margin:2px">${s}</span>`).join('')}</div>` : ''}
+    ${!leading.length && !lagging.length ? '<span class="text-muted">Sector data unavailable.</span>' : ''}`;
+
+  document.getElementById('result').classList.remove('d-none');
+}
+</script>
+{% endblock %}

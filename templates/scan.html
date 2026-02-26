@@ -1,0 +1,676 @@
+{% extends "base.html" %}
+{% block title %}SEPA Scan{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-funnel me-2" style="color:var(--accent)"></i>SEPA 3-Stage Screen</h4>
+  <span id="lastScanBadge" class="badge bg-secondary d-none"></span>
+</div>
+
+<!-- Controls row -->
+<div class="row g-3 mb-3">
+  <div class="col-12 col-md-8">
+    <div class="card">
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          <strong>Stage 1</strong> — finvizfinance coarse filter (USA stocks only, EPS/ROE/Sales growth)&emsp;
+          <strong>Stage 2</strong> — Minervini TT1-TT10 exact validation (parallel, 8 threads)&emsp;
+          <strong>Stage 3</strong> — 5-pillar SEPA scoring + VCP detection
+        </p>
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+          <button class="btn btn-accent px-4" id="btnScan" onclick="startScan()">
+            <i class="bi bi-play-fill me-1"></i>Run Scan
+          </button>
+          <button class="btn btn-outline-danger px-3 d-none" id="btnStop" onclick="stopScan()">
+            <i class="bi bi-stop-fill me-1"></i>Stop
+          </button>
+          <div class="form-check ms-2">
+            <input class="form-check-input" type="checkbox" id="chkRefresh">
+            <label class="form-check-label text-muted small" for="chkRefresh">
+              Refresh RS rankings <span class="text-warning">(~10 min first time, cached daily)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-4">
+    <div class="card h-100">
+      <div class="card-body py-2">
+        <div id="scanStatus" class="text-muted small mb-1">Ready. Previous results shown below (if any).</div>
+        <div id="scanMeta" class="text-muted small"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Progress panel (visible while scanning) ─────────────────────────────── -->
+<div id="scanLoading" class="card mb-3 d-none">
+  <div class="card-body">
+    <div class="d-flex justify-content-between mb-2 small">
+      <span id="step1" class="step-label text-muted">① RS Rankings</span>
+      <span id="step2" class="step-label text-muted">② Coarse Filter</span>
+      <span id="step3" class="step-label text-muted">③ Trend Template</span>
+      <span id="step4" class="step-label text-muted">④ SEPA Scoring</span>
+      <span id="step5" class="step-label text-muted">✅ Done</span>
+    </div>
+    <div class="progress mb-2" style="height:12px; border-radius:6px; background:#1c2333;">
+      <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+           role="progressbar" style="width:2%; background:linear-gradient(90deg,var(--accent),var(--accent2))"></div>
+    </div>
+    <div class="d-flex justify-content-between align-items-center">
+      <div>
+        <span id="progressStage" class="fw-semibold" style="color:var(--accent)">Initialising…</span>
+        <span id="progressMsg" class="text-muted ms-2 small"></span>
+      </div>
+      <div id="progressTicker" class="badge px-2 py-1"
+           style="background:var(--accent2); font-size:0.8rem; min-width:60px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Results table ──────────────────────────────────────────────────────── -->
+<div id="resultsSection" class="d-none">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <span id="resultCount" class="text-muted small"></span>
+    <div class="d-flex gap-2 align-items-center">
+      <button class="btn btn-sm btn-outline-info" onclick="toggleFilterPanel()" title="Advanced filters">
+        <i class="bi bi-funnel me-1"></i><span id="filterBadge" class="badge bg-info ms-1 d-none">0</span>
+      </button>
+      <input class="form-control form-control-sm" style="width:170px" id="filterInput"
+             placeholder="Search ticker / sector…" oninput="filterTable()">
+      <button class="btn btn-sm btn-outline-secondary" onclick="exportCSV()">
+        <i class="bi bi-download me-1"></i>CSV
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Collapsible Filter Panel ──────────────────────────────────────────── -->
+  <div id="filterPanel" class="card mb-3 d-none" style="background:#0d1b2a; border-color:#1c2f42;">
+    <div class="card-body p-3">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h6 class="mb-0">Advanced Filters</h6>
+        <button class="btn btn-sm btn-outline-secondary" onclick="resetFilters()">
+          <i class="bi bi-arrow-clockwise me-1"></i>Reset
+        </button>
+      </div>
+
+      <div class="row g-3">
+        <!-- SEPA Score -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">SEPA Score</label>
+          <div class="d-flex gap-2 align-items-center">
+            <input type="number" class="form-control form-control-sm" id="sepaMin" min="0" max="100"
+                   placeholder="Min" oninput="filterTable()" style="width:60px;">
+            <span class="text-muted" style="font-size:0.8rem;">—</span>
+            <input type="number" class="form-control form-control-sm" id="sepaMax" min="0" max="100"
+                   placeholder="Max" oninput="filterTable()" style="width:60px;">
+          </div>
+        </div>
+
+        <!-- Trend Score -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Trend (0-100)</label>
+          <div class="d-flex gap-2 align-items-center">
+            <input type="number" class="form-control form-control-sm" id="trendMin" min="0" max="100"
+                   placeholder="Min" oninput="filterTable()" style="width:60px;">
+            <span class="text-muted" style="font-size:0.8rem;">—</span>
+            <input type="number" class="form-control form-control-sm" id="trendMax" min="0" max="100"
+                   placeholder="Max" oninput="filterTable()" style="width:60px;">
+          </div>
+        </div>
+
+        <!-- Fundamental Score -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Fundamentals (0-100)</label>
+          <div class="d-flex gap-2 align-items-center">
+            <input type="number" class="form-control form-control-sm" id="fundMin" min="0" max="100"
+                   placeholder="Min" oninput="filterTable()" style="width:60px;">
+            <span class="text-muted" style="font-size:0.8rem;">—</span>
+            <input type="number" class="form-control form-control-sm" id="fundMax" min="0" max="100"
+                   placeholder="Max" oninput="filterTable()" style="width:60px;">
+          </div>
+        </div>
+
+        <!-- RS Rank -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">RS Rank (0-99)</label>
+          <div class="d-flex gap-2 align-items-center">
+            <input type="number" class="form-control form-control-sm" id="rsMin" min="0" max="99"
+                   placeholder="Min" oninput="filterTable()" style="width:60px;">
+            <span class="text-muted" style="font-size:0.8rem;">—</span>
+            <input type="number" class="form-control form-control-sm" id="rsMax" min="0" max="99"
+                   placeholder="Max" oninput="filterTable()" style="width:60px;">
+          </div>
+        </div>
+
+        <!-- Price -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Price ($)</label>
+          <div class="d-flex gap-2 align-items-center">
+            <input type="number" class="form-control form-control-sm" id="priceMin" min="0" step="0.01"
+                   placeholder="Min" oninput="filterTable()" style="width:60px;">
+            <span class="text-muted" style="font-size:0.8rem;">—</span>
+            <input type="number" class="form-control form-control-sm" id="priceMax" min="0" step="0.01"
+                   placeholder="Max" oninput="filterTable()" style="width:60px;">
+          </div>
+        </div>
+
+        <!-- Pivot ($) -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Pivot ($)</label>
+          <div class="d-flex gap-2 align-items-center">
+            <input type="number" class="form-control form-control-sm" id="pivotMin" min="0" step="0.01"
+                   placeholder="Min" oninput="filterTable()" style="width:60px;">
+            <span class="text-muted" style="font-size:0.8rem;">—</span>
+            <input type="number" class="form-control form-control-sm" id="pivotMax" min="0" step="0.01"
+                   placeholder="Max" oninput="filterTable()" style="width:60px;">
+          </div>
+        </div>
+
+        <!-- VCP Grade -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">VCP Grade</label>
+          <div class="btn-group btn-group-sm w-100" role="group">
+            <input type="checkbox" class="btn-check" id="vcpA" value="A" onchange="filterTable()">
+            <label class="btn btn-outline-info btn-sm" for="vcpA">A</label>
+            <input type="checkbox" class="btn-check" id="vcpB" value="B" onchange="filterTable()">
+            <label class="btn btn-outline-info btn-sm" for="vcpB">B</label>
+            <input type="checkbox" class="btn-check" id="vcpC" value="C" onchange="filterTable()">
+            <label class="btn btn-outline-info btn-sm" for="vcpC">C</label>
+            <input type="checkbox" class="btn-check" id="vcpNone" value="None" onchange="filterTable()">
+            <label class="btn btn-outline-info btn-sm" for="vcpNone">None</label>
+          </div>
+        </div>
+
+        <!-- Trend Template -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Trend Template (TT)</label>
+          <div class="btn-group btn-group-sm w-100" role="group">
+            <input type="checkbox" class="btn-check" id="ttPass" value="pass" onchange="filterTable()" checked>
+            <label class="btn btn-outline-success btn-sm" for="ttPass">Pass</label>
+            <input type="checkbox" class="btn-check" id="ttFail" value="fail" onchange="filterTable()">
+            <label class="btn btn-outline-danger btn-sm" for="ttFail">Fail</label>
+          </div>
+        </div>
+
+        <!-- Sector (multi-select) -->
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Sector</label>
+          <select class="form-select form-select-sm" id="sectorFilter" multiple onchange="filterTable()"
+                  style="min-height:36px; font-size:0.875rem;">
+          </select>
+          <small class="text-muted d-block mt-1">Hold Ctrl to select multiple</small>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0 align-middle" id="scanTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Ticker</th>
+            <th title="Weighted SEPA total">SEPA Score</th>
+            <th title="Trend pillar (0-100)">Trend</th>
+            <th title="Fundamentals pillar (0-100)">Fund.</th>
+            <th title="IBD-style RS percentile rank">RS</th>
+            <th>VCP</th>
+            <th>Pivot</th>
+            <th>Price</th>
+            <th title="Passes Trend Template">TT</th>
+            <th>Sector</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="scanBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<style>
+.step-label { transition: color .3s; }
+.step-label.active { color: var(--accent) !important; font-weight: 600; }
+.step-label.done   { color: #3fb950 !important; }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let _scanData   = [];
+let _currentJid = null;
+
+/* --- Page load: restore last scan (delayed to avoid blocking) -------- */
+window.addEventListener('DOMContentLoaded', () => {
+  const cached     = sessionStorage.getItem('sepa_scan_data');
+  const cachedMeta = sessionStorage.getItem('sepa_scan_meta');
+  if (cached) {
+    try {
+      const rows = JSON.parse(cached);
+      if (rows.length) {
+        _scanData = rows;
+        // Delay rendering to avoid blocking page load (even sessionStorage can be large)
+        setTimeout(() => {
+          renderScanTable(_scanData);
+          populateSectorFilter(_scanData);
+          showBadge(cachedMeta || `${rows.length} stocks (cached)`);
+        }, 50);
+        return;
+      }
+    } catch(e) {}
+  }
+  // Delay loading server data to avoid blocking page render
+  // Use timeout signal to abort if server is slow
+  setTimeout(() => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    fetch('/api/scan/last', {signal: ctrl.signal})
+      .then(r => r.json())
+      .then(d => {
+        clearTimeout(timer);
+        if (d.rows && d.rows.length) {
+          _scanData = d.rows;
+          // Delay rendering to avoid blocking page render
+          setTimeout(() => {
+            renderScanTable(_scanData);
+            populateSectorFilter(_scanData);
+            const ts = d.saved_at ? new Date(d.saved_at).toLocaleString() : '';
+            showBadge(`Last scan: ${ts} (${d.count} stocks)`);
+          }, 50);
+        }
+      })
+      .catch(() => { clearTimeout(timer); });
+  }, 300);
+});
+
+function showBadge(txt) {
+  const el = document.getElementById('lastScanBadge');
+  el.textContent = txt; el.classList.remove('d-none');
+}
+
+/* ─── Start scan ──────────────────────────────────────────────────────── */
+async function startScan() {
+  const refreshRs = document.getElementById('chkRefresh').checked;
+  document.getElementById('btnScan').disabled = true;
+  document.getElementById('btnStop').classList.remove('d-none');
+  document.getElementById('btnStop').disabled = false;
+  document.getElementById('scanLoading').classList.remove('d-none');
+  document.getElementById('scanStatus').textContent = 'Scan in progress…';
+  setStep(0);
+
+  let r;
+  try {
+    r = await fetch('/api/scan/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({refresh_rs: refreshRs})
+    }).then(x => x.json());
+  } catch(e) { onScanError(e.message); return; }
+
+  _currentJid = r.job_id;
+  scanPoll(`/api/scan/status/${_currentJid}`);
+}
+
+function scanPoll(url) {
+  fetch(url).then(r => r.json()).then(job => {
+    if      (job.status === 'done')      onScanDone(job.result || []);
+    else if (job.status === 'error')     onScanError(job.error || 'Unknown error');
+    else if (job.status === 'not_found') onScanError('Job not found');
+    else {
+      renderProgress(job.progress || {});
+      setTimeout(() => scanPoll(url), 2000);
+    }
+  }).catch(() => setTimeout(() => scanPoll(url), 3000));
+}
+
+function renderProgress(p) {
+  const pct = p.pct || 0;
+  document.getElementById('progressBar').style.width    = Math.max(pct, 2) + '%';
+  document.getElementById('progressStage').textContent  = p.stage  || '…';
+  document.getElementById('progressMsg').textContent    = p.msg    || '';
+  document.getElementById('progressTicker').textContent = p.ticker || '';
+  // Step highlight
+  const s = (p.stage || '').toLowerCase();
+  clearSteps();
+  if      (pct <= 5)                           setStep(0);
+  else if (s.includes('rs')   || pct <= 14)   setStep(1);
+  else if (s.includes('coarse') || pct <= 33) setStep(2);
+  else if (s.includes('trend') || pct <= 66)  setStep(3);
+  else if (pct < 100)                          setStep(4);
+  else                                         setStep(5);
+}
+
+function clearSteps() {
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById('step' + i);
+    el.classList.remove('active', 'done');
+  }
+}
+function setStep(n) {
+  for (let i = 1; i < n; i++)
+    document.getElementById('step' + i).classList.add('done');
+  if (n >= 1 && n <= 5)
+    document.getElementById('step' + n).classList.add('active');
+}
+
+function onScanDone(rows) {
+  _scanData = rows;
+  document.getElementById('scanLoading').classList.add('d-none');
+  document.getElementById('btnScan').disabled = false;
+  document.getElementById('btnStop').classList.add('d-none');
+  setStep(5);
+  
+  const ts   = new Date().toLocaleString();
+  const meta = `Last scan: ${ts} (${_scanData.length} stocks)`;
+  
+  // Delay rendering to avoid blocking
+  setTimeout(() => {
+    renderScanTable(_scanData);
+    populateSectorFilter(_scanData);
+    showBadge(meta);
+  }, 50);
+  
+  try {
+    sessionStorage.setItem('sepa_scan_data', JSON.stringify(_scanData));
+    sessionStorage.setItem('sepa_scan_meta', meta);
+  } catch(e) {}
+  toast(`✅ Scan complete — ${_scanData.length} stocks found`, true);
+}
+
+function populateSectorFilter(data) {
+  const select = document.getElementById('sectorFilter');
+  const sectors = [...new Set(data.map(r => r.sector).filter(s => s))].sort();
+  select.innerHTML = '';
+  sectors.forEach(sector => {
+    const opt = document.createElement('option');
+    opt.value = sector;
+    opt.textContent = sector;
+    select.appendChild(opt);
+  });
+}
+
+function onScanError(err) {
+  document.getElementById('scanLoading').classList.add('d-none');
+  document.getElementById('btnScan').disabled = false;
+  document.getElementById('btnStop').classList.add('d-none');
+  document.getElementById('scanStatus').innerHTML =
+    `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Error: ${err}</span>`;
+  toast('Scan error: ' + err, false);
+}
+
+/* ─── Stop scan ───────────────────────────────────────────────────────── */
+async function stopScan() {
+  if (!_currentJid) return;
+  document.getElementById('btnStop').disabled = true;
+  document.getElementById('progressStage').textContent = 'Cancelling…';
+  await fetch(`/api/scan/cancel/${_currentJid}`, {method: 'POST'}).catch(() => {});
+  toast('Stop signal sent — finishing current ticker…', true);
+}
+
+/* ─── Render results table ────────────────────────────────────────────── */
+function renderScanTable(data) {
+  const body = document.getElementById('scanBody');
+  body.innerHTML = '';
+  if (!data.length) {
+    body.innerHTML =
+      '<tr><td colspan="12" class="text-center text-muted py-4">' +
+      'No stocks passed all SEPA filters. ' +
+      'Try refreshing RS rankings or wait for better market breadth.</td></tr>';
+  } else {
+    // Use DocumentFragment to avoid O(n²) DOM operations
+    const fragment = document.createDocumentFragment();
+    data.forEach((r, i) => {
+      const total  = r.total_score != null ? Number(r.total_score).toFixed(1) : '—';
+      const tCls   = r.total_score >= 75 ? 'score-high' : r.total_score >= 55 ? 'score-mid' : 'score-low';
+      const trend  = r.trend_score        != null ? Number(r.trend_score).toFixed(0)        : '—';
+      const fund   = r.fundamental_score  != null ? Number(r.fundamental_score).toFixed(0)  : '—';
+      const rs     = r.rs_rank            != null ? Number(r.rs_rank).toFixed(0)             : '—';
+      const vcpGrd = r.vcp_grade && r.vcp_grade !== 'D'
+                     ? `<span class="tag-vcp">VCP ${r.vcp_grade}</span>` : '—';
+      const pivot  = r.pivot != null ? `$${Number(r.pivot).toFixed(2)}` : '—';
+      const price  = r.close != null ? `$${Number(r.close).toFixed(2)}`
+                   : r.price != null ? `$${Number(r.price).toFixed(2)}` : '—';
+      const ttOk   = (r.tt_score != null && r.tt_score >= 8) || r.tt_pass === true;
+      const ttHtml = ttOk
+        ? '<i class="bi bi-check-circle-fill text-success"></i>'
+        : '<i class="bi bi-x-circle text-danger"></i>';
+
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td class="text-muted small">${i + 1}</td>
+        <td>
+          <a href="/analyze?ticker=${r.ticker}" class="fw-bold text-decoration-none"
+             style="color:var(--accent)">${r.ticker}</a>
+          <div class="text-muted" style="font-size:.7rem">${r.company || ''}</div>
+        </td>
+        <td class="${tCls} fw-bold">${total}</td>
+        <td class="text-muted small">${trend}</td>
+        <td class="text-muted small">${fund}</td>
+        <td class="text-muted">${rs}</td>
+        <td>${vcpGrd}</td>
+        <td class="small">${pivot}</td>
+        <td class="small">${price}</td>
+        <td class="text-center">${ttHtml}</td>
+        <td class="text-muted small">${r.sector || '—'}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-info py-0 px-2" title="Add to Watchlist"
+                  onclick="addToWatchlist('${r.ticker}')">
+            <i class="bi bi-bookmark-plus"></i>
+          </button>
+          <a href="/vcp?ticker=${r.ticker}"
+             class="btn btn-sm btn-outline-secondary py-0 px-2 ms-1" title="VCP chart">
+            <i class="bi bi-activity"></i>
+          </a>
+        </td>
+      `;
+      fragment.appendChild(row);
+    });
+    body.appendChild(fragment);
+  }
+  document.getElementById('scanStatus').textContent =
+    `Showing ${data.length} stock${data.length !== 1 ? 's' : ''}`;
+  document.getElementById('resultCount').textContent =
+    `${data.length} stock${data.length !== 1 ? 's' : ''} passed SEPA filters`;
+  document.getElementById('resultsSection').classList.remove('d-none');
+}
+
+function filterTable() {
+  if (!_scanData.length) return;
+
+  // Get filter values
+  const searchText = document.getElementById('filterInput').value.toLowerCase();
+  const sepaMin = parseFloat(document.getElementById('sepaMin').value) || 0;
+  const sepaMax = parseFloat(document.getElementById('sepaMax').value) || Infinity;
+  const trendMin = parseFloat(document.getElementById('trendMin').value) || 0;
+  const trendMax = parseFloat(document.getElementById('trendMax').value) || Infinity;
+  const fundMin = parseFloat(document.getElementById('fundMin').value) || 0;
+  const fundMax = parseFloat(document.getElementById('fundMax').value) || Infinity;
+  const rsMin = parseFloat(document.getElementById('rsMin').value) || 0;
+  const rsMax = parseFloat(document.getElementById('rsMax').value) || Infinity;
+  const priceMin = parseFloat(document.getElementById('priceMin').value) || 0;
+  const priceMax = parseFloat(document.getElementById('priceMax').value) || Infinity;
+  const pivotMin = parseFloat(document.getElementById('pivotMin').value) || 0;
+  const pivotMax = parseFloat(document.getElementById('pivotMax').value) || Infinity;
+
+  const vcpGrades = new Set();
+  if (document.getElementById('vcpA').checked) vcpGrades.add('A');
+  if (document.getElementById('vcpB').checked) vcpGrades.add('B');
+  if (document.getElementById('vcpC').checked) vcpGrades.add('C');
+  if (document.getElementById('vcpNone').checked) vcpGrades.add('None');
+
+  const ttFilters = new Set();
+  if (document.getElementById('ttPass').checked) ttFilters.add('pass');
+  if (document.getElementById('ttFail').checked) ttFilters.add('fail');
+
+  const sectorSelect = document.getElementById('sectorFilter');
+  const selectedSectors = new Set(Array.from(sectorSelect.selectedOptions).map(o => o.value));
+
+  // Apply filters
+  const filtered = _scanData.filter(r => {
+    // Text search
+    if (searchText && !((r.ticker || '').toLowerCase().includes(searchText) ||
+                        (r.sector || '').toLowerCase().includes(searchText) ||
+                        (r.company || '').toLowerCase().includes(searchText))) {
+      return false;
+    }
+
+    // SEPA Score
+    const sepa = r.total_score != null ? parseFloat(r.total_score) : 0;
+    if (sepa < sepaMin || sepa > sepaMax) return false;
+
+    // Trend
+    const trend = r.trend_score != null ? parseFloat(r.trend_score) : 0;
+    if (trend < trendMin || trend > trendMax) return false;
+
+    // Fundamentals
+    const fund = r.fundamental_score != null ? parseFloat(r.fundamental_score) : 0;
+    if (fund < fundMin || fund > fundMax) return false;
+
+    // RS Rank
+    const rs = r.rs_rank != null ? parseFloat(r.rs_rank) : 0;
+    if (rs < rsMin || rs > rsMax) return false;
+
+    // Price
+    const price = r.close != null ? parseFloat(r.close) : (r.price != null ? parseFloat(r.price) : 0);
+    if (price < priceMin || price > priceMax) return false;
+
+    // Pivot
+    const pivot = r.pivot != null ? parseFloat(r.pivot) : 0;
+    if (pivot < pivotMin || pivot > pivotMax) return false;
+
+    // VCP Grade
+    if (vcpGrades.size > 0) {
+      const grade = r.vcp_grade && r.vcp_grade !== 'D' ? r.vcp_grade : 'None';
+      if (!vcpGrades.has(grade)) return false;
+    }
+
+    // TT Status
+    if (ttFilters.size > 0) {
+      const ttOk = (r.tt_score != null && r.tt_score >= 8) || r.tt_pass === true;
+      const ttStatus = ttOk ? 'pass' : 'fail';
+      if (!ttFilters.has(ttStatus)) return false;
+    }
+
+    // Sector
+    if (selectedSectors.size > 0 && !selectedSectors.has(r.sector)) {
+      return false;
+    }
+
+    return true;
+  });
+
+  // Render filtered table
+  renderScanTable(filtered);
+  updateFilterBadge();
+}
+
+function toggleFilterPanel() {
+  const panel = document.getElementById('filterPanel');
+  panel.classList.toggle('d-none');
+}
+
+function resetFilters() {
+  // Reset all filter inputs
+  document.getElementById('sepaMin').value = '';
+  document.getElementById('sepaMax').value = '';
+  document.getElementById('trendMin').value = '';
+  document.getElementById('trendMax').value = '';
+  document.getElementById('fundMin').value = '';
+  document.getElementById('fundMax').value = '';
+  document.getElementById('rsMin').value = '';
+  document.getElementById('rsMax').value = '';
+  document.getElementById('priceMin').value = '';
+  document.getElementById('priceMax').value = '';
+  document.getElementById('pivotMin').value = '';
+  document.getElementById('pivotMax').value = '';
+  document.getElementById('filterInput').value = '';
+
+  // Reset checkboxes
+  document.getElementById('vcpA').checked = false;
+  document.getElementById('vcpB').checked = false;
+  document.getElementById('vcpC').checked = false;
+  document.getElementById('vcpNone').checked = false;
+  document.getElementById('ttPass').checked = true;
+  document.getElementById('ttFail').checked = false;
+
+  // Reset sector select
+  document.getElementById('sectorFilter').selectedIndex = -1;
+
+  filterTable();
+}
+
+function updateFilterBadge() {
+  const badge = document.getElementById('filterBadge');
+  const sepaMin = document.getElementById('sepaMin').value;
+  const sepaMax = document.getElementById('sepaMax').value;
+  const trendMin = document.getElementById('trendMin').value;
+  const trendMax = document.getElementById('trendMax').value;
+  const fundMin = document.getElementById('fundMin').value;
+  const fundMax = document.getElementById('fundMax').value;
+  const rsMin = document.getElementById('rsMin').value;
+  const rsMax = document.getElementById('rsMax').value;
+  const priceMin = document.getElementById('priceMin').value;
+  const priceMax = document.getElementById('priceMax').value;
+  const pivotMin = document.getElementById('pivotMin').value;
+  const pivotMax = document.getElementById('pivotMax').value;
+  const searchText = document.getElementById('filterInput').value;
+  const vcpCount = [
+    document.getElementById('vcpA').checked,
+    document.getElementById('vcpB').checked,
+    document.getElementById('vcpC').checked,
+    document.getElementById('vcpNone').checked
+  ].filter(x => x).length;
+  const ttPass = document.getElementById('ttPass').checked;
+  const ttFail = document.getElementById('ttFail').checked;
+  const sectorCount = document.getElementById('sectorFilter').selectedOptions.length;
+
+  let count = 0;
+  if (sepaMin) count++; if (sepaMax) count++;
+  if (trendMin) count++; if (trendMax) count++;
+  if (fundMin) count++; if (fundMax) count++;
+  if (rsMin) count++; if (rsMax) count++;
+  if (priceMin) count++; if (priceMax) count++;
+  if (pivotMin) count++; if (pivotMax) count++;
+  if (searchText) count++;
+  if (vcpCount > 0 && vcpCount < 4) count++;
+  if ((ttPass && !ttFail) || (!ttPass && ttFail)) count++;
+  if (sectorCount > 0) count++;
+
+  if (count > 0) {
+    badge.textContent = count;
+    badge.classList.remove('d-none');
+  } else {
+    badge.classList.add('d-none');
+  }
+}
+
+async function addToWatchlist(ticker) {
+  const r = await fetch('/api/watchlist/add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ticker})
+  }).then(x => x.json());
+  pollJob(`/api/watchlist/add/status/${r.job_id}`,
+    ()  => toast(`${ticker} added to watchlist`),
+    err => toast(`Error: ${err}`, false)
+  );
+}
+
+function exportCSV() {
+  if (!_scanData.length) return;
+  const flat = _scanData.map(r => {
+    const out = {};
+    for (const [k, v] of Object.entries(r))
+      if (v === null || typeof v !== 'object') out[k] = v;
+    return out;
+  });
+  const keys = Object.keys(flat[0]);
+  const rows = [keys.join(','),
+    ...flat.map(r => keys.map(k => `"${r[k] ?? ''}"`).join(','))];
+  const blob = new Blob([rows.join('\n')], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `sepa_scan_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+}
+</script>
+{% endblock %}

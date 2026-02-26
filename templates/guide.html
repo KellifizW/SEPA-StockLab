@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}教學 Guide{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.5.1/github-markdown-dark.min.css">
+<style>
+  .markdown-body { background: transparent; color: #c9d1d9; }
+  .markdown-body h1 { color: var(--accent); border-bottom-color: #30363d; }
+  .markdown-body h2 { color: var(--accent2); border-bottom-color: #21262d; }
+  .markdown-body h3 { color: #e3b341; }
+  .markdown-body code { background: #1c2128; color: #ff9580; }
+  .markdown-body pre { background: #161b22; border: 1px solid #30363d; }
+  .markdown-body table th { background: #1c2128; }
+  .markdown-body table td, .markdown-body table th { border-color: #30363d; }
+  .markdown-body blockquote { border-left-color: var(--accent); }
+  .toc-panel a { color: #8b949e; text-decoration: none; display: block; padding: 2px 4px; border-radius: 4px; }
+  .toc-panel a:hover { color: var(--accent); background: #1c2128; }
+  .toc-panel .toc-h2 { padding-left: 12px; }
+  .toc-panel .toc-h3 { padding-left: 24px; font-size:12px; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="row g-4">
+  <!-- TOC sidebar -->
+  <div class="col-12 col-lg-3">
+    <div class="card sidebar-sticky">
+      <div class="card-header"><i class="bi bi-list-ul me-2"></i>目錄 Contents</div>
+      <div class="card-body p-2 toc-panel" id="toc" style="max-height:calc(100vh - 160px);overflow-y:auto"></div>
+    </div>
+  </div>
+  <!-- Content -->
+  <div class="col-12 col-lg-9">
+    <article class="markdown-body" id="guide-content" style="max-width:900px">
+      <div id="mdRendered"></div>
+    </article>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script>
+const raw = {{ content | tojson }};
+document.getElementById('mdRendered').innerHTML = marked.parse(raw);
+
+// Auto-generate TOC from headings
+const headings = document.querySelectorAll('#mdRendered h1, #mdRendered h2, #mdRendered h3');
+const toc = document.getElementById('toc');
+headings.forEach((h, i) => {
+  const id = 'h-' + i;
+  h.id = id;
+  const a = document.createElement('a');
+  a.href = '#' + id;
+  a.className = 'toc-' + h.tagName.toLowerCase();
+  a.textContent = h.textContent;
+  toc.appendChild(a);
+});
+</script>
+{% endblock %}

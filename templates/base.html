@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-HK" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Minervini SEPA{% endblock %} — StockLab</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <style>
+    :root {
+      --bs-body-bg: #0d1117;
+      --bs-body-color: #c9d1d9;
+      --accent: #00d4ff;
+      --accent2: #58a6ff;
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+    }
+    body { background: var(--bs-body-bg); color: var(--bs-body-color); font-size: 14px; }
+    .navbar-brand { color: var(--accent) !important; font-weight: 700; letter-spacing: 1px; }
+    .nav-link { color: #8b949e !important; transition: color .2s; }
+    .nav-link:hover, .nav-link.active { color: var(--accent) !important; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; }
+    .card-header { background: #1c2128; border-bottom: 1px solid #30363d; font-weight: 600; }
+    .table { --bs-table-bg: transparent; --bs-table-color: #c9d1d9;
+             --bs-table-striped-bg: #1a2030; --bs-table-hover-bg: #253060; }
+    .table th { color: var(--accent); border-color: #30363d; font-size: 12px; text-transform: uppercase; }
+    .table td { border-color: #21262d; vertical-align: middle; }
+    .badge-A { background: #1b6e2e; color: #3fb950; }
+    .badge-B { background: #4a3800; color: #e3b341; }
+    .badge-C { background: #1a3060; color: #58a6ff; }
+    .score-high { color: #3fb950; font-weight: 700; }
+    .score-mid  { color: #e3b341; font-weight: 600; }
+    .score-low  { color: #f85149; }
+    .regime-bull  { background: #0a2e1a; border-left: 4px solid #3fb950; }
+    .regime-trans { background: #2e2500; border-left: 4px solid #e3b341; }
+    .regime-bear  { background: #2e0a0a; border-left: 4px solid #f85149; }
+    .regime-bottom{ background: #0a1a2e; border-left: 4px solid #58a6ff; }
+    .spinner-glow { animation: glow 1.2s ease-in-out infinite alternate; }
+    @keyframes glow { from { opacity: .5; } to { opacity: 1; } }
+    .metric-card { background: #161b22; border: 1px solid #30363d;
+                   border-radius: 8px; padding: 16px; text-align: center; }
+    .metric-val  { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .metric-lbl  { font-size: 11px; color: #8b949e; text-transform: uppercase; margin-top: 2px; }
+    pre.result-pre { background: #0d1117; border: 1px solid #30363d;
+                     border-radius: 6px; padding: 14px; font-size: 12px;
+                     color: #c9d1d9; max-height: 500px; overflow-y: auto; }
+    .tag-vcp { background: #004d40; color: #64ffda; border-radius: 4px;
+               padding: 2px 7px; font-size: 11px; white-space: nowrap; }
+    .btn-accent { background: var(--accent); color: #000; border: none; font-weight: 600; }
+    .btn-accent:hover { background: #00b8d9; color: #000; }
+    #toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; }
+    .toast-msg { background: #1c2128; border: 1px solid #30363d; color: #c9d1d9;
+                 border-radius: 6px; padding: 12px 18px; margin-top: 8px;
+                 box-shadow: 0 4px 12px rgba(0,0,0,.5); animation: fadein .3s; }
+    .toast-msg.ok   { border-left: 4px solid #3fb950; }
+    .toast-msg.err  { border-left: 4px solid #f85149; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    .sidebar-sticky { position: sticky; top: 68px; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1117; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark sticky-top" style="background:#161b22;border-bottom:1px solid #30363d">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/"><i class="bi bi-graph-up-arrow me-2"></i>SEPA&nbsp;Lab</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="nav">
+      <ul class="navbar-nav me-auto gap-1">
+        <li class="nav-item"><a class="nav-link {% if request.path=='/' %}active{% endif %}" href="/"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/scan' %}active{% endif %}" href="/scan"><i class="bi bi-funnel me-1"></i>Scan</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/analyze' %}active{% endif %}" href="/analyze"><i class="bi bi-search me-1"></i>Analyze</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/watchlist' %}active{% endif %}" href="/watchlist"><i class="bi bi-bookmark-star me-1"></i>Watchlist</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/positions' %}active{% endif %}" href="/positions"><i class="bi bi-briefcase me-1"></i>Positions</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/market' %}active{% endif %}" href="/market"><i class="bi bi-bar-chart-line me-1"></i>Market</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/vcp' %}active{% endif %}" href="/vcp"><i class="bi bi-activity me-1"></i>VCP</a></li>
+      </ul>
+      <ul class="navbar-nav gap-1">
+        <li class="nav-item"><a class="nav-link" href="/guide"><i class="bi bi-book me-1"></i>教學 Guide</a></li>
+        <li class="nav-item"><a class="nav-link" href="/latest-report" target="_blank"><i class="bi bi-file-earmark-text me-1"></i>Report</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid py-3 px-4">
+  {% block content %}{% endblock %}
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── Toast helper ─────────────────────────────────────────────────────────────
+function toast(msg, ok=true) {
+  const el = document.createElement('div');
+  el.className = 'toast-msg ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ── Generic job poller ────────────────────────────────────────────────────────
+function pollJob(statusUrl, onDone, onError, intervalMs=2500) {
+  const id = setInterval(async () => {
+    const r = await fetch(statusUrl).then(x => x.json()).catch(() => ({status:'error',error:'network'}));
+    if (r.status === 'done') { clearInterval(id); onDone(r.result); }
+    else if (r.status === 'error') { clearInterval(id); onError(r.error || 'Unknown error'); }
+  }, intervalMs);
+}
+
+// ── Score colour helper ───────────────────────────────────────────────────────
+function scoreClass(v) {
+  if (v >= 75) return 'score-high';
+  if (v >= 55) return 'score-mid';
+  return 'score-low';
+}
+
+// ── Format number helpers ─────────────────────────────────────────────────────
+function fmt2(v) { return (v == null) ? '—' : Number(v).toFixed(2); }
+function fmtPct(v) { return (v == null) ? '—' : Number(v).toFixed(1) + '%'; }
+function fmtInt(v) { return (v == null) ? '—' : Math.round(Number(v)); }
+</script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

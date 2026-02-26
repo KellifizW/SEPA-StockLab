@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block title %}Positions{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-briefcase me-2" style="color:var(--accent)"></i>Position Monitor</h4>
+  <button class="btn btn-sm btn-outline-info" onclick="checkAll()">
+    <i class="bi bi-shield-check me-1"></i>Daily Health Check
+  </button>
+</div>
+
+<!-- Add Position Form -->
+<div class="card mb-3">
+  <div class="card-header" data-bs-toggle="collapse" href="#addForm" style="cursor:pointer">
+    <i class="bi bi-plus-circle me-2"></i>Add New Position
+    <i class="bi bi-chevron-down float-end"></i>
+  </div>
+  <div class="collapse" id="addForm">
+    <div class="card-body">
+      <div class="row g-2 align-items-end">
+        <div class="col-6 col-md-2">
+          <label class="form-label text-muted small">Ticker</label>
+          <input class="form-control" id="pTicker" placeholder="NVDA"
+                 oninput="this.value=this.value.toUpperCase()" style="text-transform:uppercase">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label text-muted small">Entry Price</label>
+          <input class="form-control" id="pEntry" type="number" step="0.01" placeholder="500.00">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label text-muted small">Shares</label>
+          <input class="form-control" id="pShares" type="number" placeholder="10">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label text-muted small">Stop Loss</label>
+          <input class="form-control" id="pStop" type="number" step="0.01" placeholder="480.00">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label text-muted small">Target (optional)</label>
+          <input class="form-control" id="pTarget" type="number" step="0.01" placeholder="560.00">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label text-muted small">Note</label>
+          <input class="form-control" id="pNote" placeholder="VCP breakout">
+        </div>
+        <div class="col-12 col-md-2">
+          <button class="btn btn-accent w-100" onclick="addPosition()">
+            <i class="bi bi-plus me-1"></i>Add
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Positions Table -->
+<div class="card mb-3" id="posCard">
+  <div class="card-header"><i class="bi bi-table me-2"></i>Open Positions</div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr><th>Ticker</th><th>Entry</th><th>Stop</th><th>Target</th>
+            <th>R:R</th><th>Shares</th><th>Risk $</th><th>Days</th>
+            <th>Note</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="posBody">
+        {% if positions %}
+          {% for t, p in positions.items() %}
+          <tr id="pos-{{ t }}">
+            <td><a href="/analyze?ticker={{ t }}" class="fw-bold text-decoration-none" style="color:var(--accent)">{{ t }}</a></td>
+            <td>${{ "%.2f"|format(p.buy_price) }}</td>
+            <td class="text-danger">${{ "%.2f"|format(p.stop_loss) }}</td>
+            <td class="text-success">${{ "%.2f"|format(p.target) }}</td>
+            <td>{{ "%.1f"|format(p.rr) }}:1</td>
+            <td>{{ "{:,}".format(p.shares) }}</td>
+            <td>${{ "{:,.0f}".format(p.risk_dollar) }}</td>
+            <td>{{ p.days_held }}</td>
+            <td class="text-muted small">{{ p.note }}</td>
+            <td>
+              <button class="btn btn-sm btn-outline-danger" onclick="closePos('{{ t }}')">
+                <i class="bi bi-door-open me-1"></i>Close
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="10" class="text-center text-muted py-4">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>No open positions. Use the form above to add one.
+          </td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Health Check Results -->
+<div id="healthSection" class="d-none">
+  <h5 class="mb-2"><i class="bi bi-shield-check me-2"></i>Health Check Results</h5>
+  <div id="healthCards" class="row g-3"></div>
+</div>
+
+<!-- Close Position Modal -->
+<div class="modal fade" id="closeModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content bg-dark border-secondary">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title">Close Position: <span id="closeTicker"></span></h5>
+        <button class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">Exit Price</label>
+        <input class="form-control" id="exitPrice" type="number" step="0.01" placeholder="Current market price">
+        <label class="form-label mt-3">Reason (optional)</label>
+        <input class="form-control" id="exitReason" placeholder="e.g. Stop hit, Target reached">
+      </div>
+      <div class="modal-footer border-secondary">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-danger" onclick="confirmClose()">Confirm Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let _closingTicker = null;
+const closeModal = new bootstrap.Modal(document.getElementById('closeModal'));
+
+// Auto-open add form if prefilled from analyze page
+window.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search);
+  const pf = params.get('prefill');
+  if (pf) {
+    try {
+      const d = JSON.parse(pf);
+      document.getElementById('pTicker').value  = d.ticker||'';
+      document.getElementById('pEntry').value   = d.entry||'';
+      document.getElementById('pShares').value  = d.shares||'';
+      document.getElementById('pStop').value    = d.stop||'';
+      document.getElementById('pTarget').value  = d.target||'';
+      new bootstrap.Collapse(document.getElementById('addForm'), {show:true});
+    } catch(e) {}
+  }
+});
+
+async function addPosition() {
+  const t = document.getElementById('pTicker').value.trim().toUpperCase();
+  const e = parseFloat(document.getElementById('pEntry').value);
+  const s = parseInt(document.getElementById('pShares').value);
+  const sl= parseFloat(document.getElementById('pStop').value);
+  const tg= parseFloat(document.getElementById('pTarget').value) || null;
+  const n = document.getElementById('pNote').value;
+  if (!t||!e||!s||!sl) { toast('Fill in Ticker, Entry, Shares, Stop Loss', false); return; }
+
+  const r = await fetch('/api/positions/add', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ticker:t, buy_price:e, shares:s, stop_loss:sl, target:tg, note:n})
+  }).then(x=>x.json());
+
+  if (r.ok) { toast(`${t} position added`); window.location.reload(); }
+  else toast(`Error: ${r.error}`, false);
+}
+
+function closePos(ticker) {
+  _closingTicker = ticker;
+  document.getElementById('closeTicker').textContent = ticker;
+  document.getElementById('exitPrice').value = '';
+  document.getElementById('exitReason').value = '';
+  closeModal.show();
+}
+
+async function confirmClose() {
+  const exitP = parseFloat(document.getElementById('exitPrice').value);
+  const reason = document.getElementById('exitReason').value;
+  if (!exitP) { toast('Enter exit price', false); return; }
+  closeModal.hide();
+  const r = await fetch('/api/positions/close', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ticker:_closingTicker, exit_price:exitP, reason})
+  }).then(x=>x.json());
+  if (r.ok) { toast(`${_closingTicker} closed successfully`); window.location.reload(); }
+  else toast(`Error: ${r.error}`, false);
+}
+
+async function checkAll() {
+  const sec = document.getElementById('healthSection');
+  sec.classList.add('d-none');
+  const r = await fetch('/api/positions/check', {method:'POST'}).then(x=>x.json());
+  toast('Running health checks…');
+  pollJob(`/api/positions/check/status/${r.job_id}`,
+    results => {
+      renderHealth(results);
+      sec.classList.remove('d-none');
+    },
+    err => toast(`Error: ${err}`, false)
+  );
+}
+
+function renderHealth(results) {
+  const container = document.getElementById('healthCards');
+  container.innerHTML = '';
+  if (!results || !results.length) {
+    container.innerHTML = '<div class="col-12 text-muted">No positions checked.</div>';
+    return;
+  }
+  results.forEach(r => {
+    const hClr = {OK:'success', CAUTION:'warning', WATCH:'info', DANGER:'danger', EXIT:'danger'}[r.health] || 'secondary';
+    const pnlClr = (r.pnl_pct||0) >= 0 ? 'text-success' : 'text-danger';
+    const signals = (r.sell_signals||[]).map(s=>`<div class="small mt-1">${s}</div>`).join('');
+    const recStop = r.recommended_stop
+      ? `<div class="mt-2 small text-success">→ Trailing stop recommendation: <strong>$${Number(r.recommended_stop).toFixed(2)}</strong></div>` : '';
+    container.innerHTML += `
+      <div class="col-12 col-md-6 col-lg-4">
+        <div class="card border-${hClr}">
+          <div class="card-header d-flex justify-content-between bg-transparent">
+            <a href="/analyze?ticker=${r.ticker}" class="fw-bold text-decoration-none" style="color:var(--accent)">${r.ticker}</a>
+            <span class="badge bg-${hClr}">${r.health}</span>
+          </div>
+          <div class="card-body py-2">
+            <div class="d-flex justify-content-between">
+              <span class="small text-muted">Current</span>
+              <strong>$${r.current_price != null ? Number(r.current_price).toFixed(2) : '—'}</strong>
+            </div>
+            <div class="d-flex justify-content-between">
+              <span class="small text-muted">P&L</span>
+              <strong class="${pnlClr}">${r.pnl_pct != null ? (r.pnl_pct>0?'+':'') + Number(r.pnl_pct).toFixed(1)+'%' : '—'}</strong>
+            </div>
+            <div class="d-flex justify-content-between">
+              <span class="small text-muted">Stop cushion</span>
+              <span class="small">${r.pct_from_stop != null ? Number(r.pct_from_stop).toFixed(1)+'%' : '—'}</span>
+            </div>
+            ${recStop}
+            ${signals ? `<hr class="my-2"><div class="text-warning">${signals}</div>` : ''}
+          </div>
+        </div>
+      </div>`;
+  });
+}
+</script>
+{% endblock %}
