@@ -50,8 +50,13 @@
         <div id="vcpValid" class="fw-bold fs-4"></div>
       </div>
       <div>
-        <div class="text-muted small mb-1">Pivot Price</div>
-        <div id="vcpPivot" class="fw-bold fs-4" style="color:#3fb950"></div>
+        <div class="text-muted small mb-1">
+          Pivot Price
+          <i class="bi bi-question-circle ms-1" style="cursor:help;color:#8b949e;font-size:0.8rem"
+            data-bs-toggle="tooltip" data-bs-placement="top"
+            title="Pivot 突破點：VCP 形態的理想入場價位。即最後一次收縮結束後，形態頂部的阻力位。當股價放量突破此水平，即為 Minervini SEPA 標準進場信號。股價進入突破點上方 5% 内屬於合格追購區間（Buy Zone）。圖表中以青色虛線標示。"></i>
+        </div>
+        <div id="vcpPivot" class="fw-bold fs-4" style="color:#64ffda"></div>
       </div>
       <div>
         <div class="text-muted small mb-1">Current Price</div>
@@ -99,6 +104,47 @@
           <a id="btnAnalyze" href="#" class="btn btn-outline-info">
             <i class="bi bi-search me-1"></i>Full SEPA Analysis
           </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VCP K線技術分析圖 Technical Chart -->
+  <div class="row g-3 mt-3">
+    <div class="col-12" id="vcpChartSection" style="display:none">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <span><i class="bi bi-bar-chart-line me-2"></i>VCP K 線圖 Technical Chart</span>
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <div class="d-flex gap-2 small" style="color:#8b949e">
+              <span><span style="display:inline-block;width:12px;height:2px;background:#58a6ff;vertical-align:middle"></span> SMA50</span>
+              <span><span style="display:inline-block;width:12px;height:2px;background:#f85149;vertical-align:middle"></span> SMA200</span>
+              <span><span style="display:inline-block;width:12px;height:1px;background:rgba(136,136,136,0.7);vertical-align:middle"></span> BB</span>
+              <span style="color:#64ffda"><span style="display:inline-block;width:12px;height:2px;background:#64ffda;vertical-align:middle"></span> Pivot</span>
+            </div>
+            <div class="btn-group btn-group-sm" id="vcpRangeBtns">
+              <button class="btn btn-outline-secondary" data-days="90"  onclick="setVcpRange(90,this)">3M</button>
+              <button class="btn btn-outline-secondary" data-days="180" onclick="setVcpRange(180,this)">6M</button>
+              <button class="btn btn-outline-secondary active" data-days="365" onclick="setVcpRange(365,this)">1Y</button>
+            </div>
+          </div>
+        </div>
+        <div class="card-body p-0" style="width:100%;overflow:hidden">
+          <div id="vcpChartLoading" class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-info"></div>
+            <div class="text-muted small mt-2">載入 K 線資料… Loading chart data…</div>
+          </div>
+          <div id="vcpChartWrap" style="display:none;width:100%;overflow:hidden">
+            <!-- Main chart: Candlestick + BB + SMA + Volume -->
+            <div id="lwcVcpChart" style="height:350px;width:100%;overflow:hidden"></div>
+            <!-- Volume label row -->
+            <div style="background:#0d1117;padding:2px 14px;display:flex;align-items:center;gap:10px">
+              <span class="small" style="color:#8b949e">Volume</span>
+            </div>
+          </div>
+          <div id="vcpChartEmpty" style="display:none" class="text-center py-4 text-muted">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>No chart data available.
+          </div>
         </div>
       </div>
     </div>
@@ -203,6 +249,120 @@ function renderVcp(ticker, d) {
 
   document.getElementById('btnAnalyze').href = `/analyze?ticker=${ticker}`;
   document.getElementById('result').classList.remove('d-none');
+  // Load VCP technical chart after result is rendered
+  loadVcpChart(ticker, pivot ? Number(pivot) : null);
+}
+
+// ── VCP Chart state ───────────────────────────────────────────────────────────
+let _vcpChart = null;
+let _vcpData  = null;
+
+function setVcpRange(days, btn) {
+  document.querySelectorAll('#vcpRangeBtns button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (!_vcpChart || !_vcpData || !_vcpData.candles.length) return;
+  const last = _vcpData.candles[_vcpData.candles.length - 1].time;
+  const from = last - days * 86400;
+  _vcpChart.timeScale().setVisibleRange({ from, to: last });
+}
+
+async function loadVcpChart(ticker, pivotPrice) {
+  const section = document.getElementById('vcpChartSection');
+  const loadEl  = document.getElementById('vcpChartLoading');
+  const wrapEl  = document.getElementById('vcpChartWrap');
+  const emptyEl = document.getElementById('vcpChartEmpty');
+  section.style.display = 'block';
+  loadEl.style.display  = 'block';
+  wrapEl.style.display  = 'none';
+  emptyEl.style.display = 'none';
+  if (_vcpChart) { try { _vcpChart.remove(); } catch(e) {} _vcpChart = null; }
+
+  try {
+    const res = await fetch(`/api/chart/enriched/${ticker}?days=504`).then(x => x.json());
+    if (!res.ok || !res.candles || !res.candles.length) {
+      loadEl.style.display  = 'none';
+      emptyEl.style.display = 'block';
+      return;
+    }
+    _vcpData = res;
+    const LWC     = LightweightCharts;
+    const chartDiv = document.getElementById('lwcVcpChart');
+    const wrapDiv  = document.getElementById('vcpChartWrap');
+
+    const baseOpts = {
+      layout:    { background: { color: '#0d1117' }, textColor: '#8b949e' },
+      grid:      { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      crosshair: { mode: LWC.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+      handleScroll: true, handleScale: true,
+    };
+
+    const containerWidth = wrapDiv.parentElement.clientWidth || window.innerWidth - 40;
+    _vcpChart = LWC.createChart(chartDiv, { ...baseOpts, height: 350, width: containerWidth });
+
+    // Candlestick
+    const candleSeries = _vcpChart.addCandlestickSeries({
+      upColor: '#3fb950', downColor: '#f85149',
+      borderUpColor: '#3fb950', borderDownColor: '#f85149',
+      wickUpColor: '#3fb950', wickDownColor: '#f85149',
+    });
+    candleSeries.setData(res.candles);
+
+    // Volume histogram
+    const volSeries = _vcpChart.addHistogramSeries({
+      priceFormat: { type: 'volume' }, priceScaleId: 'vol',
+    });
+    _vcpChart.priceScale('vol').applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0 }, drawTicks: false, borderVisible: false,
+    });
+    volSeries.setData(res.volume);
+
+    // Bollinger Bands: upper & lower dashed, midline dotted
+    if (res.bbu && res.bbu.length)
+      _vcpChart.addLineSeries({ color: 'rgba(136,136,136,0.5)', lineWidth: 1, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: false }).setData(res.bbu);
+    if (res.bbl && res.bbl.length)
+      _vcpChart.addLineSeries({ color: 'rgba(136,136,136,0.5)', lineWidth: 1, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: false }).setData(res.bbl);
+    if (res.bbm && res.bbm.length)
+      _vcpChart.addLineSeries({ color: 'rgba(136,136,136,0.25)', lineWidth: 1, lineStyle: 1,
+        priceLineVisible: false, lastValueVisible: false }).setData(res.bbm);
+
+    // SMA 50 (blue) + SMA 200 (red) — trend context
+    if (res.sma50 && res.sma50.length)
+      _vcpChart.addLineSeries({ color: 'rgba(88,166,255,0.7)', lineWidth: 1.5, title: 'SMA50',
+        priceLineVisible: false, lastValueVisible: false }).setData(res.sma50);
+    if (res.sma200 && res.sma200.length)
+      _vcpChart.addLineSeries({ color: 'rgba(248,81,73,0.7)', lineWidth: 1.5, title: 'SMA200',
+        priceLineVisible: false, lastValueVisible: false }).setData(res.sma200);
+
+    // Pivot price — horizontal dashed teal line
+    if (pivotPrice) {
+      candleSeries.createPriceLine({
+        price: pivotPrice,
+        color: '#64ffda', lineWidth: 2, lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Pivot $${pivotPrice.toFixed(2)}`,
+      });
+    }
+
+    // Responsive resize — observe parent card-body
+    new ResizeObserver(() => {
+      const w = wrapDiv.parentElement.clientWidth || window.innerWidth - 40;
+      if (_vcpChart) _vcpChart.applyOptions({ width: w });
+    }).observe(wrapDiv.parentElement);
+
+    // Default 1Y view
+    setVcpRange(365, document.querySelector('#vcpRangeBtns button[data-days="365"]'));
+
+    loadEl.style.display = 'none';
+    wrapEl.style.display = 'block';
+  } catch(e) {
+    console.error('loadVcpChart error:', e);
+    loadEl.style.display  = 'none';
+    emptyEl.style.display = 'block';
+  }
 }
 
 async function addToWatchlist() {
@@ -218,6 +378,8 @@ async function addToWatchlist() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Initialize Bootstrap tooltips
+  new bootstrap.Tooltip(document.body, {selector: '[data-bs-toggle="tooltip"]'});
   const t = document.getElementById('tickerInput').value;
   if (t) runVcp();
 });

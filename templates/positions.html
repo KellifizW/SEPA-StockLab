@@ -328,10 +328,66 @@ function renderHealth(results) {
             </div>
             ${recStop}
             ${signals ? `<hr class="my-2"><div class="text-warning">${signals}</div>` : ''}
+            <!-- Mini price chart -->
+            <div id="posChart_${r.ticker}" style="height:120px;width:100%;margin-top:8px;border-top:1px solid #21262d;padding-top:4px"></div>
           </div>
         </div>
       </div>`;
   });
+  // Load mini charts for each position
+  loadPositionMiniCharts(results);
+}
+
+// ── Position mini charts ──────────────────────────────────────────────────────
+const _posCharts = {};
+
+async function loadPositionMiniCharts(results) {
+  for (const r of results) {
+    const divId = `posChart_${r.ticker}`;
+    const div = document.getElementById(divId);
+    if (!div) continue;
+    if (_posCharts[r.ticker]) { try { _posCharts[r.ticker].remove(); } catch(e) {} delete _posCharts[r.ticker]; }
+    try {
+      const res = await fetch(`/api/chart/enriched/${r.ticker}?days=90`).then(x => x.json());
+      if (!res.ok || !res.candles || !res.candles.length) continue;
+      const LWC   = LightweightCharts;
+      const posWidth = div.parentElement.clientWidth || window.innerWidth / 3 - 20;
+      const chart = LWC.createChart(div, {
+        layout:    { background: { color: 'transparent' }, textColor: '#8b949e' },
+        grid:      { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+        rightPriceScale: { borderColor: '#30363d' },
+        timeScale: { borderColor: '#30363d', timeVisible: false },
+        crosshair: { mode: LWC.CrosshairMode.Normal },
+        handleScroll: false, handleScale: false,
+        height: 120, width: posWidth,
+      });
+      _posCharts[r.ticker] = chart;
+
+      const cs = chart.addCandlestickSeries({
+        upColor: '#3fb950', downColor: '#f85149',
+        borderUpColor: '#3fb950', borderDownColor: '#f85149',
+        wickUpColor: '#3fb950', wickDownColor: '#f85149',
+      });
+      cs.setData(res.candles);
+
+      // Volume (subtle)
+      const vs = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
+      chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.88, bottom: 0 }, drawTicks: false, borderVisible: false });
+      vs.setData(res.volume);
+
+      // Entry / Stop / Target lines
+      if (r.buy_price)  cs.createPriceLine({ price: Number(r.buy_price),  color: '#00d4ff', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Entry' });
+      if (r.stop_loss)  cs.createPriceLine({ price: Number(r.stop_loss),  color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop'  });
+      if (r.target)     cs.createPriceLine({ price: Number(r.target),     color: '#3fb950', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Target'});
+
+      new ResizeObserver(() => {
+        const w = div.parentElement.clientWidth || window.innerWidth / 3 - 20;
+        if (_posCharts[r.ticker]) _posCharts[r.ticker].applyOptions({ width: w });
+      }).observe(div.parentElement);
+    } catch(e) {
+      console.error(`loadPositionMiniCharts(${r.ticker}) error:`, e);
+    }
+  }
 }
 </script>
 {% endblock %}

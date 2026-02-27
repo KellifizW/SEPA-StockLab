@@ -132,6 +132,41 @@
     </div>
   </div>
 
+  <!-- 指數 K 線 Index Charts -->
+  <div class="row g-3 mt-3" id="indexChartsRow" style="display:none">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-bar-chart-line me-2"></i>指數 K 線 Index Charts (90D)</span>
+          <div class="d-flex gap-3 small" style="color:#8b949e">
+            <span><span style="display:inline-block;width:12px;height:2px;background:#58a6ff;vertical-align:middle"></span> SMA50</span>
+            <span><span style="display:inline-block;width:12px;height:2px;background:#f85149;vertical-align:middle"></span> SMA200</span>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div class="row g-0">
+            <div class="col-12 col-md-6" style="border-bottom:1px solid #21262d">
+              <div class="px-3 pt-2 text-muted small">SPY &mdash; S&amp;P 500</div>
+              <div id="lwcSpyChart" style="height:200px;width:100%"></div>
+            </div>
+            <div class="col-12 col-md-6" style="border-left:1px solid #21262d;border-bottom:1px solid #21262d">
+              <div class="px-3 pt-2 text-muted small">QQQ &mdash; NASDAQ 100</div>
+              <div id="lwcQqqChart" style="height:200px;width:100%"></div>
+            </div>
+            <div class="col-12 col-md-6">
+              <div class="px-3 pt-2 text-muted small">IWM &mdash; Russell 2000</div>
+              <div id="lwcIwmChart" style="height:200px;width:100%"></div>
+            </div>
+            <div class="col-12 col-md-6" style="border-left:1px solid #21262d">
+              <div class="px-3 pt-2 text-muted small">DIA &mdash; Dow Jones</div>
+              <div id="lwcDiaChart" style="height:200px;width:100%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Market Regime History -->
   <div class="row g-3 mt-3">
     <div class="col-12">
@@ -141,6 +176,11 @@
           <div id="historyLoading" class="p-4 text-center text-muted">
             <div class="spinner-border spinner-border-sm text-info"></div>
             <div class="small mt-2">Loading regime history…</div>
+          </div>
+          <!-- 市場廣度趨勢圖 Breadth & NH/NL Trend Chart -->
+          <div id="breadthChartWrap" style="display:none;border-bottom:1px solid #21262d;background:#0d1117;padding:12px 14px 4px">
+            <div class="small text-muted mb-1">市場廣度與新高/新低趨勢 Breadth &amp; NH/NL Trend (Last 30 days)</div>
+            <div style="position:relative;height:130px"><canvas id="breadthChart"></canvas></div>
           </div>
           <div id="historyTable" style="display:none">
             <div class="table-responsive">
@@ -359,6 +399,7 @@ function renderMarket(d) {
 
   document.getElementById('result').classList.remove('d-none');
   loadMarketHistory();
+  loadIndexCharts();
 }
 
 async function loadMarketHistory() {
@@ -401,11 +442,105 @@ async function loadMarketHistory() {
     document.getElementById('historyBody').innerHTML = html;
     document.getElementById('historyLoading').style.display = 'none';
     document.getElementById('historyTable').style.display = 'block';
+
+    // Breadth & NH/NL trend chart (Chart.js)
+    const bcRows  = [...rows].reverse();
+    const bcDates = bcRows.map(r => r.env_date);
+    const bcBreadth = bcRows.map(r => r.breadth_pct);
+    const bcNhNl    = bcRows.map(r => r.nh_nl_ratio);
+    const bcDist    = bcRows.map(r => r.distribution_days);
+    const bcWrap   = document.getElementById('breadthChartWrap');
+    const bcCanvas = document.getElementById('breadthChart');
+    if (bcWrap && bcCanvas) {
+      if (bcCanvas._chart) bcCanvas._chart.destroy();
+      bcCanvas._chart = new Chart(bcCanvas, {
+        type: 'line',
+        data: {
+          labels: bcDates,
+          datasets: [
+            { label: 'Breadth %', data: bcBreadth, borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.1)',
+              borderWidth: 2, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+            { label: 'NH/NL %',  data: bcNhNl,   borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.08)',
+              borderWidth: 2, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+            { label: 'Dist Days', data: bcDist,  borderColor: '#f85149',  backgroundColor: 'rgba(248,81,73,0.3)',
+              type: 'bar', yAxisID: 'y1' },
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { labels: { color: '#8b949e', usePointStyle: true, boxWidth: 12 } } },
+          scales: {
+            x:  { grid: { color: '#21262d' }, ticks: { color: '#8b949e', maxTicksLimit: 10 } },
+            y:  { type: 'linear', position: 'left',  min: 0, max: 100, grid: { color: '#21262d' }, ticks: { color: '#8b949e' } },
+            y1: { type: 'linear', position: 'right', min: 0, grid: { drawOnChartArea: false },      ticks: { color: '#8b949e' } },
+          },
+        },
+      });
+      bcWrap.style.display = 'block';
+    }
   } catch (e) {
     console.error('Error loading market history:', e);
     document.getElementById('historyLoading').style.display = 'none';
     document.getElementById('historyEmpty').style.display = 'block';
   }
+}
+
+// ── Index Mini Charts ─────────────────────────────────────────────────────────
+const _mktCharts = {};
+
+async function _buildMiniChart(divId, ticker) {
+  const div = document.getElementById(divId);
+  if (!div) return;
+  if (_mktCharts[divId]) { try { _mktCharts[divId].remove(); } catch(e) {} delete _mktCharts[divId]; }
+  try {
+    const res = await fetch(`/api/chart/enriched/${ticker}?days=90`).then(x => x.json());
+    if (!res.ok || !res.candles || !res.candles.length) return;
+    const LWC   = LightweightCharts;
+    const containerWidth = div.parentElement.clientWidth || window.innerWidth / 2 - 20;
+    const chart = LWC.createChart(div, {
+      layout:    { background: { color: '#0d1117' }, textColor: '#8b949e' },
+      grid:      { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: false },
+      crosshair: { mode: LWC.CrosshairMode.Normal },
+      handleScroll: true, handleScale: true,
+      height: 200, width: containerWidth,
+    });
+    _mktCharts[divId] = chart;
+
+    const cs = chart.addCandlestickSeries({
+      upColor: '#3fb950', downColor: '#f85149',
+      borderUpColor: '#3fb950', borderDownColor: '#f85149',
+      wickUpColor: '#3fb950', wickDownColor: '#f85149',
+    });
+    cs.setData(res.candles);
+
+    const vs = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
+    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.87, bottom: 0 }, drawTicks: false, borderVisible: false });
+    vs.setData(res.volume);
+
+    if (res.sma50  && res.sma50.length)  chart.addLineSeries({ color: 'rgba(88,166,255,0.75)',  lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(res.sma50);
+    if (res.sma200 && res.sma200.length) chart.addLineSeries({ color: 'rgba(248,81,73,0.75)',   lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(res.sma200);
+
+    new ResizeObserver(() => {
+      const w = div.parentElement.clientWidth || window.innerWidth / 2 - 20;
+      if (_mktCharts[divId]) _mktCharts[divId].applyOptions({ width: w });
+    }).observe(div.parentElement);
+  } catch(e) {
+    console.error(`_buildMiniChart(${ticker}) error:`, e);
+  }
+}
+
+async function loadIndexCharts() {
+  const row = document.getElementById('indexChartsRow');
+  if (row) row.style.display = '';
+  await Promise.allSettled([
+    _buildMiniChart('lwcSpyChart', 'SPY'),
+    _buildMiniChart('lwcQqqChart', 'QQQ'),
+    _buildMiniChart('lwcIwmChart', 'IWM'),
+    _buildMiniChart('lwcDiaChart', 'DIA'),
+  ]);
 }
 
 window.addEventListener('DOMContentLoaded', () => {

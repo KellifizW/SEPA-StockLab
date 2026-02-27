@@ -62,6 +62,8 @@
     ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- TradingView Lightweight Charts — professional K-line candlestick rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -81,6 +83,7 @@
         <li class="nav-item"><a class="nav-link {% if request.path=='/positions' %}active{% endif %}" href="/positions"><i class="bi bi-briefcase me-1"></i>Positions</a></li>
         <li class="nav-item"><a class="nav-link {% if request.path=='/market' %}active{% endif %}" href="/market"><i class="bi bi-bar-chart-line me-1"></i>Market</a></li>
         <li class="nav-item"><a class="nav-link {% if request.path=='/vcp' %}active{% endif %}" href="/vcp"><i class="bi bi-activity me-1"></i>VCP</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/backtest' %}active{% endif %}" href="/backtest"><i class="bi bi-clock-history me-1"></i>Backtest</a></li>
       </ul>
       <ul class="navbar-nav gap-1">
         <li class="nav-item"><a class="nav-link" href="/guide"><i class="bi bi-book me-1"></i>教學 Guide</a></li>

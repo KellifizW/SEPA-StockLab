@@ -1,0 +1,632 @@
+{% extends "base.html" %}
+{% block title %}VCP Backtest — SEPA StockLab{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4 px-4">
+
+  <!-- ── Page header ──────────────────────────────────────────────────────── -->
+  <div class="d-flex align-items-start gap-3 mb-4">
+    <i class="bi bi-clock-history text-info" style="font-size:2rem;line-height:1.2"></i>
+    <div>
+      <h2 class="fw-bold mb-0">VCP 回測驗證
+        <span class="text-muted fs-5 fw-normal ms-2">Historical Backtest</span>
+      </h2>
+      <p class="text-muted mb-0 small mt-1">
+        回放 2 年歷史數據，逐步驗證 VCP 偵測系統能否在爆發前識別這支股票
+        <span class="text-muted fst-italic"> — walk-forward simulation of VCP signals vs actual outcomes</span>
+      </p>
+    </div>
+  </div>
+
+  <!-- ── How it works (collapsible) ─────────────────────────────────────── -->
+  <div class="mb-3">
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+            data-bs-toggle="collapse" data-bs-target="#btHowIt">
+      <i class="bi bi-info-circle me-1"></i>原理說明 How it works
+    </button>
+    <div class="collapse mt-2" id="btHowIt">
+      <div class="card card-body border-secondary small text-muted">
+        <strong class="text-light mb-1">無未來數據偏差 (Zero look-ahead bias)</strong>
+        <ol class="mb-0 ps-3">
+          <li>每隔 5 個交易日，以截至當日的歷史數據為基礎，執行一次 VCP 偵測。</li>
+          <li>若 VCP 分數 ≥ 設定閾值並有效 Pivot，記錄為「信號」。</li>
+          <li>在信號後的 20 個交易日內，尋找首次 <em>收市價突破 Pivot</em> 的日期（突破確認）。</li>
+          <li>從突破日起量度 +10d / +20d / +60d 的實際回報，以及最大升幅 / 最大跌幅。</li>
+          <li>勝出標準：60 日漲幅 ≥ 15%（WIN），≥ 5%（SMALL WIN）。</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Input panel ──────────────────────────────────────────────────────── -->
+  <div class="card border-secondary mb-4">
+    <div class="card-body">
+      <div class="row g-3 align-items-end">
+
+        <div class="col-sm-3">
+          <label class="form-label text-muted small mb-1">股票代碼 Ticker</label>
+          <input id="btTicker" type="text" class="form-control form-control-lg fw-bold"
+                 placeholder="e.g. NVDA" style="text-transform:uppercase;letter-spacing:2px"
+                 onkeydown="if(event.key==='Enter') startBacktest()">
+        </div>
+
+        <div class="col-sm-3">
+          <label class="form-label text-muted small mb-1">
+            最低 VCP 分數 Min Score&nbsp;
+            <strong id="scoreDisplay" class="text-info">35</strong>
+          </label>
+          <input id="btMinScore" type="range" class="form-range" min="20" max="80" step="5" value="35"
+                 oninput="document.getElementById('scoreDisplay').textContent=this.value">
+          <div class="d-flex justify-content-between" style="font-size:.68rem;color:#6e7681">
+            <span>20 寬鬆</span><span>50 正常</span><span>80 嚴格</span>
+          </div>
+        </div>
+
+        <div class="col-sm-3">
+          <label class="form-label text-muted small mb-1">
+            量度週期 Outcome Days&nbsp;
+            <strong id="odDisplay" class="text-info">60</strong>
+          </label>
+          <input id="btOutcomeDays" type="range" class="form-range" min="20" max="120" step="10" value="60"
+                 oninput="document.getElementById('odDisplay').textContent=this.value">
+          <div class="d-flex justify-content-between" style="font-size:.68rem;color:#6e7681">
+            <span>20d</span><span>60d</span><span>120d</span>
+          </div>
+        </div>
+
+        <div class="col-sm-3">
+          <button id="btnRunBt" class="btn btn-info btn-lg w-100 fw-bold" onclick="startBacktest()">
+            <i class="bi bi-play-circle-fill me-1"></i>Run Backtest
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Quick-pick presets (known Minervini "superperformers") -->
+      <div class="mt-3 pt-2 border-top border-secondary d-flex flex-wrap align-items-center gap-2">
+        <span class="text-muted small">快速測試已知爆發股:</span>
+        {% for sym in ["NVDA","META","SMCI","CELH","AXON","ENPH","ANET","CRWD","TTD","DKNG","MELI","TSLA"] %}
+        <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="quickPick('{{sym}}')">{{sym}}</button>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Progress bar ────────────────────────────────────────────────────── -->
+  <div id="btProgress" class="d-none mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-1">
+      <span id="btProgressMsg" class="text-info small"><i class="bi bi-hourglass-split me-1"></i>Starting…</span>
+      <span id="btProgressPct" class="text-muted small">0%</span>
+    </div>
+    <div class="progress" style="height:8px;border-radius:4px">
+      <div id="btProgressBar"
+           class="progress-bar bg-info progress-bar-striped progress-bar-animated"
+           style="width:0%;transition:width .4s ease"></div>
+    </div>
+  </div>
+
+  <!-- ── Error banner ────────────────────────────────────────────────────── -->
+  <div id="btError" class="alert alert-danger d-none" role="alert">
+    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+    <span id="btErrorMsg"></span>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       RESULTS  (hidden until backtest completes)
+       ══════════════════════════════════════════════════════════════════════ -->
+  <div id="btResults" class="d-none">
+
+    <!-- Summary cards -->
+    <div class="row g-3 mb-3" id="btSummaryCards"></div>
+
+    <!-- Verdict -->
+    <div id="btVerdict" class="alert alert-secondary mb-4 fw-semibold"></div>
+
+    <!-- ── Price chart + signal annotations ──────────────────────────── -->
+    <div class="card border-secondary mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center py-2 px-3">
+        <span class="fw-semibold small">
+          <i class="bi bi-graph-up-arrow text-info me-1"></i>
+          K 線圖 + VCP 信號標記
+          <span class="text-muted ms-2" style="font-weight:400">
+            ↑ 箭頭 = VCP 信號 &nbsp;● = 突破結果
+          </span>
+        </span>
+        <div class="btn-group btn-group-sm" id="btRangeBtns">
+          <button class="btn btn-outline-secondary" onclick="setBtRange(90,this)">3M</button>
+          <button class="btn btn-outline-secondary active" onclick="setBtRange(365,this)">1Y</button>
+          <button class="btn btn-outline-secondary" onclick="setBtRange(730,this)">2Y</button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div id="btChartWrap" style="width:100%;overflow:hidden">
+          <div id="btChartDiv" style="width:100%;height:460px"></div>
+        </div>
+      </div>
+      <!-- Colour legend -->
+      <div class="card-footer bg-transparent border-secondary py-2 px-3">
+        <div class="d-flex flex-wrap gap-3" style="font-size:.75rem;color:#8b949e">
+          <span><i class="bi bi-arrow-up-circle text-success me-1"></i>A/B 級 VCP</span>
+          <span><i class="bi bi-arrow-up-circle text-warning me-1"></i>C/D 級 VCP</span>
+          <span style="color:#3fb950">● WIN (+15% @60d)</span>
+          <span style="color:#58a6ff">● SMALL WIN (+5%)</span>
+          <span style="color:#8b949e">● FLAT</span>
+          <span style="color:#f85149">● LOSS</span>
+          <span style="margin-left:auto">
+            <span style="display:inline-block;width:24px;height:2px;background:#f0a500;vertical-align:middle"></span> SMA50
+            &nbsp;
+            <span style="display:inline-block;width:24px;height:2px;background:#8957e5;vertical-align:middle"></span> SMA200
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Equity curve ───────────────────────────────────────────────── -->
+    <div class="card border-secondary mb-4">
+      <div class="card-header py-2 px-3">
+        <span class="fw-semibold small">
+          <i class="bi bi-currency-dollar text-success me-1"></i>
+          資金增長曲線 Equity Curve
+          <span class="text-muted fw-normal ms-1">(每次突破的 60d 回報複利計算，起始 $100)</span>
+        </span>
+      </div>
+      <div class="card-body p-0">
+        <div id="btEquityWrap" style="width:100%;overflow:hidden">
+          <div id="btEquityDiv" style="width:100%;height:200px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Signal details table ───────────────────────────────────────── -->
+    <div class="card border-secondary">
+      <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
+        <span class="fw-semibold small">
+          <i class="bi bi-table text-warning me-1"></i>
+          所有 VCP 信號明細 All Signals
+        </span>
+        <span id="btSignalCount" class="badge bg-secondary"></span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive" style="max-height:520px;overflow-y:auto">
+          <table class="table table-sm table-dark table-hover mb-0 small align-middle">
+            <thead class="sticky-top" style="background:#161b22;z-index:2">
+              <tr class="text-muted">
+                <th class="ps-3">信號日</th>
+                <th>評分</th>
+                <th>等級</th>
+                <th>T-次</th>
+                <th>基礎深度</th>
+                <th>基礎週數</th>
+                <th>信號收市</th>
+                <th class="text-info">Pivot</th>
+                <th>突破日</th>
+                <th>突破價</th>
+                <th>+10d</th>
+                <th>+20d</th>
+                <th>+60d</th>
+                <th>最大升幅</th>
+                <th>結果</th>
+              </tr>
+            </thead>
+            <tbody id="btSignalBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /btResults -->
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   Backtest page — JavaScript
+   ══════════════════════════════════════════════════════════════════════ */
+
+let _btChart        = null;
+let _btCandles      = null;
+let _btEquityChart  = null;
+let _currentTicker  = "";
+let _allSignals     = [];
+let _btPollTimer    = null;
+let _currentRangeDays = 365;
+
+// ── Presets ────────────────────────────────────────────────────────────────
+function quickPick(sym) {
+  document.getElementById("btTicker").value = sym;
+  document.getElementById("btTicker").focus();
+}
+
+// ── Start backtest ─────────────────────────────────────────────────────────
+function startBacktest() {
+  const ticker   = document.getElementById("btTicker").value.trim().toUpperCase();
+  const minScore = parseInt(document.getElementById("btMinScore").value, 10);
+  const outDays  = parseInt(document.getElementById("btOutcomeDays").value, 10);
+
+  if (!ticker) {
+    showBtError("請輸入股票代碼 (please enter a ticker symbol)");
+    return;
+  }
+
+  _currentTicker = ticker;
+  hideBtError();
+  document.getElementById("btResults").classList.add("d-none");
+  document.getElementById("btnRunBt").disabled = true;
+  if (_btPollTimer) clearInterval(_btPollTimer);
+  
+  // Show progress immediately with visible UI
+  showProgress(2, "正在提交請求 Submitting…");
+  showToast(`正在為 ${ticker} 運行回測… Backtest starting…`, "info", 100);
+
+  fetch("/api/backtest/run", {
+    method:  "POST",
+    headers: {"Content-Type": "application/json"},
+    body:    JSON.stringify({ticker, min_vcp_score: minScore, outcome_days: outDays}),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (!d.ok) { showBtError(d.error || "Server error"); return; }
+    pollBtJob(d.job_id);
+  })
+  .catch(e => showBtError(String(e)));
+}
+
+// ── Poll job ───────────────────────────────────────────────────────────────
+function pollBtJob(jid) {
+  console.log(`[Backtest] Polling job ${jid}`);
+  showProgress(5, "正在等待伺服器 Waiting for server…");
+  
+  _btPollTimer = setInterval(() => {
+    fetch(`/api/backtest/status/${jid}`)
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        stopPoll();
+        showBtError(d.error || "Job status unknown");
+        return;
+      }
+      
+      showProgress(d.pct || 0, d.msg || "");
+      console.log(`[Backtest] ${d.pct}% - ${d.msg}`);
+
+      if (d.status === "done") {
+        stopPoll();
+        hideProgress();
+        document.getElementById("btnRunBt").disabled = false;
+        showToast(`✅ ${_currentTicker} 回測完成！ Backtest complete!`, "success", 5);
+        renderBacktestResults(d.result);
+      } else if (d.status === "error") {
+        stopPoll();
+        hideProgress();
+        document.getElementById("btnRunBt").disabled = false;
+        showBtError(`❌ Backtest error:\\n${d.error || "unknown"}`);
+        showToast(`❌ Backtest failed for ${_currentTicker}`, "danger", 5);
+      }
+    })
+    .catch(e => {
+      console.error("[Backtest] Error: " + String(e));
+      stopPoll();
+      hideProgress();
+      document.getElementById("btnRunBt").disabled = false;
+      showBtError("Network error: " + String(e));
+    });
+  }, 1000);
+}
+
+function stopPoll() {
+  if (_btPollTimer) { clearInterval(_btPollTimer); _btPollTimer = null; }
+  document.getElementById("btnRunBt").disabled = false;
+}
+
+// ── Render results ─────────────────────────────────────────────────────────
+function renderBacktestResults(data) {
+  if (!data || !data.ok) {
+    showBtError((data && data.error) || "Backtest returned an error");
+    return;
+  }
+
+  _allSignals = data.signals || [];
+  const s     = data.summary || {};
+
+  // ── Summary cards ────────────────────────────────────────────────────
+  const gradeStr = Object.entries(s.grade_distribution || {})
+    .sort((a,b)=>a[0].localeCompare(b[0]))
+    .map(([g,n]) => `<span class="badge" style="background:${gradeColor(g)}">${g}:${n}</span>`)
+    .join(" ");
+
+  const cards = [
+    { icon: "bi-search",          label: "偵測信號",          value: s.total_signals ?? 0,     sub: `${s.no_breakouts ?? 0} 無突破`,     col: "text-info"    },
+    { icon: "bi-lightning-charge",label: "突破確認 Breakouts", value: s.breakouts ?? 0,          sub: `共 ${s.total_signals ?? 0} 信號`,   col: "text-warning" },
+    { icon: "bi-trophy",          label: "勝率 Win Rate",      value: s.win_rate_pct != null ? s.win_rate_pct + "%" : "N/A",
+                                                                sub: "WIN/SMALL_WIN @60d", col: (s.win_rate_pct || 0) >= 50 ? "text-success" : "text-danger" },
+    { icon: "bi-graph-up",        label: "平均盈利 @60d",      value: s.avg_gain_60d != null ? (s.avg_gain_60d >= 0 ? "+" : "") + s.avg_gain_60d + "%" : "N/A",
+                                                                sub: "from breakout price", col: (s.avg_gain_60d || 0) >= 0 ? "text-success" : "text-danger" },
+    { icon: "bi-star",            label: "最大升幅 Best",       value: s.best_gain_pct != null ? "+" + s.best_gain_pct + "%" : "N/A",
+                                                                sub: "intraday max",        col: "text-success" },
+    { icon: "bi-layers",          label: "等級分佈 Grades",     value: gradeStr || "N/A",
+                                                                sub: `平均 ${s.avg_days_to_breakout ?? "?"} 日突破`, col: "" },
+  ];
+  document.getElementById("btSummaryCards").innerHTML = cards.map(c => `
+    <div class="col-6 col-sm-4 col-lg-2">
+      <div class="card border-secondary h-100 text-center py-3 px-2">
+        <div class="fs-3 fw-bold ${c.col} mb-1">${c.value}</div>
+        <div class="small text-light mb-1">${c.label}</div>
+        <div style="font-size:.7rem;color:#6e7681">${c.sub}</div>
+      </div>
+    </div>`).join("");
+
+  // ── Verdict ───────────────────────────────────────────────────────────
+  const verdictEl = document.getElementById("btVerdict");
+  verdictEl.textContent = s.verdict || "";
+  verdictEl.className   = "alert mb-4 fw-semibold " +
+    ((s.verdict || "").startsWith("✅") ? "alert-success" :
+     (s.verdict || "").startsWith("❌") ? "alert-danger" : "alert-secondary");
+
+  // ── Period info ───────────────────────────────────────────────────────
+  document.title = `Backtest ${data.ticker} — SEPA StockLab`;
+
+  // ── Table ─────────────────────────────────────────────────────────────
+  renderSignalTable(_allSignals);
+  document.getElementById("btSignalCount").textContent = `${_allSignals.length} signals`;
+
+  // ── Charts (slight delay for DOM) ─────────────────────────────────────
+  document.getElementById("btResults").classList.remove("d-none");
+  setTimeout(() => {
+    buildBtPriceChart(_currentTicker, _currentRangeDays);
+    buildEquityChart(data.equity_curve || []);
+  }, 50);
+}
+
+// ── Signal table ───────────────────────────────────────────────────────────
+function renderSignalTable(signals) {
+  const tbody = document.getElementById("btSignalBody");
+  if (!signals.length) {
+    tbody.innerHTML = `<tr><td colspan="15" class="text-center text-muted py-5">
+      <i class="bi bi-inbox fs-4 d-block mb-2"></i>No VCP signals detected with current settings</td></tr>`;
+    return;
+  }
+
+  const outcomeStyle = {
+    WIN:         { cls: "text-success fw-bold", icon: "bi-check-circle-fill" },
+    SMALL_WIN:   { cls: "text-success",          icon: "bi-check-circle"      },
+    FLAT:        { cls: "text-secondary",        icon: "bi-dash-circle"       },
+    LOSS:        { cls: "text-danger",           icon: "bi-x-circle-fill"     },
+    NO_BREAKOUT: { cls: "text-muted fst-italic", icon: "bi-slash-circle"      },
+  };
+
+  tbody.innerHTML = signals.map(s => {
+    const os  = outcomeStyle[s.outcome] || outcomeStyle.FLAT;
+    const gc  = gradeColor(s.vcp_grade);
+    const g   = v => v == null ? `<span class="text-muted">—</span>`
+                  : v >= 0    ? `<span class="text-success">+${v.toFixed(1)}%</span>`
+                              : `<span class="text-danger">${v.toFixed(1)}%</span>`;
+    const boPct = s.breakout_price && s.pivot
+      ? ((s.breakout_price - s.pivot) / s.pivot * 100)
+      : null;
+    return `<tr>
+      <td class="ps-3 text-muted">${s.signal_date}</td>
+      <td><span class="badge rounded-pill" style="background:#21262d;color:#c9d1d9">${s.vcp_score}</span></td>
+      <td><span class="badge fw-bold" style="background:${gc};color:#0d1117">${s.vcp_grade}</span></td>
+      <td class="text-light">T-${s.t_count ?? '?'}</td>
+      <td>${s.base_depth_pct != null ? s.base_depth_pct.toFixed(1)+'%' : '—'}</td>
+      <td>${s.base_weeks != null ? s.base_weeks+'w' : '—'}</td>
+      <td>$${s.signal_close}</td>
+      <td class="fw-bold" style="color:#64ffda">$${s.pivot}</td>
+      <td class="text-muted">${s.breakout_date || '—'}</td>
+      <td>${s.breakout_price ? '$'+s.breakout_price : '—'}</td>
+      <td>${g(s.gain_10d_pct)}</td>
+      <td>${g(s.gain_20d_pct)}</td>
+      <td>${g(s.gain_60d_pct)}</td>
+      <td>${g(s.max_gain_pct)}</td>
+      <td class="${os.cls}"><i class="bi ${os.icon} me-1"></i>${s.outcome.replace('_',' ')}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ── Price chart with marker annotations ───────────────────────────────────
+function buildBtPriceChart(ticker, days) {
+  _currentRangeDays = days;
+  const wrap = document.getElementById("btChartWrap");
+  const div  = document.getElementById("btChartDiv");
+  const w    = wrap.parentElement.clientWidth || window.innerWidth - 48;
+
+  if (_btChart) { _btChart.remove(); _btChart = null; _btCandles = null; }
+
+  _btChart = LightweightCharts.createChart(div, {
+    width:  w,
+    height: 460,
+    layout:    { background: { color: "#0d1117" }, textColor: "#c9d1d9" },
+    grid:      { vertLines: { color: "#21262d"  }, horzLines: { color: "#21262d"  } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: "#30363d" },
+    timeScale:       { borderColor: "#30363d", timeVisible: true, secondsVisible: false },
+  });
+
+  _btCandles = _btChart.addCandlestickSeries({
+    upColor:        "#3fb950", downColor:        "#f85149",
+    borderUpColor:  "#3fb950", borderDownColor:  "#f85149",
+    wickUpColor:    "#3fb950", wickDownColor:    "#f85149",
+  });
+
+  const sma50s  = _btChart.addLineSeries({ color: "#f0a500", lineWidth: 1, title: "SMA50"  });
+  const sma200s = _btChart.addLineSeries({ color: "#8957e5", lineWidth: 1, title: "SMA200" });
+
+  const apiDays = days <= 90 ? 120 : days <= 365 ? 400 : 750;
+
+  fetch(`/api/chart/enriched/${ticker}?days=${apiDays}`)
+  .then(r => r.json())
+  .then(d => {
+    if (!d.ok) return;
+    _btCandles.setData(d.candles || []);
+    sma50s.setData(d.sma50 || []);
+    sma200s.setData(d.sma200 || []);
+
+    // Build markers from signals
+    const markers = [];
+    for (const s of _allSignals) {
+      const sigTs = dateStrToTs(s.signal_date);
+      if (sigTs) {
+        const isHighGrade = ["A","B"].includes(s.vcp_grade);
+        markers.push({
+          time:     sigTs,
+          position: "belowBar",
+          color:    isHighGrade ? "#3fb950" : "#f0a500",
+          shape:    "arrowUp",
+          text:     `${s.vcp_grade}(${s.vcp_score})`,
+        });
+      }
+      if (s.breakout_date) {
+        const boTs = dateStrToTs(s.breakout_date);
+        if (boTs) {
+          const clr = s.outcome === "WIN"       ? "#3fb950"
+                    : s.outcome === "SMALL_WIN"  ? "#58a6ff"
+                    : s.outcome === "LOSS"       ? "#f85149"
+                    : "#8b949e";
+          markers.push({
+            time:     boTs,
+            position: "aboveBar",
+            color:    clr,
+            shape:    "circle",
+            text:     s.gain_60d_pct != null
+              ? (s.gain_60d_pct >= 0 ? "+" : "") + s.gain_60d_pct.toFixed(1) + "%"
+              : s.outcome,
+          });
+        }
+      }
+    }
+    markers.sort((a, b) => a.time - b.time);
+    _btCandles.setMarkers(markers);
+    _btChart.timeScale().scrollToPosition(0, false);
+  })
+  .catch(console.error);
+
+  // Responsive
+  new ResizeObserver(entries => {
+    for (const e of entries) {
+      if (e.contentRect.width > 100 && _btChart)
+        _btChart.applyOptions({ width: e.contentRect.width });
+    }
+  }).observe(wrap.parentElement);
+}
+
+// ── Set chart range ────────────────────────────────────────────────────────
+function setBtRange(days, btn) {
+  document.querySelectorAll("#btRangeBtns .btn")
+    .forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+  if (_currentTicker) buildBtPriceChart(_currentTicker, days);
+}
+
+// ── Equity curve chart ─────────────────────────────────────────────────────
+function buildEquityChart(curveData) {
+  const wrap = document.getElementById("btEquityWrap");
+  const div  = document.getElementById("btEquityDiv");
+  const w    = wrap.parentElement.clientWidth || window.innerWidth - 48;
+
+  if (_btEquityChart) { _btEquityChart.remove(); _btEquityChart = null; }
+
+  if (!curveData || curveData.length < 2) {
+    div.innerHTML = `<div class="text-muted text-center small py-5">
+      <i class="bi bi-emoji-neutral d-block mb-1 fs-4"></i>
+      No confirmed breakouts — equity curve unavailable</div>`;
+    return;
+  }
+
+  _btEquityChart = LightweightCharts.createChart(div, {
+    width: w, height: 200,
+    layout:    { background: { color: "#0d1117" }, textColor: "#c9d1d9" },
+    grid:      { vertLines: { color: "#21262d"  }, horzLines: { color: "#21262d"  } },
+    rightPriceScale: { borderColor: "#30363d" },
+    timeScale:       { borderColor: "#30363d", timeVisible: false },
+  });
+
+  const equitySeries = _btEquityChart.addAreaSeries({
+    lineColor:    "#3fb950",
+    topColor:     "rgba(63,185,80,0.35)",
+    bottomColor:  "rgba(63,185,80,0.0)",
+    lineWidth:    2,
+    title:        "Equity $",
+  });
+
+  const pts = curveData
+    .map(p => ({ time: dateStrToTs(p.date), value: parseFloat(p.value) }))
+    .filter(p => p.time != null && !isNaN(p.value))
+    .sort((a, b) => a.time - b.time);
+
+  equitySeries.setData(pts);
+
+  new ResizeObserver(entries => {
+    for (const e of entries) {
+      if (e.contentRect.width > 100 && _btEquityChart)
+        _btEquityChart.applyOptions({ width: e.contentRect.width });
+    }
+  }).observe(wrap.parentElement);
+}
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+function dateStrToTs(s) {
+  if (!s) return null;
+  const d = new Date(s + "T12:00:00Z");
+  return isNaN(d.getTime()) ? null : Math.floor(d.getTime() / 1000);
+}
+
+function gradeColor(g) {
+  return g === "A" ? "#3fb950"
+       : g === "B" ? "#d29922"
+       : g === "C" ? "#388bfd"
+                   : "#6e7681";
+}
+
+function showProgress(pct, msg) {
+  document.getElementById("btProgress").classList.remove("d-none");
+  document.getElementById("btProgressBar").style.width = pct + "%";
+  document.getElementById("btProgressPct").textContent = pct + "%";
+  document.getElementById("btProgressMsg").textContent = msg || "";
+}
+
+function hideProgress() {
+  document.getElementById("btProgress").classList.add("d-none");
+}
+
+function showBtError(msg) {
+  const el = document.getElementById("btError");
+  document.getElementById("btErrorMsg").textContent = msg;
+  el.classList.remove("d-none");
+  hideProgress();
+  document.getElementById("btnRunBt").disabled = false;
+}
+
+function hideBtError() {
+  document.getElementById("btError").classList.add("d-none");
+}
+
+// Show toast notifications
+function showToast(message, type = "info", duration = 5) {
+  const toastContainer = document.getElementById("toast-container") || document.body;
+  const alertType = type === "success" ? "success" : type === "danger" ? "danger" : "info";
+  const alertHtml = `
+    <div class="alert alert-${alertType} alert-dismissible fade show" role="alert" 
+         style="position:fixed;top:70px;right:20px;z-index:9999;min-width:300px;box-shadow:0 4px 12px rgba(0,0,0,0.3)">
+      ${message}
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>`;
+  toastContainer.insertAdjacentHTML("beforeend", alertHtml);
+  if (duration > 0) {
+    setTimeout(() => {
+      const alerts = toastContainer.querySelectorAll(".alert");
+      if (alerts.length) alerts[alerts.length - 1].remove();
+    }, duration * 1000);
+  }
+}
+
+// ── Auto-run from URL ?ticker=NVDA ────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  const t = new URLSearchParams(location.search).get("ticker");
+  if (t) {
+    document.getElementById("btTicker").value = t.toUpperCase();
+    startBacktest();
+  }
+});
+</script>
+{% endblock %}

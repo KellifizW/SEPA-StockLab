@@ -219,108 +219,156 @@ def _check_trend_context(df: pd.DataFrame) -> tuple:
                 notes.append(f"Price below {label}")
 
     ok = checks_passed >= 2  # At least above 2 of 3 SMAs
+
+    # C4: Stage 2 also requires proper SMA alignment: SMA50 > SMA150 > SMA200
+    def _get_sma(col: str) -> float | None:
+        period = int(col.split("_")[1])
+        if col in df.columns and not pd.isna(last.get(col)):
+            return float(last[col])
+        val = df["Close"].rolling(period).mean().iloc[-1]
+        return float(val) if not pd.isna(val) else None
+
+    sma50_v  = _get_sma("SMA_50")
+    sma150_v = _get_sma("SMA_150")
+    sma200_v = _get_sma("SMA_200")
+
+    alignment_ok = (
+        sma50_v is not None and sma150_v is not None and sma200_v is not None
+        and float(sma50_v) > float(sma150_v) > float(sma200_v)
+    )
+    if not alignment_ok:
+        notes.append("SMA alignment failed (need SMA50 > SMA150 > SMA200)")
+
+    # Require price above ALL 3 SMAs AND proper SMA bull alignment
+    ok = (checks_passed == 3) and alignment_ok
     return ok, notes
 
 
 def _find_base(df: pd.DataFrame) -> tuple:
     """
-    Find the start and end of the most recent consolidation base.
+    Find the most suitable consolidation base.
 
-    A base is defined as an extended period where;
-    - Price stays within a band around SMA50
-    - Daily ATR / range is not expanding dramatically
-    - Duration: at least VCP_MIN_BASE_WEEKS × 5 trading days
+    C6 fix: Prefer recent bases in the 6-26 week ideal range.
+    Penalises excessively long (>26 week) bases so META-style 60-week bases
+    don’t dominate; bias toward the most recent valid end date.
 
     Returns (start_idx, end_idx) into df.iloc, or (None, None).
     """
     min_base_days = int(C.VCP_MIN_BASE_WEEKS * 5)
     max_base_days = int(C.VCP_MAX_BASE_WEEKS * 5)
+    ideal_max_days = 26 * 5   # 26 weeks = 130 days (Minervini ideal)
     n = len(df)
 
-    # Work backwards from recent data
-    # Strategy: find local peak, then track the ensuing consolidation
-    # Use a rolling 20-day high/low band, look for contraction
-
-    # Find highest point in last 60 days as potential base start anchor
-    lookback = min(120, n)
-    recent = df.iloc[n - lookback:]
-
-    # Find the most recent significant high (within recent period)
-    roll_high = recent["High"].rolling(5).max()
-    roll_low  = recent["Low"].rolling(5).min()
-
-    # Look for the longest recent period where swing range is < 40% of price
     best_start, best_end = None, None
-    best_len = 0
 
     for end_i in range(n - 1, max(n - 1 - max_base_days, min_base_days), -1):
+        local_best_start = None
+        local_best_score = -1.0
+
         for start_i in range(max(0, end_i - max_base_days), end_i - min_base_days):
-            segment = df.iloc[start_i:end_i + 1]
+            segment  = df.iloc[start_i:end_i + 1]
             seg_high = segment["High"].max()
             seg_low  = segment["Low"].min()
             if seg_high == 0:
                 continue
             depth_pct = (seg_high - seg_low) / seg_high * 100
-            length = end_i - start_i + 1
+            length    = end_i - start_i + 1
 
-            if (C.VCP_MIN_BASE_DEPTH <= depth_pct <= C.VCP_MAX_BASE_DEPTH
-                    and length > best_len
+            if not (C.VCP_MIN_BASE_DEPTH <= depth_pct <= C.VCP_MAX_BASE_DEPTH
                     and length >= min_base_days):
-                best_start = start_i
-                best_end   = end_i
-                best_len   = length
+                continue
 
-        if best_len >= min_base_days:
-            break   # Found a good base, stop searching
+            # Prefer bases inside the ideal window; penalise excess length 2:1
+            overlong = max(0, length - ideal_max_days)
+            score    = length - overlong * 2
+
+            if score > local_best_score:
+                local_best_start = start_i
+                local_best_score = score
+
+        if local_best_start is not None:
+            best_start = local_best_start
+            best_end   = end_i
+            break   # Most-recent valid end_i found — stop searching
 
     return best_start, best_end
 
 
 def _find_contractions(base_df: pd.DataFrame) -> list:
     """
-    Identify successive price swing contractions within the base.
+    Identify successive price swing contractions within the base using
+    real swing high / swing low detection (C3 fix).
 
-    Divides the base into roughly equal thirds / quarters and measures
-    peak-to-trough range in each sub-period. Returns a list of dicts:
-      { "range_pct": float,  "vol_ratio": float }
+    A contraction is the range from a swing high down to the next swing low.
+    Each successive contraction should be smaller (T-1 > T-2 > T-3 …).
 
-    A valid VCP should show decreasing range_pct across contractions.
+    Returns a list of dicts:
+      { "range_pct": float, "vol_ratio": float, "seg_high": float, "seg_low": float }
     """
     n = len(base_df)
     if n < 20:
         return []
 
-    # Divide base into adaptive segments (3 or 4 parts depending on base length)
-    n_segments = 4 if n >= 60 else 3 if n >= 40 else 2
-    seg_size = n // n_segments
+    highs   = base_df["High"].values.astype(float)
+    lows    = base_df["Low"].values.astype(float)
+    avg_vol = float(base_df["Volume"].mean()) if "Volume" in base_df.columns else 1.0
 
-    contractions = []
-    avg_vol = base_df["Volume"].mean()
+    # Adaptive window: ~1/15 of base length, clamped 3–7
+    window = max(3, min(7, n // 15))
 
-    for i in range(n_segments):
-        start = i * seg_size
-        end   = (i + 1) * seg_size if i < n_segments - 1 else n
-        seg = base_df.iloc[start:end]
-        if len(seg) < 5:
-            continue
+    # Detect swing highs and swing lows
+    swing_highs: list = []   # (bar_index, price)
+    swing_lows:  list = []   # (bar_index, price)
 
-        seg_high = seg["High"].max()
-        seg_low  = seg["Low"].min()
-        if seg_high == 0:
-            continue
+    for i in range(window, n - window):
+        local_high = float(np.max(highs[i - window: i + window + 1]))
+        local_low  = float(np.min(lows[i  - window: i + window + 1]))
+        if highs[i] >= local_high:
+            swing_highs.append((i, float(highs[i])))
+        if lows[i] <= local_low:
+            swing_lows.append((i, float(lows[i])))
 
-        range_pct = (seg_high - seg_low) / seg_high * 100
-        seg_vol   = seg["Volume"].mean()
-        vol_ratio = seg_vol / avg_vol if avg_vol > 0 else 1.0
+    # Build contraction sequence: each SH paired with the first SL that follows it
+    contractions: list = []
+    used_low_idx = -1
 
-        contractions.append({
-            "range_pct": round(float(range_pct), 1),
-            "vol_ratio": round(float(vol_ratio), 2),
-            "seg_high":  round(float(seg_high), 2),
-            "seg_low":   round(float(seg_low), 2),
+    for sh_idx, sh_price in swing_highs:
+        for sl_idx, sl_price in swing_lows:
+            if sl_idx > sh_idx and sl_idx > used_low_idx:
+                range_pct = (sh_price - sl_price) / sh_price * 100.0 if sh_price > 0 else 0.0
+                seg_vol   = (
+                    float(base_df.iloc[sh_idx: sl_idx + 1]["Volume"].mean())
+                    if "Volume" in base_df.columns and sl_idx > sh_idx
+                    else avg_vol
+                )
+                vol_ratio = seg_vol / avg_vol if avg_vol > 0 else 1.0
+                contractions.append({
+                    "range_pct": round(float(range_pct), 1),
+                    "vol_ratio": round(float(vol_ratio), 2),
+                    "seg_high":  round(float(sh_price), 2),
+                    "seg_low":   round(float(sl_price), 2),
+                })
+                used_low_idx = sl_idx
+                break
+
+    if contractions:
+        return contractions
+
+    # Fallback: 2-segment equal split when swing detection yields nothing
+    mid = n // 2
+    result = []
+    for seg in [base_df.iloc[:mid], base_df.iloc[mid:]]:
+        sh = float(seg["High"].max())
+        sl = float(seg["Low"].min())
+        range_pct = (sh - sl) / sh * 100.0 if sh > 0 else 0.0
+        vol_ratio = float(seg["Volume"].mean()) / avg_vol if avg_vol > 0 else 1.0
+        result.append({
+            "range_pct": round(range_pct, 1),
+            "vol_ratio": round(vol_ratio, 2),
+            "seg_high":  round(sh, 2),
+            "seg_low":   round(sl, 2),
         })
-
-    return contractions
+    return result
 
 
 def _verify_contraction_sequence(contractions: list) -> bool:
@@ -427,15 +475,20 @@ def _check_volume_dryup(df: pd.DataFrame, base_end_idx: int) -> tuple:
 
 def _find_pivot(base_df: pd.DataFrame) -> Optional[float]:
     """
-    Identify the pivot / breakout price level.
-    The pivot is the highest intraday high in the latter 20% of the base.
+    Identify the pivot / breakout price level from the final handle of the base.
+
+    W3 fix: Uses a 3-bar rolling-max on High to smooth out single-day
+    spike outliers (e.g., one anomalous intraday high skewing the level).
+    Looks at the last 25% of the base.
     """
     n = len(base_df)
-    latter_start = int(n * 0.75)   # Last 25% of base
-    latter = base_df.iloc[latter_start:]
+    latter_start = max(0, int(n * 0.75))   # Last 25% of base
+    latter = base_df.iloc[latter_start:].copy()
     if latter.empty:
-        return base_df["High"].max()
-    return float(latter["High"].max())
+        return float(base_df["High"].max())
+    # 3-bar rolling max smooths out single-day spikes
+    smoothed = latter["High"].rolling(window=3, min_periods=1).max()
+    return float(smoothed.max())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -450,13 +503,13 @@ def _score_vcp(t_count, contractions, is_contracting,
     """
     score = 0
 
-    # T-count (more contractions = stronger compression)
-    t_score = min(t_count * 15, 30)   # Max 30 points (2 contractions = 30)
+    # T-count (real swing contractions after C3 fix — no longer artificially inflated)
+    t_score = min(t_count * 10, 20)   # Max 20 pts (T-3 ideal)
     score += t_score
 
     # Contractions are genuinely shrinking
     if is_contracting:
-        score += 20
+        score += 15
 
     # ATR declining
     if atr_contracting:
@@ -466,9 +519,9 @@ def _score_vcp(t_count, contractions, is_contracting,
     if bb_contracting:
         score += 15
 
-    # Volume dry-up
+    # Volume dry-up (W1: Minervini’s most critical final signal — raised to 25)
     if vol_dry:
-        score += 15
+        score += 25
 
     # Base depth quality (12-35% is ideal, per Minervini)
     if C.VCP_MIN_BASE_DEPTH < base_depth_pct <= 35.0:

@@ -113,19 +113,65 @@
       </div>
     </div>
 
-    <!-- Price History Chart -->
+    <!-- K線技術分析圖 Technical Analysis Chart -->
     <div class="col-12">
       <div class="card">
-        <div class="card-header"><i class="bi bi-bar-chart-line me-2"></i>Price History (Last 90 days)</div>
-        <div class="card-body">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <span><i class="bi bi-bar-chart-line me-2"></i>K 線技術分析圖 Technical Chart</span>
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <!-- Legend -->
+            <div class="d-flex gap-2 small flex-wrap" style="color:#8b949e">
+              <span class="d-flex align-items-center gap-1">
+                <span style="display:inline-block;width:14px;height:2px;background:#58a6ff"></span>SMA50
+              </span>
+              <span class="d-flex align-items-center gap-1">
+                <span style="display:inline-block;width:14px;height:2px;background:#e3b341"></span>SMA150
+              </span>
+              <span class="d-flex align-items-center gap-1">
+                <span style="display:inline-block;width:14px;height:2px;background:#f85149"></span>SMA200
+              </span>
+              <span class="d-flex align-items-center gap-1">
+                <span style="display:inline-block;width:14px;height:1px;background:rgba(136,136,136,0.7);border-top:1px dashed #888"></span>BB
+              </span>
+              <span class="d-flex align-items-center gap-1" id="legendPivotWrap" style="display:none!important">
+                <span style="display:inline-block;width:14px;height:2px;background:#64ffda"></span>
+                <span style="color:#64ffda">Pivot</span>
+              </span>
+              <span class="d-flex align-items-center gap-1" id="legendEntryWrap" style="display:none!important">
+                <span style="display:inline-block;width:14px;height:2px;background:#00d4ff"></span>
+                <span style="color:#00d4ff">Entry</span>
+              </span>
+            </div>
+            <!-- Time range buttons -->
+            <div class="btn-group btn-group-sm" id="chartRangeBtns">
+              <button class="btn btn-outline-secondary" data-days="90"  onclick="setChartRange(90,this)">3M</button>
+              <button class="btn btn-outline-secondary" data-days="180" onclick="setChartRange(180,this)">6M</button>
+              <button class="btn btn-outline-secondary active" data-days="365" onclick="setChartRange(365,this)">1Y</button>
+              <button class="btn btn-outline-secondary" data-days="504" onclick="setChartRange(504,this)">2Y</button>
+            </div>
+          </div>
+        </div>
+        <div class="card-body p-0" style="width:100%;overflow:hidden">
           <div id="priceLoading" class="text-center py-3">
             <div class="spinner-border spinner-border-sm text-success"></div>
-            <div class="text-muted small mt-2">Loading price data…</div>
+            <div class="text-muted small mt-2">載入 K 線資料… Loading chart data…</div>
           </div>
-          <div id="priceChartWrap" style="position:relative;height:280px;display:none"><canvas id="priceChart"></canvas></div>
+          <!-- LWC chart container -->
+          <div id="priceChartWrap" style="display:none;width:100%;overflow:hidden">
+            <!-- Main chart: Candlestick + SMA + BB + Volume -->
+            <div id="lwcMainChart" style="height:370px;width:100%;overflow:hidden"></div>
+            <!-- RSI sub-header -->
+            <div style="background:#0d1117;padding:3px 14px;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:14px">
+              <span class="small" style="color:#8b949e">RSI (14)</span>
+              <span class="small fw-bold" id="rsiCurrentVal" style="color:#c9d1d9">—</span>
+              <span class="small" id="rsiOBOS" style="margin-left:4px"></span>
+            </div>
+            <!-- RSI sub-chart -->
+            <div id="lwcRsiChart" style="height:90px;width:100%"></div>
+          </div>
           <div id="priceEmpty" style="display:none" class="text-center py-4 text-muted">
             <i class="bi bi-inbox fs-2 d-block mb-2"></i>
-            No price cache found for this ticker.
+            No price data available for this ticker.
           </div>
         </div>
       </div>
@@ -255,7 +301,10 @@ function renderResult(d, ticker) {
       Depth: ${fmtPct(vcp.base_depth_pct)}
     </div>
     <div class="mt-1 text-muted small">
-      ${vcp.pivot_price ? `Pivot: <strong style="color:var(--accent)">$${Number(vcp.pivot_price).toFixed(2)}</strong>` : ''}
+      ${vcp.pivot_price ? `Pivot: <strong style="color:#64ffda">$${Number(vcp.pivot_price).toFixed(2)}</strong>
+        <i class="bi bi-question-circle ms-1" style="cursor:help;color:#8b949e"
+          data-bs-toggle="tooltip" data-bs-placement="top"
+          title="Pivot 突破點：VCP 形態的理想入場價位，即最後一次收縮結束後的阻力位頂部。當股價放量突破此水平時，即為 Minervini 標準進場信號。圖表中以青色虛線標示。"></i>` : ''}
     </div>
     <div class="mt-2 small">
       ATR contracting: ${vcp.atr_contracting ? '✓' : '✗'} &nbsp;
@@ -347,9 +396,21 @@ function renderResult(d, ticker) {
 
   document.getElementById('result').classList.remove('d-none');
 
+  // Re-init tooltips for dynamically rendered elements (e.g. Pivot tooltip in vcpBox)
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+    const existing = bootstrap.Tooltip.getInstance(el);
+    if (!existing) new bootstrap.Tooltip(el);
+  });
+
   // Load and render score history chart asynchronously
   loadScoreHistory(ticker);
-  loadPriceHistory(ticker);
+  // Pass VCP pivot + position lines into chart
+  loadPriceHistory(ticker, {
+    pivot:  vcp.pivot_price  ? Number(vcp.pivot_price)  : null,
+    entry:  pos.entry        ? Number(pos.entry)        : null,
+    stop:   pos.stop         ? Number(pos.stop)         : null,
+    target: pos.target       ? Number(pos.target)       : null,
+  });
 }
 
 async function loadScoreHistory(ticker) {
@@ -460,95 +521,185 @@ function prefillPosition(ticker, entry, shares, stop, target) {
   window.location.href = `/positions?prefill=${encodeURIComponent(JSON.stringify({ticker,entry,shares,stop,target}))}`;
 }
 
-async function loadPriceHistory(ticker) {
+// ── LWC Chart state ───────────────────────────────────────────────────────────
+let _lwcMain = null;   // main chart instance
+let _lwcRsi  = null;   // RSI sub-chart instance
+let _lwcData = null;   // cached enriched data
+
+function _lwcDestroy() {
+  if (_lwcMain) { try { _lwcMain.remove(); } catch(e) {} _lwcMain = null; }
+  if (_lwcRsi)  { try { _lwcRsi.remove();  } catch(e) {} _lwcRsi  = null; }
+  _lwcData = null;
+}
+
+function setChartRange(days, btn) {
+  document.querySelectorAll('#chartRangeBtns button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (!_lwcMain || !_lwcData || !_lwcData.candles.length) return;
+  const last = _lwcData.candles[_lwcData.candles.length - 1].time;
+  const from = last - days * 86400;
+  _lwcMain.timeScale().setVisibleRange({ from, to: last });
+  if (_lwcRsi) _lwcRsi.timeScale().setVisibleRange({ from, to: last });
+}
+
+async function loadPriceHistory(ticker, priceLines = {}) {
   const loadEl  = document.getElementById('priceLoading');
-  const chartEl = document.getElementById('priceChart');
+  const wrapEl  = document.getElementById('priceChartWrap');
   const emptyEl = document.getElementById('priceEmpty');
-  const wrapEl = document.getElementById('priceChartWrap');
   loadEl.style.display = 'block';
   wrapEl.style.display = 'none';
   emptyEl.style.display = 'none';
+  _lwcDestroy();
   try {
-    const res = await fetch(`/api/db/price-history/${ticker}?days=90`).then(x => x.json());
-    const rows = res.rows || [];
-    if (!rows.length) {
+    const res = await fetch(`/api/chart/enriched/${ticker}?days=504`).then(x => x.json());
+    if (!res.ok || !res.candles || !res.candles.length) {
       loadEl.style.display = 'none';
       emptyEl.style.display = 'block';
       return;
     }
-    const dates  = rows.map(r => r.date.slice(0, 10));  // trim T00:00:00
-    const closes = rows.map(r => +r.close);
-    const vols   = rows.map(r => +r.volume);
-    const maxVol = Math.max(...vols) || 1;
-    // Y-axis: 5% padding below low, 5% above high — no zero baseline
-    const priceMin = Math.min(...closes);
-    const priceMax = Math.max(...closes);
-    const pricePad = (priceMax - priceMin) * 0.05 || priceMin * 0.03;
-    const yMin = priceMin - pricePad;
-    const yMax = priceMax + pricePad;
-    if (chartEl._chart) chartEl._chart.destroy();
-    chartEl._chart = new Chart(chartEl, {
-      type: 'bar',
-      data: {
-        labels: dates,
-        datasets: [
-          {
-            type: 'line',
-            label: 'Close',
-            data: closes,
-            borderColor: '#3fb950',
-            backgroundColor: 'rgba(63,185,80,0.08)',
-            yAxisID: 'yPrice',
-            tension: 0.2,
-            borderWidth: 2,
-            pointRadius: 0,
-            pointHoverRadius: 5,
-          },
-          {
-            type: 'bar',
-            label: 'Volume',
-            data: vols.map(v => yMin + (v / maxVol) * (priceMax - priceMin) * 0.25),
-            backgroundColor: 'rgba(88,166,255,0.22)',
-            yAxisID: 'yVol',
-            borderWidth: 0,
-          },
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { labels: { color: '#c9d1d9', usePointStyle: true } },
-          tooltip: {
-            callbacks: {
-              label: ctx => ctx.dataset.label === 'Volume'
-                ? `Vol: ${(vols[ctx.dataIndex] / 1e6).toFixed(2)}M`
-                : `Close: $${(+ctx.raw).toFixed(2)}`
-            }
-          }
-        },
-        scales: {
-          x: { grid: { color: '#30363d' }, ticks: { color: '#8b949e', maxTicksLimit: 8 } },
-          yPrice: {
-            type: 'linear', position: 'left',
-            grid: { color: '#30363d' }, ticks: { color: '#8b949e' },
-            min: yMin, max: yMax,
-            title: { display: true, text: 'Price ($)', color: '#3fb950' }
-          },
-          yVol: {
-            type: 'linear', position: 'right',
-            grid: { drawOnChartArea: false },
-            ticks: { display: false },
-            min: yMin, max: yMax + (priceMax - priceMin) * 0.25
-          }
-        }
+    _lwcData = res;
+    const LWC     = LightweightCharts;
+    const mainDiv = document.getElementById('lwcMainChart');
+    const rsiDiv  = document.getElementById('lwcRsiChart');
+    const wrapDiv = document.getElementById('priceChartWrap');
+
+    const baseOpts = {
+      layout:    { background: { color: '#0d1117' }, textColor: '#8b949e' },
+      grid:      { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      crosshair: { mode: LWC.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+      handleScroll: true, handleScale: true,
+    };
+
+    // ── Main chart ─────────────────────────────────────────────────────────
+    // Use wrapper container width to ensure full expansion
+    const containerWidth = wrapDiv.parentElement.clientWidth || window.innerWidth - 40;
+    _lwcMain = LWC.createChart(mainDiv, { ...baseOpts, height: 370, width: containerWidth });
+
+    // Candlestick series (OHLC K線)
+    const candleSeries = _lwcMain.addCandlestickSeries({
+      upColor:         '#3fb950', downColor:         '#f85149',
+      borderUpColor:   '#3fb950', borderDownColor:   '#f85149',
+      wickUpColor:     '#3fb950', wickDownColor:     '#f85149',
+    });
+    candleSeries.setData(res.candles);
+
+    // Volume histogram — lower 18% of main chart
+    const volSeries = _lwcMain.addHistogramSeries({
+      priceFormat: { type: 'volume' }, priceScaleId: 'vol',
+    });
+    _lwcMain.priceScale('vol').applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0 },
+      drawTicks: false, borderVisible: false,
+    });
+    volSeries.setData(res.volume);
+
+    // SMA overlays: 50 (blue) / 150 (amber) / 200 (red)
+    [
+      { key: 'sma50',  color: '#58a6ff', title: 'SMA50'  },
+      { key: 'sma150', color: '#e3b341', title: 'SMA150' },
+      { key: 'sma200', color: '#f85149', title: 'SMA200' },
+    ].forEach(({ key, color, title }) => {
+      if (res[key] && res[key].length) {
+        _lwcMain.addLineSeries({
+          color, lineWidth: 1.5, title,
+          priceLineVisible: false, lastValueVisible: false,
+        }).setData(res[key]);
       }
     });
+
+    // Bollinger Bands: upper & lower dashed, midline dotted
+    if (res.bbu && res.bbu.length) {
+      _lwcMain.addLineSeries({ color: 'rgba(136,136,136,0.5)', lineWidth: 1, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: false }).setData(res.bbu);
+    }
+    if (res.bbl && res.bbl.length) {
+      _lwcMain.addLineSeries({ color: 'rgba(136,136,136,0.5)', lineWidth: 1, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: false }).setData(res.bbl);
+    }
+    if (res.bbm && res.bbm.length) {
+      _lwcMain.addLineSeries({ color: 'rgba(136,136,136,0.25)', lineWidth: 1, lineStyle: 1,
+        priceLineVisible: false, lastValueVisible: false }).setData(res.bbm);
+    }
+
+    // ── RSI sub-chart ──────────────────────────────────────────────────────
+    _lwcRsi = LWC.createChart(rsiDiv, {
+      ...baseOpts,
+      height: 90, width: containerWidth,
+      timeScale:  { ...baseOpts.timeScale, visible: false },
+      rightPriceScale: { borderColor: '#30363d', scaleMargins: { top: 0.1, bottom: 0.1 } },
+    });
+
+    const rsiSeries = _lwcRsi.addLineSeries({
+      color: '#c9d1d9', lineWidth: 1.5,
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    if (res.rsi && res.rsi.length) rsiSeries.setData(res.rsi);
+
+    // RSI reference lines: 70 / 50 / 30
+    rsiSeries.createPriceLine({ price: 70, color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: '70' });
+    rsiSeries.createPriceLine({ price: 50, color: '#333333', lineWidth: 1, lineStyle: 0, axisLabelVisible: false });
+    rsiSeries.createPriceLine({ price: 30, color: '#3fb950', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: '30' });
+
+    // RSI value readout on crosshair
+    _lwcMain.subscribeCrosshairMove(param => {
+      const el   = document.getElementById('rsiCurrentVal');
+      const obEl = document.getElementById('rsiOBOS');
+      if (!el || !res.rsi || !res.rsi.length) return;
+      let rsiVal = null;
+      if (param && param.time) {
+        const pt = res.rsi.find(r => r.time === param.time);
+        if (pt) rsiVal = pt.value;
+      }
+      if (rsiVal === null) rsiVal = res.rsi[res.rsi.length - 1].value;
+      const color = rsiVal >= 70 ? '#f85149' : rsiVal <= 30 ? '#3fb950' : '#c9d1d9';
+      el.textContent  = rsiVal.toFixed(1);
+      el.style.color  = color;
+      if (obEl) {
+        obEl.textContent = rsiVal >= 70 ? '超買 Overbought' : rsiVal <= 30 ? '超賣 Oversold' : '';
+        obEl.style.color = color;
+      }
+    });
+
+    // Sync time range: main ↔ RSI (with re-entrance guard)
+    let _syncing = false;
+    _lwcMain.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (_syncing || !_lwcRsi || !range) return;
+      _syncing = true; _lwcRsi.timeScale().setVisibleLogicalRange(range); _syncing = false;
+    });
+    _lwcRsi.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (_syncing || !_lwcMain || !range) return;
+      _syncing = true; _lwcMain.timeScale().setVisibleLogicalRange(range); _syncing = false;
+    });
+
+    // Responsive resize observer — observe parent card body for width changes
+    new ResizeObserver(() => {
+      const newWidth = wrapDiv.parentElement.clientWidth || window.innerWidth - 40;
+      if (_lwcMain) _lwcMain.applyOptions({ width: newWidth });
+      if (_lwcRsi)  _lwcRsi.applyOptions({ width: newWidth });
+    }).observe(wrapDiv.parentElement);
+
+    // ── Price lines: Pivot / Entry / Stop / Target ────────────────────────
+    const pl = priceLines;
+    if (pl.pivot)  {
+      candleSeries.createPriceLine({ price: pl.pivot,  color: '#64ffda', lineWidth: 2, lineStyle: 2, axisLabelVisible: true,  title: `Pivot $${pl.pivot.toFixed(2)}` });
+      const w = document.getElementById('legendPivotWrap');
+      if (w) w.style.setProperty('display', 'flex', 'important');
+    }
+    if (pl.entry)  {
+      candleSeries.createPriceLine({ price: pl.entry,  color: '#00d4ff', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: `Entry $${pl.entry.toFixed(2)}` });
+      const w = document.getElementById('legendEntryWrap');
+      if (w) w.style.setProperty('display', 'flex', 'important');
+    }
+    if (pl.stop)   candleSeries.createPriceLine({ price: pl.stop,   color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: `Stop $${pl.stop.toFixed(2)}` });
+    if (pl.target) candleSeries.createPriceLine({ price: pl.target, color: '#3fb950', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: `Target $${pl.target.toFixed(2)}` });
+
+    // Default view: 1Y
+    setChartRange(365, document.querySelector('#chartRangeBtns button[data-days="365"]'));
+
     loadEl.style.display = 'none';
     wrapEl.style.display = 'block';
-    
-    // 分析完成通知（不自動關閉）
     toastCompletion(`✅ ${ticker} 分析完成`, true);
   } catch(e) {
     console.error('loadPriceHistory error:', e);
@@ -593,6 +744,8 @@ async function resetYfSession() {
 
 // Auto-run if prefill ticker provided
 window.addEventListener('DOMContentLoaded', () => {
+  // Initialize Bootstrap tooltips (for Pivot and other tooltip icons)
+  new bootstrap.Tooltip(document.body, {selector: '[data-bs-toggle="tooltip"]'});
   const t = document.getElementById('tickerInput').value;
   if (t) analyze();
 });

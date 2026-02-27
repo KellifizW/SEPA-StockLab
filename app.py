@@ -1322,6 +1322,202 @@ def api_db_price_history(ticker: str):
         return jsonify({"ok": False, "error": str(exc)})
 
 
+@app.route("/api/chart/enriched/<ticker>", methods=["GET"])
+def api_chart_enriched(ticker: str):
+    """
+    OHLCV + technical indicators for TradingView Lightweight Charts.
+
+    Returns Unix-second timestamps (as required by LWC) plus:
+      candles (OHLC), volume (coloured histogram), sma50/150/200,
+      rsi (RSI-14), bbl/bbm/bbu (Bollinger Bands).
+    All NaN values are filtered out before serialisation.
+    """
+    import math as _math
+    import pandas as pd
+
+    days = int(request.args.get("days", 504))
+    ticker_upper = ticker.upper()
+
+    def _sf(v, digits: int = 2):
+        """Safe float → None for NaN/inf."""
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (_math.isnan(f) or _math.isinf(f)) else round(f, digits)
+        except Exception:
+            return None
+
+    try:
+        from modules.data_pipeline import get_enriched
+        df = get_enriched(ticker_upper, period="2y", use_cache=True)
+        if df.empty:
+            df = get_enriched(ticker_upper, period="2y", use_cache=False)
+        if df.empty:
+            return jsonify({"ok": False, "error": "No price data available"})
+
+        # Trim to requested days
+        cutoff = pd.Timestamp.today() - pd.Timedelta(days=days)
+        df = df[df.index >= cutoff].copy()
+        if df.empty:
+            return jsonify({"ok": False, "error": "No data in requested range"})
+
+        candles, volume = [], []
+        sma50, sma150, sma200 = [], [], []
+        rsi_pts, bbl_pts, bbm_pts, bbu_pts = [], [], [], []
+
+        for idx, row in df.iterrows():
+            try:
+                ts = int(pd.Timestamp(idx).timestamp())
+            except Exception:
+                continue
+            o = _sf(row.get("Open"))
+            h = _sf(row.get("High"))
+            lo = _sf(row.get("Low"))
+            c = _sf(row.get("Close"))
+            v = int(row.get("Volume") or 0)
+            if None in (o, h, lo, c):
+                continue
+
+            candles.append({"time": ts, "open": o, "high": h, "low": lo, "close": c})
+            volume.append({"time": ts, "value": v,
+                           "color": "#3fb950" if c >= o else "#f85149"})
+
+            for series, colname in [
+                (sma50,  "SMA_50"),
+                (sma150, "SMA_150"),
+                (sma200, "SMA_200"),
+            ]:
+                val = _sf(row.get(colname))
+                if val is not None:
+                    series.append({"time": ts, "value": val})
+
+            rsi_v = _sf(row.get("RSI_14"))
+            if rsi_v is not None:
+                rsi_pts.append({"time": ts, "value": rsi_v})
+
+            for series, colname in [
+                (bbl_pts, "BBL_20_2.0"),
+                (bbm_pts, "BBM_20_2.0"),
+                (bbu_pts, "BBU_20_2.0"),
+            ]:
+                val = _sf(row.get(colname))
+                if val is not None:
+                    series.append({"time": ts, "value": val})
+
+        return jsonify({
+            "ok": True, "ticker": ticker_upper,
+            "candles": candles, "volume": volume,
+            "sma50": sma50, "sma150": sma150, "sma200": sma200,
+            "rsi": rsi_pts,
+            "bbl": bbl_pts, "bbm": bbm_pts, "bbu": bbu_pts,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKTEST routes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_bt_jobs: dict = {}
+_bt_lock = threading.Lock()
+
+
+@app.route("/backtest")
+def page_backtest():
+    return render_template("backtest.html")
+
+
+@app.route("/api/backtest/run", methods=["POST"])
+def api_backtest_run():
+    body          = request.get_json(force=True) or {}
+    ticker        = str(body.get("ticker", "")).strip().upper()
+    min_vcp_score = int(body.get("min_vcp_score", 35))
+    outcome_days  = int(body.get("outcome_days", 60))
+
+    if not ticker:
+        return jsonify({"ok": False, "error": "ticker required"}), 400
+
+    jid = f"bt_{ticker}_{uuid.uuid4().hex[:8]}"
+
+    # Per-backtest log file
+    bt_log_file = _LOG_DIR / f"backtest_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    bt_handler  = logging.FileHandler(bt_log_file, encoding="utf-8")
+    bt_handler.setLevel(logging.DEBUG)
+    bt_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s  %(message)s")
+    )
+    _BT_LOGGERS = ["modules.backtester", "modules.vcp_detector", "modules.data_pipeline"]
+    for ln in _BT_LOGGERS:
+        _lg = logging.getLogger(ln)
+        _lg.setLevel(logging.DEBUG)
+        _lg.addHandler(bt_handler)
+
+    with _bt_lock:
+        _bt_jobs[jid] = {
+            "status": "running", "pct": 0, "msg": "Initializing…",
+            "result": None, "error": None, "log_file": bt_log_file.name,
+        }
+
+    def _run():
+        from modules.backtester import run_backtest
+
+        def _cb(pct, msg):
+            with _bt_lock:
+                _bt_jobs[jid]["pct"] = pct
+                _bt_jobs[jid]["msg"] = msg
+
+        try:
+            logging.getLogger("modules.backtester").info(
+                f"Starting backtest: {ticker}  min_score={min_vcp_score}  outcome_days={outcome_days} (job {jid})"
+            )
+            result = run_backtest(
+                ticker=ticker,
+                min_vcp_score=min_vcp_score,
+                outcome_days=outcome_days,
+                progress_cb=_cb,
+                log_file=bt_log_file,
+            )
+            with _bt_lock:
+                _bt_jobs[jid]["status"] = "done"
+                _bt_jobs[jid]["result"] = _clean(result)
+            logging.getLogger("modules.backtester").info(
+                f"Backtest complete: {ticker}  signals={result.get('summary',{}).get('total_signals')}  "
+                f"win_rate={result.get('summary',{}).get('win_rate_pct')}%"
+            )
+        except Exception as exc:
+            logger.exception("[Backtest] run error for %s", ticker)
+            logging.getLogger("modules.backtester").error(f"Backtest error: {str(exc)}")
+            with _bt_lock:
+                _bt_jobs[jid]["status"] = "error"
+                _bt_jobs[jid]["error"]  = str(exc)
+        finally:
+            # Cleanup handlers
+            for ln in _BT_LOGGERS:
+                logging.getLogger(ln).removeHandler(bt_handler)
+            bt_handler.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "job_id": jid, "log_file": bt_log_file.name})
+
+
+@app.route("/api/backtest/status/<jid>")
+def api_backtest_status(jid):
+    with _bt_lock:
+        job = _bt_jobs.get(jid)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    return jsonify({
+        "ok":     True,
+        "status": job["status"],
+        "pct":    job["pct"],
+        "msg":    job["msg"],
+        "result": job.get("result"),
+        "error":  job.get("error"),
+    })
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════════
