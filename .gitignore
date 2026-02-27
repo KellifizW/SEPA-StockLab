@@ -22,3 +22,4 @@ data/price_cache/
 logs/
 reports/
 sepa_scan_*.csv
+data/sepa_stock.duckdb
