@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 第三方 repo（應刪除）
+finviz-master/
+
+# 執行時快取與資料
+data/price_cache/
+data/rs_cache.csv
+data/last_scan.json
+data/sepa_scan_*.csv
+
+# 執行時產生
+logs/
+reports/
+sepa_scan_*.csv
