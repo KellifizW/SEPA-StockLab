@@ -123,6 +123,9 @@
         <button class="btn btn-outline-warning" onclick="generateReport()">
           <i class="bi bi-file-earmark-text me-1"></i>Generate Report
         </button>
+        <button class="btn btn-outline-danger" onclick="restartServer()" title="Restart Flask server to apply code changes">
+          <i class="bi bi-arrow-clockwise me-1"></i>Restart Server
+        </button>
       </div>
     </div>
   </div>
@@ -137,6 +140,46 @@ async function generateReport() {
   pollJob(`/api/report/generate`, () => {
     toast('Report ready!'); 
   }, e => toast('Error: ' + e, false));
+}
+
+async function restartServer() {
+  if (!confirm('🔄 Restart the Flask server? Any ongoing operations will be interrupted. This is needed to apply code changes.\n\nThe server will be back online in ~2 seconds.')) return;
+  
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Restarting…';
+  
+  try {
+    const r = await fetch('/api/admin/restart', {method: 'POST'}).then(x => x.json());
+    if (r.ok) {
+      toast('Server restarting… page will reconnect automatically', true);
+      // Poll for server to come back
+      let tries = 0;
+      const checkServer = setInterval(() => {
+        fetch('/').then(() => {
+          clearInterval(checkServer);
+          toast('✅ Server restarted and ready!', true);
+          setTimeout(() => location.reload(), 500);
+        }).catch(() => {
+          tries++;
+          if (tries > 30) { // Timeout after 30s
+            clearInterval(checkServer);
+            toast('Server did not respond in time. Please refresh manually.', false);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Restart Server';
+          }
+        });
+      }, 500);
+    } else {
+      toast('Failed to restart: ' + r.error, false);
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Restart Server';
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, false);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Restart Server';
+  }
 }
 </script>
 {% endblock %}

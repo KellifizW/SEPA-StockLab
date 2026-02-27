@@ -96,7 +96,19 @@ RS_WEIGHTS = {
 RS_UNIVERSE_MIN_PRICE  = 5.0       # Min price for RS universe stocks
 RS_UNIVERSE_MIN_VOLUME = 100_000   # Min avg volume for RS universe
 RS_CACHE_DAYS = 1                  # How many days before refreshing RS cache
-RS_BATCH_SIZE = 100                # Tickers per yfinance batch download (~halves batch count)
+RS_BATCH_SIZE = 200                # Tickers per yfinance batch download (larger = fewer batches)
+RS_BATCH_SLEEP = 0.5               # Seconds between RS batch downloads
+RS_PARALLEL_BATCHES = 3            # Number of concurrent RS batch downloads
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCAN PERFORMANCE TUNING
+# ─────────────────────────────────────────────────────────────────────────────
+STAGE2_MAX_WORKERS    = 16         # Parallel threads for Stage 2 TT validation
+STAGE2_BATCH_SIZE     = 50         # Tickers per yf.download() batch in Stage 2
+STAGE2_BATCH_SLEEP    = 1.5        # Sleep between Stage 2 download batches (sec)
+STAGE3_MAX_WORKERS    = 6          # Parallel threads for Stage 3 SEPA scoring
+FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamentals
+FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ACCOUNT DRAWDOWN ALERT LEVELS  (Minervini H1-H5)

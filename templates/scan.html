@@ -3,7 +3,12 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h4 class="mb-0"><i class="bi bi-funnel me-2" style="color:var(--accent)"></i>SEPA 3-Stage Screen</h4>
-  <span id="lastScanBadge" class="badge bg-secondary d-none"></span>
+  <div class="d-flex align-items-center gap-3">
+    <span id="tradingDateBadge" class="badge bg-dark border border-secondary small" title="US trading date being scanned"></span>
+    <span id="clockHK" class="badge bg-dark border border-secondary small" title="Hong Kong Time (UTC+8)"></span>
+    <span id="clockUS" class="badge bg-dark border border-secondary small" title="US Eastern Time"></span>
+    <span id="lastScanBadge" class="badge bg-secondary d-none"></span>
+  </div>
 </div>
 
 <!-- Controls row -->
@@ -13,8 +18,8 @@
       <div class="card-body">
         <p class="text-muted small mb-3">
           <strong>Stage 1</strong> — finvizfinance coarse filter (USA stocks only, EPS/ROE/Sales growth)&emsp;
-          <strong>Stage 2</strong> — Minervini TT1-TT10 exact validation (parallel, 8 threads)&emsp;
-          <strong>Stage 3</strong> — 5-pillar SEPA scoring + VCP detection
+          <strong>Stage 2</strong> — Minervini TT1-TT10 exact validation (batch download + parallel)&emsp;
+          <strong>Stage 3</strong> — 5-pillar SEPA scoring + VCP detection (parallel)
         </p>
         <div class="d-flex gap-2 align-items-center flex-wrap">
           <button class="btn btn-accent px-4" id="btnScan" onclick="startScan()">
@@ -26,7 +31,7 @@
           <div class="form-check ms-2">
             <input class="form-check-input" type="checkbox" id="chkRefresh">
             <label class="form-check-label text-muted small" for="chkRefresh">
-              Refresh RS rankings <span class="text-warning">(~10 min first time, cached daily)</span>
+              Force refresh RS rankings <span class="text-warning">(ignore daily cache)</span>
             </label>
           </div>
         </div>
@@ -43,13 +48,93 @@
   </div>
 </div>
 
+<!-- ── Speed & Cache Info Panel ───────────────────────────────────────────────────────────── -->
+<div id="cacheInfoPanel" class="card mb-3" style="background:#0d1b2a; border-color:#1c2f42;">
+  <div class="card-body py-2">
+    <div class="d-flex justify-content-between align-items-center">
+      <div>
+        <i class="bi bi-lightning-charge me-1" style="color:var(--accent)"></i>
+        <span class="small fw-semibold" style="color:var(--accent)">Speed &amp; Cache Status</span>
+      </div>
+      <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="loadCacheInfo()" title="Refresh cache info">
+        <i class="bi bi-arrow-clockwise"></i>
+      </button>
+    </div>
+    <div id="cacheInfoBody" class="mt-2">
+      <div class="row g-2 small">
+        <div class="col-md-3">
+          <span class="text-muted">RS Rankings:</span>
+          <span id="cacheRS" class="ms-1 badge bg-secondary">checking...</span>
+        </div>
+        <div class="col-md-3">
+          <span class="text-muted">Price Cache:</span>
+          <span id="cachePrice" class="ms-1 badge bg-secondary">checking...</span>
+        </div>
+        <div class="col-md-3">
+          <span class="text-muted">Fundamentals:</span>
+          <span id="cacheFundamentals" class="ms-1 badge bg-secondary">checking...</span>
+        </div>
+        <div class="col-md-3">
+          <span class="text-muted">Est. Speed:</span>
+          <span id="cacheEstimate" class="ms-1 badge bg-secondary">checking...</span>
+        </div>
+      </div>
+      <div id="cacheHints" class="mt-2 small text-muted"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── API Rate Limits Info Panel ─────────────────────────────────────────────────────────── -->
+<div class="card mb-3" style="background:#0d1b2a; border-color:#2d3f52; border-left: 3px solid var(--accent);">
+  <div class="card-body py-2">
+    <button class="btn btn-sm btn-link p-0 text-start w-100" onclick="toggleRateLimitInfo()" style="text-decoration:none;">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <i class="bi bi-exclamation-circle me-1" style="color:var(--accent)"></i>
+          <span class="small fw-semibold" style="color:var(--accent)">API Rate Limits &amp; Best Practices</span>
+        </div>
+        <i class="bi bi-chevron-down" id="rateLimitToggle" style="color:#8b949e;"></i>
+      </div>
+    </button>
+    <div id="rateLimitInfo" class="mt-2 small text-muted d-none" style="background:#0a0f18; border-radius:4px; padding:10px;">
+      <div class="mb-3">
+        <strong style="color:#c9d1d9;">📊 yfinance (Yahoo Finance)</strong>
+        <div class="ms-2 small">
+          <div>- 歷史價格與基本面數據</div>
+          <div>- <strong style="color:#f85149;">速率限制</strong>: 每小時限制（不公開），IP可能被暫時限制</div>
+          <div>- <strong style="color:#3fb950;">對策</strong>: 批次間隔 0.5-1.5 秒、並行工作者受限、每日快取</div>
+        </div>
+      </div>
+      <div class="mb-3">
+        <strong style="color:#c9d1d9;">🔍 finvizfinance (Finviz)</strong>
+        <div class="ms-2 small">
+          <div>- 股票篩選器、產業排名、快速快照</div>
+          <div>- <strong style="color:#f85149;">速率限制</strong>: 反爬蟲機制，需要 1.2+ 秒間隔</div>
+          <div>- <strong style="color:#3fb950;">對策</strong>: 1.2 秒 polite delay、4 小時 in-memory 快取</div>
+        </div>
+      </div>
+      <div class="mb-2">
+        <strong style="color:#c9d1d9;">💡 使用建議</strong>
+        <div class="ms-2 small">
+          <div>✅ <span style="color:#3fb950;">每日多次掃描</span>: 同日重複掃描利用快取，<strong>~2-5 分鐘</strong></div>
+          <div>✅ <span style="color:#3fb950;">首日掃描</span>: 預期 7-12 分鐘（依篩選結果數量）</div>
+          <div>⚠️ <span style="color:#d29922;">避免同時多個掃描</span>: 連續掃描 OK，並行掃描可能觸發限制</div>
+          <div>❌ <span style="color:#f85149;">如收到 HTTP 429</span>: 系統自動降速、稍候後重試</div>
+          <div>— <span style="color:#8b949e;">掃描結果同日快取，午後再掃描通常不必重新下載</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 <!-- ── Progress panel (visible while scanning) ─────────────────────────────── -->
 <div id="scanLoading" class="card mb-3 d-none">
   <div class="card-body">
     <div class="d-flex justify-content-between mb-2 small">
       <span id="step1" class="step-label text-muted">① RS Rankings</span>
       <span id="step2" class="step-label text-muted">② Coarse Filter</span>
-      <span id="step3" class="step-label text-muted">③ Trend Template</span>
+      <span id="step3" class="step-label text-muted">③ Batch DL + TT</span>
       <span id="step4" class="step-label text-muted">④ SEPA Scoring</span>
       <span id="step5" class="step-label text-muted">✅ Done</span>
     </div>
@@ -64,6 +149,10 @@
       </div>
       <div id="progressTicker" class="badge px-2 py-1"
            style="background:var(--accent2); font-size:0.8rem; min-width:60px"></div>
+    </div>
+    <!-- Live scoring log (per-ticker details scroll area) -->
+    <div id="liveLogWrap" class="mt-2 d-none" style="max-height:120px; overflow-y:auto; background:#0a0f18; border-radius:4px; padding:6px 10px; font-family:monospace; font-size:0.75rem; color:#8b949e;">
+      <div id="liveLog"></div>
     </div>
   </div>
 </div>
@@ -297,6 +386,10 @@ async function startScan() {
   document.getElementById('btnStop').disabled = false;
   document.getElementById('scanLoading').classList.remove('d-none');
   document.getElementById('scanStatus').textContent = 'Scan in progress…';
+  // Reset live log
+  _lastLogTicker = '';
+  document.getElementById('liveLog').innerHTML = '';
+  document.getElementById('liveLogWrap').classList.add('d-none');
   setStep(0);
 
   let r;
@@ -313,7 +406,7 @@ async function startScan() {
 
 function scanPoll(url) {
   fetch(url).then(r => r.json()).then(job => {
-    if      (job.status === 'done')      onScanDone(job.result || []);
+    if      (job.status === 'done')      onScanDone(job.result || [], job.log_file || '');
     else if (job.status === 'error')     onScanError(job.error || 'Unknown error');
     else if (job.status === 'not_found') onScanError('Job not found');
     else {
@@ -323,12 +416,30 @@ function scanPoll(url) {
   }).catch(() => setTimeout(() => scanPoll(url), 3000));
 }
 
+let _lastLogTicker = '';
+
 function renderProgress(p) {
   const pct = p.pct || 0;
   document.getElementById('progressBar').style.width    = Math.max(pct, 2) + '%';
   document.getElementById('progressStage').textContent  = p.stage  || '…';
   document.getElementById('progressMsg').textContent    = p.msg    || '';
   document.getElementById('progressTicker').textContent = p.ticker || '';
+
+  // Live log for per-ticker scoring (Stage 3 & Stage 2)
+  const liveLogWrap = document.getElementById('liveLogWrap');
+  const liveLog     = document.getElementById('liveLog');
+  if (p.ticker && p.ticker !== _lastLogTicker) {
+    _lastLogTicker = p.ticker;
+    liveLogWrap.classList.remove('d-none');
+    const ts = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.innerHTML = `<span style="color:#58a6ff">${ts}</span> <span style="color:#d2a8ff">${p.ticker}</span> <span style="color:#8b949e">${p.msg || ''}</span>`;
+    liveLog.appendChild(line);
+    // Keep max 50 lines
+    while (liveLog.children.length > 50) liveLog.removeChild(liveLog.firstChild);
+    liveLogWrap.scrollTop = liveLogWrap.scrollHeight;
+  }
+
   // Step highlight
   const s = (p.stage || '').toLowerCase();
   clearSteps();
@@ -353,7 +464,7 @@ function setStep(n) {
     document.getElementById('step' + n).classList.add('active');
 }
 
-function onScanDone(rows) {
+function onScanDone(rows, logFile) {
   _scanData = rows;
   document.getElementById('scanLoading').classList.add('d-none');
   document.getElementById('btnScan').disabled = false;
@@ -374,7 +485,16 @@ function onScanDone(rows) {
     sessionStorage.setItem('sepa_scan_data', JSON.stringify(_scanData));
     sessionStorage.setItem('sepa_scan_meta', meta);
   } catch(e) {}
-  toast(`✅ Scan complete — ${_scanData.length} stocks found`, true);
+
+  // Dismissible notification with log path
+  const logHint = logFile ? `<br><small class="text-muted">Log: ${logFile}</small>` : '';
+  toastDismissible(
+    `✅ 掃描完成 — 找到 ${_scanData.length} 檔股票${logHint}`,
+    true
+  );
+
+  // Refresh cache info after scan completes
+  loadCacheInfo();
 }
 
 function populateSectorFilter(data) {
@@ -671,6 +791,164 @@ function exportCSV() {
   a.href = URL.createObjectURL(blob);
   a.download = `sepa_scan_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
+}
+
+/* ─── Cache info loader ──────────────────────────────────────────────── */
+function loadCacheInfo() {
+  fetch('/api/scan/cache-info')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        document.getElementById('cacheHints').innerHTML =
+          `<div class="text-warning small">Cache check failed: ${d.error || 'unknown'}</div>`;
+        ['cacheRS','cachePrice','cacheFundamentals','cacheEstimate'].forEach(id => {
+          const el = document.getElementById(id);
+          el.textContent = 'N/A'; el.className = 'ms-1 badge bg-secondary';
+        });
+        return;
+      }
+      const info = d.cache;
+
+      // RS Rankings
+      const rsEl = document.getElementById('cacheRS');
+      if (info.rs_cached) {
+        rsEl.textContent = `✓ cached (${info.rs_count} tickers)`;
+        rsEl.className = 'ms-1 badge bg-success';
+      } else {
+        rsEl.textContent = '✗ needs rebuild (~5 min)';
+        rsEl.className = 'ms-1 badge bg-warning text-dark';
+      }
+
+      // Price cache
+      const priceEl = document.getElementById('cachePrice');
+      priceEl.textContent = `${info.price_cached_today} today`;
+      priceEl.className = info.price_cached_today > 50 ? 'ms-1 badge bg-success' : 'ms-1 badge bg-info';
+
+      // Fundamentals cache
+      const fundEl = document.getElementById('cacheFundamentals');
+      fundEl.textContent = `${info.fund_cached_today} today`;
+      fundEl.className = info.fund_cached_today > 10 ? 'ms-1 badge bg-success' : 'ms-1 badge bg-info';
+
+      // Speed estimate
+      const estEl = document.getElementById('cacheEstimate');
+      if (info.rs_cached && info.price_cached_today > 100) {
+        estEl.textContent = '~2-5 min (cached)';
+        estEl.className = 'ms-1 badge bg-success';
+      } else if (info.rs_cached) {
+        estEl.textContent = '~5-12 min';
+        estEl.className = 'ms-1 badge bg-info';
+      } else {
+        estEl.textContent = '~10-20 min (first run)';
+        estEl.className = 'ms-1 badge bg-warning text-dark';
+      }
+
+      // Hints
+      const hintsEl = document.getElementById('cacheHints');
+      let hints = [];
+      if (!info.rs_cached)
+        hints.push('💡 首次掃描需建立 RS 排名快取（~200 檔股票），約 5 分鐘');
+      if (info.price_cached_today > 100)
+        hints.push('⚡ 已快取 ' + info.price_cached_today + ' 檔股價資料，Stage 2 將快速完成 (&lt;2 分鐘)');
+      if (info.fund_cached_today > 0)
+        hints.push('📊 已快取 ' + info.fund_cached_today + ' 檔基本面資料，避免重複 API 調用');
+      if (info.finviz_cached)
+        hints.push('🔄 Finviz 篩選結果快取中（' + info.finviz_ttl_hours + ' 小時 TTL，避免反爬蟲限制）');
+      if (hints.length === 0)
+        hints.push('💡 最佳實踐: 掃描完成後同日再次掃描，利用快取縮短時間至 2-5 分鐘');
+      hints.push('ℹ️ 詳細 API 限制訊息，請點擊上方「API Rate Limits &amp; Best Practices」');
+
+      hintsEl.innerHTML = hints.map(h => `<div>${h}</div>`).join('');
+    })
+    .catch(() => {
+      document.getElementById('cacheHints').innerHTML =
+        '<div class="text-muted">Unable to load cache info</div>';
+    });
+}
+
+// Load cache info on page load
+setTimeout(loadCacheInfo, 500);
+
+/* ─── Dismissible toast (stays until user closes) ─────────────────────── */
+function toastDismissible(htmlMsg, ok=true) {
+  const el = document.createElement('div');
+  el.className = 'toast-msg ' + (ok ? 'ok' : 'err');
+  el.style.cssText = 'display:flex; align-items:flex-start; gap:8px; max-width:380px;';
+  const body = document.createElement('span');
+  body.innerHTML = htmlMsg;
+  body.style.flex = '1';
+  const btn = document.createElement('button');
+  btn.innerHTML = '&times;';
+  btn.style.cssText = 'background:none; border:none; color:#8b949e; font-size:1.2rem; cursor:pointer; padding:0; line-height:1;';
+  btn.onclick = () => el.remove();
+  el.appendChild(body);
+  el.appendChild(btn);
+  document.getElementById('toast-container').appendChild(el);
+  // Auto-dismiss after 30s if user doesn't close
+  setTimeout(() => { if (el.parentNode) el.remove(); }, 30000);
+}
+
+/* ─── Trading date display ────────────────────────────────────────────── */
+function updateTradingDate() {
+  // Compute last US trading date (approx: skip weekends)
+  const now = new Date();
+  const usEast = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
+  let d = new Date(usEast);
+  // If before 9:30 AM ET or weekend, use previous trading day
+  if (d.getHours() < 9 || (d.getHours() === 9 && d.getMinutes() < 30)) {
+    d.setDate(d.getDate() - 1);
+  }
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() - 1);
+  }
+  const yyyy = d.getFullYear();
+  const mm   = String(d.getMonth() + 1).padStart(2, '0');
+  const dd   = String(d.getDate()).padStart(2, '0');
+  const dayName = d.toLocaleDateString('en-US', {weekday: 'short', timeZone: 'America/New_York'});
+  document.getElementById('tradingDateBadge').innerHTML =
+    `<i class="bi bi-calendar3 me-1"></i>Trading Date: ${yyyy}-${mm}-${dd} (${dayName})`;
+}
+
+/* ─── Live HK & US clocks ─────────────────────────────────────────────── */
+function updateClocks() {
+  const now = new Date();
+  // Hong Kong time (UTC+8)
+  const hkStr = now.toLocaleTimeString('en-GB', {
+    timeZone: 'Asia/Hong_Kong', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+  // US Eastern time
+  const usStr = now.toLocaleTimeString('en-GB', {
+    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+  // Market status
+  const usNow = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
+  const h = usNow.getHours(), m = usNow.getMinutes(), day = usNow.getDay();
+  let mktStatus = '';
+  if (day >= 1 && day <= 5) {
+    const mins = h * 60 + m;
+    if (mins >= 570 && mins < 960) mktStatus = ' 🟢';      // 9:30-16:00
+    else if (mins >= 240 && mins < 570) mktStatus = ' 🟡';  // 4:00-9:30 pre-market
+    else if (mins >= 960 && mins < 1200) mktStatus = ' 🟡'; // 16:00-20:00 after-hours
+    else mktStatus = ' 🔴';
+  } else {
+    mktStatus = ' 🔴';
+  }
+  document.getElementById('clockHK').innerHTML =
+    `<i class="bi bi-clock me-1"></i>HK ${hkStr}`;
+  document.getElementById('clockUS').innerHTML =
+    `<i class="bi bi-clock me-1"></i>US ${usStr}${mktStatus}`;
+}
+
+updateTradingDate();
+updateClocks();
+setInterval(updateClocks, 1000);
+
+/* ─── Toggle rate limit info ──────────────────────────────────────────── */
+function toggleRateLimitInfo() {
+  const info = document.getElementById('rateLimitInfo');
+  const toggle = document.getElementById('rateLimitToggle');
+  info.classList.toggle('d-none');
+  toggle.style.transform = info.classList.contains('d-none') ? 'rotate(0deg)' : 'rotate(180deg)';
+  toggle.style.transition = 'transform 0.2s';
 }
 </script>
 {% endblock %}

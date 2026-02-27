@@ -12,6 +12,7 @@ All upper-layer modules import ONLY from here — single point of change.
 import os
 import sys
 import time
+import json
 import warnings
 import logging
 from datetime import datetime, date, timedelta
@@ -74,19 +75,40 @@ def _fvf_sleep(min_gap: float = 1.2):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# A. finvizfinance — Screener & Snapshots
+# A. finvizfinance — Screener & Snapshots  (with TTL cache)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# In-memory cache: key = (sorted filter items, view) -> (timestamp, DataFrame)
+_finviz_cache: dict = {}
+
+def _finviz_cache_key(filters_dict: dict, view: str) -> tuple:
+    """Create a hashable cache key from filters + view."""
+    return (tuple(sorted(filters_dict.items())), view)
+
+
 def get_universe(filters_dict: dict, view: str = "Overview",
-                 verbose: bool = True) -> pd.DataFrame:
+                 verbose: bool = True, use_cache: bool = True) -> pd.DataFrame:
     """
     Coarse screener via finvizfinance.
     Returns a DataFrame with Ticker + metadata columns.
     Falls back to empty DataFrame if network error.
+    Results are cached in-memory for FINVIZ_CACHE_TTL_HOURS to speed up repeated scans.
     """
     if not FVF_AVAILABLE:
         logger.error("finvizfinance not available.")
         return pd.DataFrame()
+
+    # ── Check in-memory cache ────────────────────────────────────────────
+    cache_ttl_hours = getattr(C, "FINVIZ_CACHE_TTL_HOURS", 4)
+    cache_key = _finviz_cache_key(filters_dict, view)
+    if use_cache and cache_key in _finviz_cache:
+        cached_time, cached_df = _finviz_cache[cache_key]
+        age_hours = (time.time() - cached_time) / 3600
+        if age_hours < cache_ttl_hours and not cached_df.empty:
+            logger.info("[Finviz Cache HIT] Age %.1fh (TTL %dh), %d rows",
+                        age_hours, cache_ttl_hours, len(cached_df))
+            return cached_df.copy()
+
     try:
         _fvf_sleep()
         view_map = {
@@ -106,6 +128,10 @@ def get_universe(filters_dict: dict, view: str = "Overview",
         if "Ticker" not in df.columns and df.index.name == "Ticker":
             df = df.reset_index()
         df.columns = [str(c).strip() for c in df.columns]
+
+        # Save to in-memory cache
+        _finviz_cache[cache_key] = (time.time(), df.copy())
+        logger.debug("[Finviz Cache SAVE] %d rows, view=%s", len(df), view)
         return df
     except Exception as exc:
         logger.warning(f"get_universe error: {exc}")
@@ -291,13 +317,40 @@ def get_bulk_historical(tickers: list, period: str = "1y",
     return result
 
 
-def get_fundamentals(ticker: str) -> dict:
+def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
     """
     Comprehensive fundamental data via yfinance.
     Returns a single dict with keys from multiple data sources:
       info, quarterly_eps, earnings_surprise, eps_revisions,
       institutional_holders, insider_transactions, analyst_targets
+    Caches to JSON for up to FUNDAMENTALS_CACHE_DAYS to avoid repeated API calls.
     """
+    cache_file = PRICE_CACHE_DIR / f"{ticker.upper()}_fundamentals.json"
+    meta_file  = cache_file.with_suffix(".fmeta")
+    today_str  = date.today().isoformat()
+
+    # ── Try reading cache ────────────────────────────────────────────────
+    if use_cache and cache_file.exists() and meta_file.exists():
+        try:
+            cache_date = meta_file.read_text().strip()
+            cached_dt  = date.fromisoformat(cache_date)
+            if (date.today() - cached_dt).days < getattr(C, "FUNDAMENTALS_CACHE_DAYS", 1):
+                raw = json.loads(cache_file.read_text(encoding="utf-8"))
+                # Restore DataFrames from dict lists
+                for key in ("quarterly_eps", "earnings_surprise", "eps_revisions",
+                            "eps_trend", "institutional_holders", "insider_transactions",
+                            "analyst_targets", "quarterly_revenue"):
+                    val = raw.get(key)
+                    if isinstance(val, list):
+                        raw[key] = pd.DataFrame(val) if val else pd.DataFrame()
+                    elif not isinstance(val, pd.DataFrame):
+                        raw[key] = pd.DataFrame()
+                logger.debug("[Cache HIT] get_fundamentals(%s) from cache", ticker)
+                return raw
+        except Exception:
+            pass
+
+    # ── Fetch from yfinance ──────────────────────────────────────────────
     result = {
         "ticker": ticker.upper(),
         "info": {},
@@ -387,6 +440,27 @@ def get_fundamentals(ticker: str) -> dict:
 
     except Exception as exc:
         logger.warning(f"get_fundamentals({ticker}) error: {exc}")
+
+    # ── Save to cache ────────────────────────────────────────────────────
+    try:
+        def _to_serialisable(v):
+            if isinstance(v, pd.DataFrame):
+                if v.empty:
+                    return []
+                return json.loads(v.to_json(orient="records", date_format="iso",
+                                            default_handler=str))
+            if isinstance(v, pd.Series):
+                return v.tolist()
+            return v
+
+        cache_data = {k: _to_serialisable(v) for k, v in result.items()}
+        cache_file.write_text(
+            json.dumps(cache_data, ensure_ascii=False, default=str),
+            encoding="utf-8")
+        meta_file.write_text(today_str)
+        logger.debug("[Cache SAVE] get_fundamentals(%s)", ticker)
+    except Exception as exc:
+        logger.debug(f"Could not save fundamentals cache for {ticker}: {exc}")
 
     return result
 
@@ -568,3 +642,118 @@ def get_enriched(ticker: str, period: str = "2y",
     if df.empty:
         return df
     return get_technicals(df)
+
+
+def batch_download_and_enrich(tickers: list, period: str = "2y",
+                              progress_cb=None) -> dict:
+    """
+    Batch-download OHLCV for many tickers, enrich with technicals,
+    and save per-ticker parquet cache. Much faster than individual calls.
+
+    Args:
+        tickers:     list of ticker strings
+        period:      yfinance period string (e.g. "2y")
+        progress_cb: optional callable(batch_num, total_batches, msg)
+
+    Returns:
+        dict[ticker] -> enriched DataFrame  (only non-empty results)
+    """
+    today = date.today().isoformat()
+    batch_size = getattr(C, "STAGE2_BATCH_SIZE", 50)
+    sleep_sec  = getattr(C, "STAGE2_BATCH_SLEEP", 1.5)
+
+    # ── Separate cached vs. uncached tickers ─────────────────────────────
+    result = {}
+    need_download = []
+    for tkr in tickers:
+        cache_file = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
+        meta_file  = cache_file.with_suffix(".meta")
+        if cache_file.exists() and meta_file.exists():
+            try:
+                cache_date = meta_file.read_text().strip()
+                if cache_date == today:
+                    df_cached = pd.read_parquet(cache_file)
+                    if not df_cached.empty:
+                        result[tkr] = get_technicals(df_cached)
+                        continue
+            except Exception:
+                pass
+        need_download.append(tkr)
+
+    if not need_download:
+        logger.info("[Batch] All %d tickers found in cache", len(tickers))
+        return result
+
+    logger.info("[Batch] %d/%d tickers need download (%d cached)",
+                len(need_download), len(tickers), len(result))
+
+    # ── Batch download uncached tickers ──────────────────────────────────
+    batches = [need_download[i:i + batch_size]
+               for i in range(0, len(need_download), batch_size)]
+    total_batches = len(batches)
+
+    for bi, batch in enumerate(batches):
+        if progress_cb:
+            progress_cb(bi + 1, total_batches,
+                        f"Downloading batch {bi+1}/{total_batches} ({len(batch)} tickers)")
+        try:
+            raw = yf.download(
+                tickers=batch,
+                period=period,
+                interval="1d",
+                auto_adjust=True,
+                threads=True,
+                progress=False,
+            )
+            if raw is None or raw.empty:
+                continue
+
+            # Parse per-ticker DataFrames from batch result
+            if len(batch) == 1:
+                tkr = batch[0]
+                if isinstance(raw.columns, pd.MultiIndex):
+                    raw.columns = raw.columns.get_level_values(0)
+                if raw.index.tzinfo is not None:
+                    raw.index = raw.index.tz_localize(None)
+                df_t = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
+                if not df_t.empty:
+                    # Save to cache
+                    try:
+                        cache_path = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
+                        df_t.to_parquet(cache_path)
+                        cache_path.with_suffix(".meta").write_text(today)
+                    except Exception:
+                        pass
+                    result[tkr] = get_technicals(df_t)
+            else:
+                for tkr in batch:
+                    try:
+                        if isinstance(raw.columns, pd.MultiIndex):
+                            df_t = raw.xs(tkr, axis=1, level=1)
+                        else:
+                            continue
+                        if df_t.index.tzinfo is not None:
+                            df_t.index = df_t.index.tz_localize(None)
+                        df_t = df_t[["Open", "High", "Low", "Close", "Volume"]].dropna()
+                        if df_t.empty or len(df_t) < 50:
+                            continue
+                        # Save to per-ticker cache
+                        try:
+                            cache_path = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
+                            df_t.to_parquet(cache_path)
+                            cache_path.with_suffix(".meta").write_text(today)
+                        except Exception:
+                            pass
+                        result[tkr] = get_technicals(df_t)
+                    except Exception:
+                        continue
+
+        except Exception as exc:
+            logger.warning(f"Batch download error (batch {bi+1}): {exc}")
+
+        # Rate-limit between batches
+        if bi < total_batches - 1:
+            time.sleep(sleep_sec)
+
+    logger.info("[Batch] Enriched %d/%d tickers total", len(result), len(tickers))
+    return result

@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 import trader_config as C
 
 from modules.data_pipeline import get_enriched, get_snapshot
-from modules.rs_ranking import get_rs_rank
+from modules.rs_ranking import get_rs_rank, RS_NOT_RANKED
 from modules.screener import validate_trend_template, score_sepa_pillars, _get_atr
 from modules.vcp_detector import detect_vcp
 
@@ -102,7 +102,7 @@ def add(ticker: str, grade: str = None, note: str = ""):
         entry = {
             "added_date":   datetime.now().strftime("%Y-%m-%d"),
             "last_updated": datetime.now().strftime("%Y-%m-%d"),
-            "rs_rank":      round(rs, 1),
+            "rs_rank":      round(rs, 1) if rs != RS_NOT_RANKED else None,
             "tt_score":     tt.get("score", 0),
             "tt_passes":    tt.get("passes", False),
             "vcp_grade":    vcp.get("grade", "D"),
@@ -256,7 +256,7 @@ def refresh(verbose: bool = True):
             entry = wl[current_grade].get(ticker, {})
             entry.update({
                 "last_updated": datetime.now().strftime("%Y-%m-%d"),
-                "rs_rank":      round(rs, 1),
+                "rs_rank":      round(rs, 1) if rs != RS_NOT_RANKED else None,
                 "tt_score":     tt.get("score", 0),
                 "tt_passes":    tt.get("passes", False),
                 "vcp_grade":    vcp.get("grade", "D"),

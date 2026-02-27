@@ -18,6 +18,7 @@ import time
 import logging
 from pathlib import Path
 from datetime import date, datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import numpy as np
@@ -148,6 +149,8 @@ def compute_rs_rankings(universe: list = None,
     batches = [universe[i:i + C.RS_BATCH_SIZE]
                for i in range(0, len(universe), C.RS_BATCH_SIZE)]
     total = len(batches)
+    batch_sleep = getattr(C, "RS_BATCH_SLEEP", 0.5)
+    parallel_batches = getattr(C, "RS_PARALLEL_BATCHES", 3)
 
     def _download_batch_with_retry(batch: list, max_retries: int = 3) -> object:
         """yf.download wrapper with exponential back-off on rate-limit (429) errors."""
@@ -175,11 +178,16 @@ def compute_rs_rankings(universe: list = None,
         logger.warning("[RS] Batch failed after %d retries", max_retries)
         return None
 
-    for i, batch in enumerate(batches):
-        logger.debug("[RS] Batch %d/%d (%d tickers)...", i + 1, total, len(batch))
+    def _process_batch(batch_info):
+        """Download and extract close prices for one batch."""
+        idx, batch = batch_info
+        local_close = {}
+        logger.debug("[RS] Batch %d/%d (%d tickers)...", idx + 1, total, len(batch))
+        # Small stagger to avoid simultaneous bursts
+        if idx > 0:
+            time.sleep(batch_sleep * (idx % parallel_batches))
         raw = _download_batch_with_retry(batch)
         if raw is not None and not raw.empty:
-            # Extract closing prices
             if isinstance(raw.columns, pd.MultiIndex):
                 try:
                     closes = raw["Close"]
@@ -187,22 +195,32 @@ def compute_rs_rankings(universe: list = None,
                         closes = closes.to_frame(name=batch[0])
                     for col in closes.columns:
                         if closes[col].dropna().shape[0] > 50:
-                            all_close[col] = closes[col]
+                            local_close[col] = closes[col]
                 except Exception:
                     for tkr in batch:
                         try:
                             s = raw.xs(tkr, axis=1, level=1)["Close"]
                             if s.dropna().shape[0] > 50:
-                                all_close[tkr] = s
+                                local_close[tkr] = s
                         except Exception:
                             pass
             else:
                 if "Close" in raw.columns:
-                    all_close[batch[0]] = raw["Close"]
+                    local_close[batch[0]] = raw["Close"]
+        return local_close
 
-        # Throttle between batches to respect yfinance rate limits
-        if i < total - 1:
-            time.sleep(1.0)
+    # ── Download batches in parallel ─────────────────────────────────────
+    logger.info("[RS] Downloading %d batches with %d parallel workers...",
+                total, parallel_batches)
+    with ThreadPoolExecutor(max_workers=parallel_batches) as pool:
+        futures = {pool.submit(_process_batch, (i, b)): i
+                   for i, b in enumerate(batches)}
+        for fut in as_completed(futures):
+            try:
+                local_close = fut.result()
+                all_close.update(local_close)
+            except Exception as exc:
+                logger.warning("[RS] Batch future error: %s", exc)
 
     logger.info("[RS] Downloaded price data for %d tickers", len(all_close))
 
@@ -261,17 +279,22 @@ def _ensure_rs_loaded(force_refresh: bool = False):
         _rs_df = compute_rs_rankings(force_refresh=force_refresh)
 
 
+# Sentinel value indicating RS rank was NOT calculated (ticker missing from RS universe).
+# Distinct from a genuinely low score so callers can distinguish "not ranked" from "weak".
+RS_NOT_RANKED = -1.0
+
+
 def get_rs_rank(ticker: str, force_refresh: bool = False) -> float:
     """
     Get the RS percentile rank of a single ticker.
-    Returns float 1-99, or 50.0 if ticker not in universe.
+    Returns float 1-99, or RS_NOT_RANKED (-1.0) if ticker not in universe.
     """
     _ensure_rs_loaded(force_refresh)
     if _rs_df.empty:
-        return 50.0
+        return RS_NOT_RANKED
     row = _rs_df[_rs_df["Ticker"].str.upper() == ticker.upper()]
     if row.empty:
-        return 50.0
+        return RS_NOT_RANKED
     return float(row["RS_Rank"].iloc[0])
 
 

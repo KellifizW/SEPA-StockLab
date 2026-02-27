@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 import trader_config as C
 
 from modules.data_pipeline import get_enriched, get_fundamentals, get_news_fvf
-from modules.rs_ranking import get_rs_rank
+from modules.rs_ranking import get_rs_rank, RS_NOT_RANKED
 from modules.vcp_detector import detect_vcp
 from modules.screener import (
     validate_trend_template, score_sepa_pillars, _parse_pct, _get_atr

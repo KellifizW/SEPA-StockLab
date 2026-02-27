@@ -29,6 +29,7 @@ import trader_config as C
 from modules.data_pipeline import (
     get_universe, get_enriched, get_fundamentals,
     get_sector_rankings, FVF_AVAILABLE,
+    batch_download_and_enrich,
 )
 from modules.rs_ranking import get_rs_rank, _ensure_rs_loaded
 from modules.vcp_detector import detect_vcp
@@ -61,23 +62,33 @@ def _cancelled() -> bool:
 # Stage 1 — Coarse filter via finvizfinance
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ── Stage 1 finviz filters ─────────────────────────────────────────────────
+# IMPORTANT: Per Minervini, Stage 1 is a COARSE filter to reduce ~8000 stocks
+# to ~100-300 candidates.  Detailed fundamental validation happens in Stage 2-3.
+#
+# We INTENTIONALLY exclude fundamental criteria (EPS, ROE, Sales) from Stage 1
+# because finviz data can lag or differ from yfinance — causing false negatives.
+# Example: ADEA (EPS +104%, ROE 25%, Revenue +53% per yfinance) was excluded
+# by finviz fundamental filters, despite being rank #2 in manual analysis.
+#
+# Minervini's design:
+#   Stage 1 → "Is it in a Stage 2 uptrend?" (technical screen only)
+#   Stage 2 → "Does it pass TT1-TT8?" (precise trend validation via yfinance)
+#   Stage 3 → "How does it score on SEPA 5 pillars?" (fundamentals + VCP + RS)
+
 COARSE_FILTERS = {
     # Price & liquidity
     "Price":          f"Over ${C.MIN_STOCK_PRICE:.0f}",
     "Average Volume": f"Over {C.MIN_AVG_VOLUME // 1000}K",
     "Country":        "USA",
 
-    # Basic technical (above 200-day SMA, near 52W high)
-    "20-Day Simple Moving Average": "Price above SMA20",
+    # Basic technical — above key moving averages (Stage 2 prerequisite)
     "50-Day Simple Moving Average": "Price above SMA50",
     "200-Day Simple Moving Average":"Price above SMA200",
-
-    # Fundamental minimums  (NOTE: finviz uses "Over X%" without + sign)
-    "EPS growththis year":       f"Over {C.F1_MIN_EPS_QOQ_GROWTH:.0f}%",
-    "EPS growthnext year":       "Positive (>0%)",
-    "Return on Equity":          f"Over {C.COARSE_MIN_ROE:.0f}%",
-    "Sales growthqtr over qtr":  f"Over {C.F5_MIN_SALES_GROWTH:.0f}%",
 }
+
+# Minimum candidates Stage 1 should yield; if fewer, fall back to broader filter
+MIN_STAGE1_CANDIDATES = 50
 
 
 def run_stage1(custom_filters: dict = None,
@@ -96,10 +107,18 @@ def run_stage1(custom_filters: dict = None,
 
     df = get_universe(filters, view="Overview", verbose=False)
 
-    if df.empty:
-        if verbose:
-            print("[Stage 1] No results -- check finvizfinance connection or loosen filters")
-        # Fallback: use technical screener only (remove fundamental filters)
+    # ── Auto-fallback: if primary filter is too restrictive, broaden it ────
+    if df.empty or ("Ticker" in df.columns and len(df) < MIN_STAGE1_CANDIDATES):
+        if verbose and not df.empty:
+            logger.info("[Stage 1] Only %d results from strict filter (need %d+), "
+                        "broadening to technical-only filter...",
+                        len(df), MIN_STAGE1_CANDIDATES)
+        elif verbose:
+            print("[Stage 1] No results -- broadening to technical-only filter...")
+
+        # Broader fallback: technical filters only (no fundamentals)
+        # This lets Stage 2 (TT validation) and Stage 3 (SEPA scoring)
+        # handle the precise fundamental evaluation per Minervini's design.
         fallback_filters = {
             "Price":          f"Over ${C.MIN_STOCK_PRICE:.0f}",
             "Average Volume": f"Over {C.MIN_AVG_VOLUME // 1000}K",
@@ -107,11 +126,18 @@ def run_stage1(custom_filters: dict = None,
             "200-Day Simple Moving Average": "Price above SMA200",
             "50-Day Simple Moving Average":  "Price above SMA50",
         }
-        df = get_universe(fallback_filters, view="Overview", verbose=False)
+        df_broad = get_universe(fallback_filters, view="Overview", verbose=False)
+        # Merge: keep original results + add broader results (de-duplicated)
+        if not df_broad.empty and "Ticker" in df_broad.columns:
+            if df.empty or "Ticker" not in df.columns:
+                df = df_broad
+            else:
+                combined = pd.concat([df, df_broad], ignore_index=True)
+                df = combined.drop_duplicates(subset="Ticker", keep="first")
 
     if df.empty or "Ticker" not in df.columns:
         if verbose:
-            print("[Stage 1] Fallback also empty -- using default universe (S&P500-like tickers)")
+            print("[Stage 1] Fallback also empty -- using default universe")
         return _default_universe()
 
     tickers = df["Ticker"].dropna().str.strip().tolist()
@@ -233,10 +259,16 @@ def validate_trend_template(ticker: str,
         notes.append(f"TT8 FAIL: {pct_below_hi:.1f}% below 52W high "
                      f"(max {C.TT8_MAX_BELOW_52W_HIGH_PCT}%)")
 
-    # ─ TT9: RS Rank ≥ 70 ─────────────────────────────────────────────────────
+    # ─ TT9: RS Rank ≥ 70 (EXTRA — "non-absolute but strongly recommended" per Minervini) ─
+    from modules.rs_ranking import RS_NOT_RANKED
     if rs_rank is None:
         rs_rank = get_rs_rank(ticker)
-    if rs_rank >= C.TT9_MIN_RS_RANK:
+    if rs_rank == RS_NOT_RANKED:
+        # Ticker not in RS universe — cannot evaluate TT9.  Do NOT penalise;
+        # mark as unknown so Stage 3 scoring can handle it via fundamental data.
+        checks["TT9"] = False
+        notes.append(f"TT9: RS rank not available (ticker not in RS universe)")
+    elif rs_rank >= C.TT9_MIN_RS_RANK:
         checks["TT9"] = True
     else:
         notes.append(f"TT9: RS rank {rs_rank:.0f} (need ≥{C.TT9_MIN_RS_RANK})")
@@ -262,7 +294,7 @@ def validate_trend_template(ticker: str,
         "sma50":   round(sma50, 2) if sma50 else None,
         "sma150":  round(sma150, 2) if sma150 else None,
         "sma200":  round(sma200, 2) if sma200 else None,
-        "rs_rank": round(rs_rank, 1),
+        "rs_rank": round(rs_rank, 1) if rs_rank != RS_NOT_RANKED else None,
         "pct_from_52w_high": round(-pct_below_hi, 1),
         "pct_from_52w_low":  round(pct_above_low, 1),
         "notes":   notes,
@@ -274,33 +306,45 @@ def run_stage2(tickers: list,
                verbose: bool = True) -> list:
     """
     Stage 2: Run TT1-TT10 precise validation on each ticker.
-    Uses parallel threads for speed.  Returns list of dicts (only passing).
+    Uses batch download + parallel threads for speed.  Returns list of dicts (only passing).
     """
     if verbose:
         print(f"\n[Stage 2] Validating Trend Template (TT1-TT10) "
-              f"for {len(tickers)} tickers (parallel)...")
+              f"for {len(tickers)} tickers (batch download + parallel)...")
 
     # Ensure RS rankings are loaded (from cache or compute)
     _ensure_rs_loaded()
 
-    total   = len(tickers)
+    # NOTE: No pre-filtering by RS.  Per Minervini, TT9 (RS≥70) is an
+    # "extra, non-absolute" condition.  We let ALL Stage-1 candidates through
+    # to Stage 2 so that TT1-TT8 (mandatory) decide inclusion.
+    filtered_tickers = list(tickers)
+    total = len(filtered_tickers)
+
+    # ── Batch download all historical data first ─────────────────────────
+    _progress("Stage 2 -- Trend Template", 34, "Batch-downloading price data...")
+    enriched_map = batch_download_and_enrich(
+        filtered_tickers, period="2y",
+        progress_cb=lambda bi, bt, msg: _progress(
+            "Stage 2 -- Trend Template",
+            33 + int(bi / bt * 15),
+            msg,
+        ),
+    )
+
+    # ── Parallel TT validation using pre-downloaded data ─────────────────
     passing = []
-    done    = [0]   # mutable counter for thread-safe read in _validate
+    done    = [0]
 
     def _validate(ticker: str):
         if _cancelled():
             return None
         try:
-            rs  = get_rs_rank(ticker)
-            # ETF guard: skip tickers absent from the RS universe when the
-            # cache is large enough to be meaningful (>= 200 tickers).
-            # Avoids wasting yfinance calls on sector ETFs that passed
-            # purely technical Stage-1 filters.
-            from modules.rs_ranking import _rs_df as _rs_cache
-            if rs == 0.0 and len(_rs_cache) >= 200:
-                logger.debug("[Stage 2] Skipping %s (not in RS universe)", ticker)
-                return None
-            df  = get_enriched(ticker, period="2y")
+            rs = get_rs_rank(ticker)
+            df = enriched_map.get(ticker)
+            if df is None or df.empty:
+                # Fallback to individual download if batch missed this ticker
+                df = get_enriched(ticker, period="2y")
             result = validate_trend_template(ticker, df=df, rs_rank=rs)
             if sector_leaders and ticker in sector_leaders:
                 result["checks"]["TT10"] = True
@@ -311,16 +355,16 @@ def run_stage2(tickers: list,
             logger.warning(f"Stage 2 error for {ticker}: {exc}")
             return None
 
-    workers = min(8, total, 8)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_validate, t): t for t in tickers}
+    workers = min(getattr(C, "STAGE2_MAX_WORKERS", 16), total)
+    with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
+        futures = {pool.submit(_validate, t): t for t in filtered_tickers}
         for fut in as_completed(futures):
             if _cancelled():
                 pool.shutdown(wait=False, cancel_futures=True)
                 break
             done[0] += 1
             ticker = futures[fut]
-            pct = 33 + int(done[0] / total * 33)
+            pct = 48 + int(done[0] / total * 18)
             _progress("Stage 2 -- Trend Template", pct,
                       f"{done[0]}/{total} validated", ticker)
             try:
@@ -351,6 +395,9 @@ def score_sepa_pillars(ticker: str, df: pd.DataFrame,
         fundamentals = get_fundamentals(ticker)
     if rs_rank is None:
         rs_rank = get_rs_rank(ticker)
+
+    from modules.rs_ranking import RS_NOT_RANKED as _RS_NR
+    rs_display = round(rs_rank, 1) if rs_rank != _RS_NR else None
 
     info = fundamentals.get("info", {})
 
@@ -392,7 +439,7 @@ def score_sepa_pillars(ticker: str, df: pd.DataFrame,
         "catalyst_score":   cat_score,
         "entry_score":      entry_score,
         "rr_score":         rr_score,
-        "rs_rank":          round(rs_rank, 1),
+        "rs_rank":          rs_display,
         "rr_ratio":         round(rr_ratio, 2),
         "stop_pct":         round(stop_pct, 2),
         "target_pct":       round(target_pct, 2),
@@ -408,15 +455,16 @@ def _score_trend(tt_result: dict, rs_rank: float) -> int:
     if not tt_result:
         return 0
     base = tt_result["score"] * 8   # 10 checks × 8 pts each = 80 max
-    # RS bonus
-    if rs_rank >= 90:
+    # RS bonus (only when RS is actually calculated, not default sentinel)
+    if rs_rank >= 0 and rs_rank >= 90:
         base += 20
-    elif rs_rank >= 80:
+    elif rs_rank >= 0 and rs_rank >= 80:
         base += 15
-    elif rs_rank >= 70:
+    elif rs_rank >= 0 and rs_rank >= 70:
         base += 10
-    elif rs_rank >= 60:
+    elif rs_rank >= 0 and rs_rank >= 60:
         base += 5
+    # If RS not available (RS_NOT_RANKED = -1.0): no bonus, no penalty
     return min(int(base), 100)
 
 
@@ -667,20 +715,20 @@ def run_scan(custom_filters: dict = None,
     total3 = len(s2_results)
     _progress("Stage 3 -- SEPA Scoring", 66, f"Scoring {total3} qualifying stocks...")
     if verbose:
-        print(f"\n[Stage 3] SEPA 5-pillar scoring for {total3} qualifying stocks...")
+        print(f"\n[Stage 3] SEPA 5-pillar scoring for {total3} qualifying stocks "
+              f"(parallel, {getattr(C, 'STAGE3_MAX_WORKERS', 6)} workers)...")
 
     _t3 = _time.perf_counter()
     rows = []
-    for i, tt_result in enumerate(s2_results):
+    done3 = [0]
+    _rows_lock = threading.Lock()
+
+    def _score_one(tt_result):
+        """Score a single ticker (thread-safe)."""
         if _cancelled():
-            break
+            return None
         ticker = tt_result["ticker"]
         df     = tt_result.get("df")
-        pct    = 66 + int((i + 1) / total3 * 34)
-        _progress("Stage 3 -- SEPA Scoring", pct,
-                  f"[{i+1}/{total3}] Scoring {ticker}", ticker)
-        if verbose:
-            print(f"  [{i+1}/{total3}] Scoring {ticker}...", end="\r")
         try:
             fundamentals = get_fundamentals(ticker)
             scored = score_sepa_pillars(
@@ -704,10 +752,32 @@ def run_scan(custom_filters: dict = None,
             # Strip heavy nested dicts -- prevents _clean() recursion issues
             scored.pop("vcp", None)
             scored.pop("df", None)
-            rows.append(scored)
-            time.sleep(0.1)
+            return scored
         except Exception as exc:
             logger.warning(f"Stage 3 error for {ticker}: {exc}")
+            return None
+
+    stage3_workers = min(getattr(C, "STAGE3_MAX_WORKERS", 6), total3)
+    with ThreadPoolExecutor(max_workers=max(stage3_workers, 1)) as pool:
+        futures = {pool.submit(_score_one, tt): tt["ticker"] for tt in s2_results}
+        for fut in as_completed(futures):
+            if _cancelled():
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+            done3[0] += 1
+            ticker = futures[fut]
+            pct = 66 + int(done3[0] / total3 * 34)
+            _progress("Stage 3 -- SEPA Scoring", pct,
+                      f"[{done3[0]}/{total3}] Scoring {ticker}", ticker)
+            if verbose:
+                print(f"  [{done3[0]}/{total3}] Scoring {ticker}...", end="\r")
+            try:
+                scored = fut.result()
+                if scored:
+                    with _rows_lock:
+                        rows.append(scored)
+            except Exception as exc:
+                logger.warning(f"Stage 3 future error for {ticker}: {exc}")
 
     if not rows:
         print("[Stage 3] No stocks scored successfully")

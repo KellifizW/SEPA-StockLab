@@ -6,6 +6,7 @@ Browser:  http://localhost:5000
 """
 
 import sys
+import os
 import json
 import uuid
 import logging
@@ -48,9 +49,12 @@ logging.getLogger("yfinance.utils").setLevel(logging.WARNING)
 logging.getLogger("peewee").setLevel(logging.WARNING)
 logging.getLogger("multitasking").setLevel(logging.WARNING)
 logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
+logging.getLogger("numba").setLevel(logging.WARNING)
+logging.getLogger("numba.core").setLevel(logging.WARNING)
 
 # Per-scan file logging (attached during api_scan_run)
 _scan_file_handlers: dict = {}  # {job_id: FileHandler}
+_scan_log_paths: dict = {}      # {job_id: Path} — for post-scan notification
 
 app = Flask(__name__)
 app.secret_key = "minervini-sepa-2026"
@@ -113,12 +117,13 @@ def _get_cancel(jid: str) -> threading.Event:
     return _cancel_events.get(jid, threading.Event())
 
 
-def _finish_job(jid: str, result=None, error: str = None):
+def _finish_job(jid: str, result=None, error: str = None, log_file: str = ""):
     with _jobs_lock:
         _jobs[jid]["status"] = "done" if error is None else "error"
         _jobs[jid]["result"] = result
         _jobs[jid]["error"]  = error
         _jobs[jid]["finished"] = datetime.now().isoformat()
+        _jobs[jid]["log_file"] = log_file
 
 
 def _get_job(jid: str) -> dict:
@@ -298,11 +303,13 @@ def api_scan_run():
     scan_handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
-    # Attach handler to all relevant loggers
-    for logger_name in [None, "modules.screener", "modules.rs_ranking", "modules.data_pipeline"]:
+    # Attach handler to NAMED loggers only (not root) to avoid duplicate lines
+    _SCAN_LOGGERS = ["modules.screener", "modules.rs_ranking", "modules.data_pipeline"]
+    for logger_name in _SCAN_LOGGERS:
         logger_obj = logging.getLogger(logger_name)
         logger_obj.addHandler(scan_handler)
     _scan_file_handlers[jid] = scan_handler
+    _scan_log_paths[jid] = scan_log_file
 
     def _run():
         try:
@@ -317,15 +324,17 @@ def api_scan_run():
             else:
                 rows = []
             _save_last_scan(rows)
-            _finish_job(jid, result=rows)
+            log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
+            _finish_job(jid, result=rows, log_file=log_rel)
         except Exception as exc:
             logging.exception("Scan thread error")
-            _finish_job(jid, error=str(exc))
+            log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
+            _finish_job(jid, error=str(exc), log_file=log_rel)
         finally:
             # Clean up scan-specific handler
             if jid in _scan_file_handlers:
                 handler = _scan_file_handlers.pop(jid)
-                for logger_name in [None, "modules.screener", "modules.rs_ranking", "modules.data_pipeline"]:
+                for logger_name in _SCAN_LOGGERS:
                     logging.getLogger(logger_name).removeHandler(handler)
                 handler.close()
 
@@ -349,6 +358,95 @@ def api_scan_cancel(jid):
 @app.route("/api/scan/last", methods=["GET"])
 def api_scan_last():
     return jsonify(_load_last_scan())
+
+
+@app.route("/api/scan/cache-info", methods=["GET"])
+def api_scan_cache_info():
+    """Return cache status to help users understand expected scan speed."""
+    try:
+        today = date.today().isoformat()
+        cache_dir = ROOT / C.PRICE_CACHE_DIR
+
+        # RS cache check — read first line only (fast, no pandas)
+        rs_file = ROOT / C.DATA_DIR / "rs_cache.csv"
+        rs_cached = False
+        rs_count  = 0
+        if rs_file.exists():
+            try:
+                with open(rs_file, "r", encoding="utf-8") as f:
+                    header = f.readline().strip()   # "Ticker,RS_Raw,RS_Rank,CacheDate"
+                    cols = header.split(",")
+                    date_idx = cols.index("CacheDate") if "CacheDate" in cols else -1
+                    line_count = 0
+                    cached_date = ""
+                    for line in f:
+                        line_count += 1
+                        if line_count == 1 and date_idx >= 0:
+                            parts = line.strip().split(",")
+                            if len(parts) > date_idx:
+                                cached_date = parts[date_idx]
+                    if cached_date == today and line_count > 10:
+                        rs_cached = True
+                        rs_count  = line_count
+            except Exception:
+                pass
+
+        # Price cache: count today's meta files (sample-based for speed)
+        price_cached_today = 0
+        if cache_dir.exists():
+            metas = list(cache_dir.glob("*_2y.meta"))
+            if len(metas) > 200:
+                # Sample 200 files + extrapolate for speed
+                import random
+                sample = random.sample(metas, 200)
+                hits = sum(1 for m in sample if m.read_text().strip() == today)
+                price_cached_today = int(hits / 200 * len(metas))
+            else:
+                for meta in metas:
+                    try:
+                        if meta.read_text().strip() == today:
+                            price_cached_today += 1
+                    except Exception:
+                        pass
+
+        # Fundamentals cache: count today's fmeta files (sample-based)
+        fund_cached_today = 0
+        if cache_dir.exists():
+            fmetas = list(cache_dir.glob("*_fundamentals.fmeta"))
+            if len(fmetas) > 200:
+                import random
+                sample = random.sample(fmetas, 200)
+                hits = sum(1 for m in sample if m.read_text().strip() == today)
+                fund_cached_today = int(hits / 200 * len(fmetas))
+            else:
+                for fmeta in fmetas:
+                    try:
+                        if fmeta.read_text().strip() == today:
+                            fund_cached_today += 1
+                    except Exception:
+                        pass
+
+        # Finviz in-memory cache
+        finviz_cached = False
+        try:
+            from modules.data_pipeline import _finviz_cache
+            finviz_cached = len(_finviz_cache) > 0
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": True,
+            "cache": {
+                "rs_cached":          rs_cached,
+                "rs_count":           rs_count,
+                "price_cached_today": price_cached_today,
+                "fund_cached_today":  fund_cached_today,
+                "finviz_cached":      finviz_cached,
+                "finviz_ttl_hours":   getattr(C, "FINVIZ_CACHE_TTL_HOURS", 4),
+            }
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
 
 
 @app.route("/api/scan/status/<jid>")
@@ -660,6 +758,25 @@ def api_rs_top():
         return jsonify({"ok": True, "rows": rows, "count": len(rows)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Admin API — Server restart
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/admin/restart", methods=["POST"])
+def api_restart_server():
+    """Gracefully restart the Flask development server."""
+    def _restart():
+        import time
+        time.sleep(1)  # Give response time to reach client
+        os.execv(sys.executable, [sys.executable, str(ROOT / "app.py")])
+    
+    try:
+        threading.Thread(target=_restart, daemon=False).start()
+        return jsonify({"ok": True, "message": "Server restarting..."}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

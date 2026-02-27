@@ -288,7 +288,10 @@ def cmd_rs(args):
             print("  Usage: rs get TICKER")
             return
         rank = get_rs_rank(args.ticker.upper())
-        print(f"  {args.ticker.upper()}  RS Rank: {rank:.0f}")
+        if rank < 0:
+            print(f"  {args.ticker.upper()}  RS Rank: N/A (not in RS universe)")
+        else:
+            print(f"  {args.ticker.upper()}  RS Rank: {rank:.0f}")
     else:
         print(f"  Unknown rs sub-command: {sub}")
         print("  Available: top | refresh | get")
