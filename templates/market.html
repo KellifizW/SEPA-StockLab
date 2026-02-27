@@ -132,6 +132,35 @@
     </div>
   </div>
 
+  <!-- Market Regime History -->
+  <div class="row g-3 mt-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-clock-history me-2"></i>Market Regime History (Last 30 days)</div>
+        <div class="card-body p-0">
+          <div id="historyLoading" class="p-4 text-center text-muted">
+            <div class="spinner-border spinner-border-sm text-info"></div>
+            <div class="small mt-2">Loading regime history…</div>
+          </div>
+          <div id="historyTable" style="display:none">
+            <div class="table-responsive">
+              <table class="table table-hover mb-0">
+                <thead><tr>
+                  <th>Date</th><th>Regime</th><th>Distribution Days</th><th>Breadth %</th><th>NH/NL %</th><th>Action</th>
+                </tr></thead>
+                <tbody id="historyBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="historyEmpty" style="display:none" class="p-4 text-center text-muted">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>
+            No market history yet. Run market assessment to start tracking.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Log file path -->
   <div id="marketLogBar" class="mt-3 d-none">
     <div class="card" style="background:#0d1520; border-color:#1e2d3d;">
@@ -329,6 +358,59 @@ function renderMarket(d) {
     ${!leading.length && !lagging.length ? '<span class="text-muted">Sector data unavailable.</span>' : ''}`;
 
   document.getElementById('result').classList.remove('d-none');
+  loadMarketHistory();
 }
-</script>
+
+async function loadMarketHistory() {
+  try {
+    document.getElementById('historyLoading').style.display = 'block';
+    document.getElementById('historyTable').style.display = 'none';
+    document.getElementById('historyEmpty').style.display = 'none';
+
+    const r = await fetch('/api/db/market-history?days=30').then(x => x.json());
+    const rows = r.rows || [];
+
+    if (!rows.length) {
+      document.getElementById('historyLoading').style.display = 'none';
+      document.getElementById('historyEmpty').style.display = 'block';
+      return;
+    }
+
+    const regimeColors = {
+      'CONFIRMED_UPTREND': '#3fb950',
+      'UPTREND_UNDER_PRESSURE': '#e3b341',
+      'MARKET_IN_CORRECTION': '#f85149',
+      'DOWNTREND': '#f85149',
+      'CONFIRMED_DOWNTREND': '#f85149'
+    };
+
+    const html = rows.map(row => {
+      const regime = row.regime || '—';
+      const color = regimeColors[regime] || '#8b949e';
+      const actionEmoji = regime.includes('UPTREND') ? '📈' : regime.includes('CORRECTION') ? '⚠️' : '📉';
+      return `<tr>
+        <td class="text-muted small">${row.env_date}</td>
+        <td><span class="badge" style="background-color:${color};">${actionEmoji} ${regime}</span></td>
+        <td>${row.distribution_days != null ? row.distribution_days : '—'}</td>
+        <td>${row.breadth_pct != null ? row.breadth_pct + '%' : '—'}</td>
+        <td>${row.nh_nl_ratio != null ? row.nh_nl_ratio + '%' : '—'}</td>
+        <td><span class="small text-muted">${row.action_matrix || '—'}</span></td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('historyBody').innerHTML = html;
+    document.getElementById('historyLoading').style.display = 'none';
+    document.getElementById('historyTable').style.display = 'block';
+  } catch (e) {
+    console.error('Error loading market history:', e);
+    document.getElementById('historyLoading').style.display = 'none';
+    document.getElementById('historyEmpty').style.display = 'block';
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Tooltips
+  new bootstrap.Tooltip(document.body, {selector: '[data-bs-toggle="tooltip"]'});
+});
+
 {% endblock %}

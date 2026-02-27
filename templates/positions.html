@@ -152,13 +152,106 @@ async function addPosition() {
   const n = document.getElementById('pNote').value;
   if (!t||!e||!s||!sl) { toast('Fill in Ticker, Entry, Shares, Stop Loss', false); return; }
 
-  const r = await fetch('/api/positions/add', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ticker:t, buy_price:e, shares:s, stop_loss:sl, target:tg, note:n})
-  }).then(x=>x.json());
+  // Show loading state
+  const btn = event?.target;
+  if (btn) btn.disabled = true;
 
-  if (r.ok) { toast(`${t} position added`); window.location.reload(); }
-  else toast(`Error: ${r.error}`, false);
+  try {
+    console.log(`[addPosition] Starting for ${t}...`);
+    const fetchStart = Date.now();
+    
+    const r = await Promise.race([
+      fetch('/api/positions/add', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ticker:t, buy_price:e, shares:s, stop_loss:sl, target:tg, note:n})
+      }).then(x=>x.json()),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Request timeout (10s)')), 10000)
+      )
+    ]);
+    
+    const fetchTime = Date.now() - fetchStart;
+    console.log(`[addPosition] API response: ${fetchTime}ms, ok=${r.ok}`);
+
+    if (r.ok && r.positions && r.positions[t]) {
+      const p = r.positions[t];
+      const tbody = document.getElementById('posBody');
+      
+      // Remove empty placeholder row if exists
+      const emptyRows = tbody.querySelectorAll('tr');
+      for (const row of emptyRows) {
+        if (row.textContent.includes('No open positions')) {
+          row.remove();
+          break;
+        }
+      }
+      
+      // Build new row HTML
+      const newRowHTML = `<tr id="pos-${t}" class="table-primary" style="opacity:0.7; animation: fadeIn 0.5s;">
+        <td><a href="/analyze?ticker=${t}" class="fw-bold text-decoration-none" style="color:var(--accent)">${t}</a></td>
+        <td>$${p.buy_price.toFixed(2)}</td>
+        <td class="text-danger">$${p.stop_loss.toFixed(2)}</td>
+        <td class="text-success">$${p.target.toFixed(2)}</td>
+        <td>${p.rr.toFixed(1)}:1</td>
+        <td>${p.shares.toLocaleString()}</td>
+        <td>$${p.risk_dollar.toLocaleString()}</td>
+        <td>${p.days_held || 0}</td>
+        <td class="text-muted small">${p.note}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-danger" onclick="closePos('${t}')">
+            <i class="bi bi-door-open me-1"></i>Close
+          </button>
+        </td>
+      </tr>`;
+      
+      // Add or update row
+      const existingRow = document.getElementById(`pos-${t}`);
+      if (existingRow) {
+        existingRow.outerHTML = newRowHTML;
+      } else {
+        tbody.insertAdjacentHTML('beforeend', newRowHTML);
+      }
+      
+      // Clear and collapse form
+      document.getElementById('pTicker').value = '';
+      document.getElementById('pEntry').value = '';
+      document.getElementById('pShares').value = '';
+      document.getElementById('pStop').value = '';
+      document.getElementById('pTarget').value = '';
+      document.getElementById('pNote').value = '';
+      
+      const addForm = document.getElementById('addForm');
+      if (addForm.classList.contains('show')) {
+        addForm.classList.remove('show');
+      }
+      
+      toast(`${t} position added successfully`);
+      console.log(`[addPosition] Row updated, total time: ${Date.now() - fetchStart}ms`);
+    }
+    else {
+      const err = r.error || 'Unknown error';
+      console.log(`[addPosition] API error: ${err}`);
+      toast(`Error: ${err}`, false);
+    }
+    if (btn) btn.disabled = false;
+  } catch(e) {
+    console.error('[addPosition] Exception:', e);
+    toast(`Error: ${e.message}`, false);
+    if (btn) btn.disabled = false;
+  }
+}
+
+// CSS for animation
+if (!document.querySelector('style[data-animation]')) {
+  const style = document.createElement('style');
+  style.setAttribute('data-animation', 'true');
+  style.textContent = `
+    @keyframes fadeIn {
+      from { opacity: 0.3; background-color: var(--bs-primary); }
+      to { opacity: 1; background-color: transparent; }
+    }
+  `;
+  document.head.appendChild(style);
 }
 
 function closePos(ticker) {
@@ -178,7 +271,11 @@ async function confirmClose() {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ticker:_closingTicker, exit_price:exitP, reason})
   }).then(x=>x.json());
-  if (r.ok) { toast(`${_closingTicker} closed successfully`); window.location.reload(); }
+  if (r.ok) {
+    toast(`${_closingTicker} closed successfully`);
+    // After brief delay, reload page
+    setTimeout(() => window.location.reload(), 100);
+  }
   else toast(`Error: ${r.error}`, false);
 }
 

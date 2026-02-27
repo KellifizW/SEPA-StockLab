@@ -82,6 +82,24 @@
       </div>
     </div>
 
+    <!-- Score History Chart -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-graph-up me-2"></i>Score History (Last 90 days)</div>
+        <div class="card-body">
+          <div id="historyLoading" class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-info"></div>
+            <div class="text-muted small mt-2">Loading chart…</div>
+          </div>
+          <div id="historyChart" style="position:relative;height:300px;display:none"></div>
+          <div id="historyEmpty" style="display:none" class="text-center py-4 text-muted">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>
+            這隻股票還沒有出現在之前的掃描中。
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Recommendation -->
     <div class="col-12">
       <div class="card" id="recCard">
@@ -281,6 +299,111 @@ function renderResult(d, ticker) {
     </div>`;
 
   document.getElementById('result').classList.remove('d-none');
+
+  // Load and render score history chart asynchronously
+  loadScoreHistory(ticker);
+}
+
+async function loadScoreHistory(ticker) {
+  try {
+    document.getElementById('historyLoading').style.display = 'block';
+    document.getElementById('historyChart').style.display = 'none';
+    document.getElementById('historyEmpty').style.display = 'none';
+
+    const scanTrend = await fetch(`/api/db/scan-trend/${ticker}?days=90`).then(x => x.json());
+    const rsTrend = await fetch(`/api/db/rs-trend/${ticker}?days=90`).then(x => x.json());
+
+    const scanRows = scanTrend.rows || [];
+    const rsRows = rsTrend.rows || [];
+
+    if (!scanRows.length) {
+      document.getElementById('historyLoading').style.display = 'none';
+      document.getElementById('historyEmpty').style.display = 'block';
+      return;
+    }
+
+    // Build chart data
+    const dates = scanRows.map(r => r.scan_date);
+    const scores = scanRows.map(r => r.sepa_score || 0);
+    const rsRanks = rsRows.length ? rsRows.map(r => r.rs_rank || 0) : Array(scanRows.length).fill(null);
+
+    // Create dual-axis chart
+    const ctx = document.getElementById('historyChart');
+    if (ctx.chart) ctx.chart.destroy();
+
+    ctx.chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: dates,
+        datasets: [
+          {
+            label: 'SEPA Score',
+            data: scores,
+            borderColor: '#00d4ff',
+            backgroundColor: 'rgba(0, 212, 255, 0.1)',
+            yAxisID: 'y',
+            tension: 0.3,
+            borderWidth: 2,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            pointBackgroundColor: '#00d4ff'
+          },
+          {
+            label: 'RS Rank %ile',
+            data: rsRanks,
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88, 166, 255, 0.1)',
+            yAxisID: 'y1',
+            tension: 0.3,
+            borderWidth: 2,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            pointBackgroundColor: '#58a6ff'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {mode: 'index', intersect: false},
+        plugins: {
+          legend: {
+            labels: {color: '#c9d1d9', usePointStyle: true}
+          }
+        },
+        scales: {
+          x: {
+            grid: {color: '#30363d'},
+            ticks: {color: '#8b949e', maxTicksLimit: 8}
+          },
+          y: {
+            type: 'linear',
+            position: 'left',
+            grid: {color: '#30363d'},
+            ticks: {color: '#8b949e'},
+            min: 0,
+            max: 100,
+            title: {display: true, text: 'SEPA Score', color: '#00d4ff'}
+          },
+          y1: {
+            type: 'linear',
+            position: 'right',
+            grid: {drawOnChartArea: false},
+            ticks: {color: '#8b949e'},
+            min: 0,
+            max: 100,
+            title: {display: true, text: 'RS Rank %ile', color: '#58a6ff'}
+          }
+        }
+      }
+    });
+
+    document.getElementById('historyLoading').style.display = 'none';
+    document.getElementById('historyChart').style.display = 'block';
+  } catch (e) {
+    console.error('Error loading score history:', e);
+    document.getElementById('historyLoading').style.display = 'none';
+  }
 }
 
 function prefillPosition(ticker, entry, shares, stop, target) {

@@ -1,0 +1,22 @@
+{
+  "positions": {
+    "TEST": {
+      "buy_price": 100.0,
+      "shares": 100,
+      "stop_loss": 95.0,
+      "stop_pct": 5.0,
+      "target": 120.0,
+      "rr": 2.0,
+      "risk_dollar": 500.0
+    }
+  },
+  "closed": [
+    {
+      "ticker": "OLD",
+      "buy_price": 50.0,
+      "exit_price": 55.0,
+      "pnl_pct": 10.0
+    }
+  ],
+  "account_high": 100000.0
+}

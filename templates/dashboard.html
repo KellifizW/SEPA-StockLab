@@ -110,6 +110,35 @@
   </div>
 </div>
 
+<!-- Persistent Signals -->
+<div class="row g-3 mt-1">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-arrow-repeat me-2"></i>Persistent Signals (Last 30 days, ≥3 appearances)</div>
+      <div class="card-body p-0">
+        <div id="persistentLoading" class="p-4 text-center text-muted">
+          <div class="spinner-border spinner-border-sm text-info"></div>
+          <div class="small mt-2">Loading signals…</div>
+        </div>
+        <div id="persistentTable" style="display:none">
+          <div class="table-responsive">
+            <table class="table table-hover mb-0">
+              <thead><tr>
+                <th>Ticker</th><th>Appearances</th><th>Avg Score</th><th>Max Score</th><th>Best VCP</th><th>Last Seen</th>
+              </tr></thead>
+              <tbody id="persistentBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="persistentEmpty" style="display:none" class="p-4 text-center text-muted">
+          <i class="bi bi-inbox fs-2 d-block mb-2"></i>
+          No persistent signals yet. Run a few scans first.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Quick actions -->
 <div class="row g-3 mt-1">
   <div class="col-12">
@@ -134,6 +163,46 @@
 
 {% block extra_js %}
 <script>
+async function loadPersistentSignals() {
+  try {
+    document.getElementById('persistentLoading').style.display = 'block';
+    document.getElementById('persistentTable').style.display = 'none';
+    document.getElementById('persistentEmpty').style.display = 'none';
+
+    const r = await fetch('/api/db/watchlist-history').then(x => x.json());
+    const rows = r.rows || [];
+
+    if (!rows.length) {
+      document.getElementById('persistentLoading').style.display = 'none';
+      document.getElementById('persistentEmpty').style.display = 'block';
+      return;
+    }
+
+    const html = rows.map(row => `<tr onclick="window.location='/analyze?ticker=${row.ticker}'" style="cursor:pointer">
+      <td><strong style="color:var(--accent)">${row.ticker}</strong></td>
+      <td>${Math.round(row.appearances)}</td>
+      <td>${Number(row.avg_score||0).toFixed(1)}</td>
+      <td><span class="score-high">${Number(row.max_score||0).toFixed(1)}</span></td>
+      <td><span class="tag-vcp">${row.best_vcp||'—'}</span></td>
+      <td class="text-muted small">${row.last_seen}</td>
+    </tr>`).join('');
+
+    document.getElementById('persistentBody').innerHTML = html;
+    document.getElementById('persistentLoading').style.display = 'none';
+    document.getElementById('persistentTable').style.display = 'block';
+  } catch (e) {
+    console.error('Error loading persistent signals:', e);
+    document.getElementById('persistentLoading').style.display = 'none';
+    document.getElementById('persistentEmpty').style.display = 'block';
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Load persistent signals asynchronously after page render
+  // Don't block page display - give DOM time to render first
+  setTimeout(() => loadPersistentSignals(), 50);
+});
+
 async function generateReport() {
   toast('Generating report…');
   const r = await fetch('/api/report/generate', {method:'POST'}).then(x=>x.json());

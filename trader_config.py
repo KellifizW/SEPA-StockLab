@@ -167,6 +167,8 @@ PRICE_CACHE_DIR = "data/price_cache"
 # ─────────────────────────────────────────────────────────────────────────────
 DB_FILE = "data/sepa_stock.duckdb"      # DuckDB historical store location
 DB_ENABLED = True                        # Set False to disable all DB writes
+DB_JSON_BACKUP_ENABLED = True            # Dual-write to JSON for safety (Phase 2)
+DB_JSON_BACKUP_DIR = "data/db_backups"  # Backup JSON location if DuckDB fails
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SEPA SCORING WEIGHTS  (relative importance of each pillar)

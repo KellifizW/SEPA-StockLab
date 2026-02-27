@@ -70,6 +70,29 @@ _jobs: dict = {}          # { job_id: {"status": "pending|done|error", "result":
 _jobs_lock = threading.Lock()
 _cancel_events: dict = {}  # { job_id: threading.Event }
 
+# ── API response cache (for expensive queries) ─────────────────────────────────
+_cache: dict = {}         # { cache_key: {"data": ..., "time": timestamp} }
+_cache_lock = threading.Lock()
+_CACHE_TTL = 300  # 5 minutes in seconds
+
+def _get_cached(key):
+    """Get cached response if still fresh (within TTL)."""
+    with _cache_lock:
+        if key in _cache:
+            import time
+            age = time.time() - _cache[key]["time"]
+            if age < _CACHE_TTL:
+                return _cache[key]["data"]
+            else:
+                del _cache[key]
+    return None
+
+def _set_cache(key, data):
+    """Cache a response."""
+    import time
+    with _cache_lock:
+        _cache[key] = {"data": data, "time": time.time()}
+
 # ── last scan persistence ─────────────────────────────────────────────────────
 _LAST_SCAN_FILE = ROOT / C.DATA_DIR / "last_scan.json"
 
@@ -111,6 +134,10 @@ def _save_last_scan(rows: list, all_rows: list = None):
                     seen.add(r.get("ticker"))
                     deduped.append(r)
             append_scan_history(deduped)
+            # Invalidate cache since we have new scan data
+            with _cache_lock:
+                if "watchlist-history" in _cache:
+                    del _cache["watchlist-history"]
         except Exception as exc:
             logging.warning(f"DB scan_history write skipped: {exc}")
 
@@ -233,23 +260,38 @@ def _clean(obj):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _load_watchlist() -> dict:
-    p = ROOT / C.DATA_DIR / "watchlist.json"
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    """Load watchlist from modules (supports both DuckDB and JSON)."""
+    try:
+        from modules.watchlist import _load
+        return _load()
+    except Exception as exc:
+        logger.warning("Failed to load watchlist from modules: %s", exc)
+        # Fallback to direct JSON read
+        p = ROOT / C.DATA_DIR / "watchlist.json"
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
     return {"A": {}, "B": {}, "C": {}}
 
 
 def _load_positions() -> dict:
-    p = ROOT / C.DATA_DIR / "positions.json"
-    if p.exists():
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
-            return raw.get("positions", {})
-        except Exception:
-            pass
+    """Load positions from modules (supports both DuckDB and JSON)."""
+    try:
+        from modules.position_monitor import _load
+        data = _load()
+        return data.get("positions", {})
+    except Exception as exc:
+        logger.warning("Failed to load positions from modules: %s", exc)
+        # Fallback to direct JSON read
+        p = ROOT / C.DATA_DIR / "positions.json"
+        if p.exists():
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                return raw.get("positions", {})
+            except Exception:
+                pass
     return {}
 
 
@@ -597,6 +639,15 @@ def api_market_run():
             logging.getLogger("modules.market_env").info(
                 "=== Market Assessment finished — regime: %s ===",
                 result.get("regime", "UNKNOWN"))
+            
+            # ── DuckDB 市場環境歷史 ─────────────────────────────────────
+            if getattr(C, "DB_ENABLED", True) and result:
+                try:
+                    from modules.db import append_market_env
+                    append_market_env(result)
+                except Exception as exc:
+                    logging.warning(f"DB market_env write skipped: {exc}")
+            
             log_rel = str(market_log_file.relative_to(ROOT)) if market_log_file.exists() else ""
             _finish_job(jid, result=_clean(result), log_file=log_rel)
         except Exception as exc:
@@ -721,10 +772,18 @@ def api_positions_get():
 
 @app.route("/api/positions/add", methods=["POST"])
 def api_positions_add():
+    import time
+    start_t = time.time()
+    
     data   = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    
+    logging.info(f"[API] positions/add START: {ticker}")
+    
     try:
         from modules.position_monitor import add_position
+        
+        t1 = time.time()
         add_position(
             ticker,
             float(data["buy_price"]),
@@ -733,8 +792,48 @@ def api_positions_add():
             float(data["target"]) if data.get("target") else None,
             str(data.get("note", "")),
         )
-        return jsonify({"ok": True, "positions": _load_positions()})
+        t2 = time.time()
+        logging.info(f"[API] add_position() completed in {(t2-t1):.3f}s")
+        
+        # Don't reload all positions - just return the one that was added
+        buy_price = float(data["buy_price"])
+        shares = int(data["shares"])
+        stop_loss = float(data["stop_loss"])
+        target = float(data["target"]) if data.get("target") else None
+        
+        if target is None:
+            risk = buy_price - stop_loss
+            target = buy_price + risk * 2  # Default 2:1 R:R
+        
+        stop_pct = (buy_price - stop_loss) / buy_price * 100
+        rr = (target - buy_price) / (buy_price - stop_loss) if (buy_price - stop_loss) > 0 else 0
+        risk_dol = shares * (buy_price - stop_loss)
+        
+        # Return just the new position without full reload
+        positions_dict = {
+            ticker: {
+                "buy_price": round(buy_price, 2),
+                "shares": shares,
+                "stop_loss": round(stop_loss, 2),
+                "stop_pct": round(stop_pct, 2),
+                "target": round(target, 2),
+                "rr": round(rr, 2),
+                "risk_dollar": round(risk_dol, 2),
+                "buy_date": None,
+                "days_held": 0,
+                "note": str(data.get("note", "")),
+            }
+        }
+        
+        elapsed = time.time() - start_t
+        logging.info(f"[API] positions/add DONE in {elapsed:.3f}s: {ticker}")
+        
+        return jsonify({"ok": True, "positions": positions_dict})
     except Exception as exc:
+        elapsed = time.time() - start_t
+        logging.error(f"[API] positions/add FAILED ({elapsed:.3f}s): {exc}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
@@ -929,6 +1028,39 @@ def api_db_rs_trend(ticker: str):
         df = query_rs_trend(ticker.upper(), days)
         return jsonify({"ok": True, "ticker": ticker.upper(),
                         "rows": df.to_dict(orient="records")})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/db/market-history", methods=["GET"])
+def api_db_market_history():
+    """Market regime history for the last N days (for charts)."""
+    days = int(request.args.get("days", 60))
+    try:
+        from modules.db import query_market_env_history
+        df = query_market_env_history(days)
+        return jsonify({"ok": True, "rows": df.to_dict(orient="records")})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/db/watchlist-history", methods=["GET"])
+def api_db_watchlist_history():
+    """Persistent signals — tickers appearing ≥3 times in scan history (cached)."""
+    try:
+        # Check cache first
+        cached = _get_cached("watchlist-history")
+        if cached:
+            return jsonify({"ok": True, "rows": cached, "cached": True})
+        
+        from modules.db import query_persistent_signals
+        df = query_persistent_signals(min_appearances=3, days=30)
+        rows = df.to_dict(orient="records")
+        
+        # Cache the result
+        _set_cache("watchlist-history", rows)
+        
+        return jsonify({"ok": True, "rows": rows, "cached": False})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})
 

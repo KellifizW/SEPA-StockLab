@@ -1,0 +1,3 @@
+2026-02-27 15:59:57,074 - __main__ - INFO - Starting Flask app...
+2026-02-27 15:59:57,208 - __main__ - INFO - App module imported successfully
+2026-02-27 15:59:57,209 - __main__ - INFO - Starting Flask server on http://localhost:5000

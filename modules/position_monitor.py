@@ -47,20 +47,41 @@ _RESET  = "\033[0m"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _load() -> dict:
+    """Load positions from JSON only (fastest, most reliable)."""
+    import time
+    start = time.time()
+    
     if POSITIONS_FILE.exists():
         try:
-            return json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+            data = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+            elapsed = time.time() - start
+            logger.debug(f"[position_monitor] Loaded from JSON in {elapsed*1000:.1f}ms")
+            return data
+        except Exception as exc:
+            logger.warning("[position_monitor] JSON load failed: %s, returning empty", exc)
+    
     return {"positions": {}, "closed": [], "account_high": C.ACCOUNT_SIZE}
 
 
 def _save(data: dict):
-    POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    POSITIONS_FILE.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    """Save positions to JSON only (DuckDB is for historical analysis, not real-time positions)."""
+    if not data:
+        return
+    
+    import time
+    start = time.time()
+    
+    # Save to JSON (fast, reliable)
+    try:
+        POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        POSITIONS_FILE.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        elapsed = time.time() - start
+        logger.debug(f"[position_monitor] Saved to JSON in {elapsed*1000:.1f}ms")
+    except Exception as exc:
+        logger.warning("[position_monitor] JSON save failed: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -74,8 +95,13 @@ def add_position(ticker: str, buy_price: float, shares: int,
     stop_loss: absolute price (not percentage).
     target:    target price (optional, auto-calculated if None).
     """
+    import time
     ticker = ticker.upper().strip()
-    data   = _load()
+    start = time.time()
+    
+    # Fast JSON-only load (no DuckDB)
+    data = _load()
+    t1 = time.time()
 
     if ticker in data["positions"]:
         print(f"  {ticker} already in positions — use remove_position first to update")
@@ -104,6 +130,10 @@ def add_position(ticker: str, buy_price: float, shares: int,
         "note":        note,
     }
     _save(data)
+    
+    elapsed = time.time() - start
+    logger.info(f"[add_position] {ticker} completed in {elapsed*1000:.1f}ms")
+    
     print(f"  ✓ {ticker}: {shares} shares @ ${buy_price:.2f}  "
           f"Stop: ${stop_loss:.2f} (-{stop_pct:.1f}%)  "
           f"Target: ${target:.2f}  R:R {rr:.1f}:1")

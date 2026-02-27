@@ -53,20 +53,61 @@ _RESET  = "\033[0m"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _load() -> dict:
+    """Load watchlist from DuckDB (Phase 2), fallback to JSON for compatibility."""
+    if not C.DB_ENABLED:
+        # DB disabled: use JSON only
+        if WATCHLIST_FILE.exists():
+            try:
+                return json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {"A": {}, "B": {}, "C": {}}
+    
+    # Try DuckDB first
+    try:
+        from modules import db
+        data = db.wl_load()
+        if data and any(data.get(g) for g in "ABC"):
+            logger.info("[watchlist] Loaded from DuckDB")
+            return data
+    except Exception as exc:
+        logger.warning("[watchlist] DuckDB load failed: %s, trying JSON fallback", exc)
+    
+    # Fallback to JSON
     if WATCHLIST_FILE.exists():
         try:
-            return json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+            data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+            logger.info("[watchlist] Loaded from JSON (fallback)")
+            return data
         except Exception:
             pass
+    
     return {"A": {}, "B": {}, "C": {}}
 
 
 def _save(data: dict):
-    WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    WATCHLIST_FILE.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    """Save watchlist to DuckDB (Phase 2), with JSON backup."""
+    if not data:
+        return
+    
+    # Always save to JSON for compatibility/backup
+    try:
+        WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        WATCHLIST_FILE.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        logger.debug("[watchlist] Saved to JSON")
+    except Exception as exc:
+        logger.warning("[watchlist] JSON save failed: %s", exc)
+    
+    # If DuckDB enabled, also save to DB
+    if C.DB_ENABLED:
+        try:
+            from modules import db
+            db.wl_save(data)
+        except Exception as exc:
+            logger.warning("[watchlist] DuckDB save failed: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
