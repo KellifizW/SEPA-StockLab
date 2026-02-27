@@ -130,16 +130,26 @@ def _finish_job(jid: str, result=None, error: str = None, log_file: str = ""):
         _jobs[jid]["log_file"] = log_file
 
 
+_market_job_ids: set = set()  # Track which job IDs are market assessments
+
+
 def _get_job(jid: str) -> dict:
-    """Return a copy of the job dict, merging live screener progress if still pending."""
+    """Return a copy of the job dict, merging live progress if still pending."""
     with _jobs_lock:
         job = dict(_jobs.get(jid, {"status": "not_found"}))
     if job.get("status") == "pending":
-        try:
-            from modules.screener import get_scan_progress
-            job["progress"] = get_scan_progress()
-        except Exception:
-            pass
+        if jid in _market_job_ids:
+            try:
+                from modules.market_env import get_market_progress
+                job["progress"] = get_market_progress()
+            except Exception:
+                pass
+        else:
+            try:
+                from modules.screener import get_scan_progress
+                job["progress"] = get_scan_progress()
+            except Exception:
+                pass
     return job
 
 
@@ -547,14 +557,40 @@ def api_vcp_status(jid):
 @app.route("/api/market/run", methods=["POST"])
 def api_market_run():
     jid = _new_job()
+    _market_job_ids.add(jid)
+
+    # Create a unique log file for this market assessment
+    market_log_file = _LOG_DIR / f"market_{jid}_{datetime.now().isoformat(timespec='seconds').replace(':', '-')}.log"
+    market_handler = logging.FileHandler(market_log_file, encoding="utf-8")
+    market_handler.setLevel(logging.DEBUG)
+    market_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    _MARKET_LOGGERS = ["modules.market_env", "modules.data_pipeline"]
+    for logger_name in _MARKET_LOGGERS:
+        logging.getLogger(logger_name).addHandler(market_handler)
 
     def _run():
         try:
             from modules.market_env import assess
+            logging.getLogger("modules.market_env").info(
+                "=== Market Assessment started (job %s) ===", jid)
             result = assess(verbose=False)
-            _finish_job(jid, result=_clean(result))
+            logging.getLogger("modules.market_env").info(
+                "=== Market Assessment finished — regime: %s ===",
+                result.get("regime", "UNKNOWN"))
+            log_rel = str(market_log_file.relative_to(ROOT)) if market_log_file.exists() else ""
+            _finish_job(jid, result=_clean(result), log_file=log_rel)
         except Exception as exc:
-            _finish_job(jid, error=str(exc))
+            logging.getLogger("modules.market_env").exception(
+                "Market assessment thread error")
+            log_rel = str(market_log_file.relative_to(ROOT)) if market_log_file.exists() else ""
+            _finish_job(jid, error=str(exc), log_file=log_rel)
+        finally:
+            for logger_name in _MARKET_LOGGERS:
+                logging.getLogger(logger_name).removeHandler(market_handler)
+            market_handler.close()
+            _market_job_ids.discard(jid)
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"job_id": jid})

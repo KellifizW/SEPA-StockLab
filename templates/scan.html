@@ -158,6 +158,16 @@
 </div>
 
 <!-- ── Results table ──────────────────────────────────────────────────────── -->
+<!-- Log file bar -->
+<div id="scanLogBar" class="mb-2 d-none">
+  <div class="card" style="background:#0d1520; border-color:#1e2d3d;">
+    <div class="card-body py-2 d-flex align-items-center gap-2 small">
+      <i class="bi bi-journal-text" style="color:var(--accent)"></i>
+      <span class="text-muted">Log file:</span>
+      <code id="scanLogPath" style="color:#58a6ff; font-size:0.8rem;"></code>
+    </div>
+  </div>
+</div>
 <div id="resultsSection" class="d-none">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <span id="resultCount" class="text-muted small"></span>
@@ -528,6 +538,12 @@ function onScanDone(rows, logFile) {
     `✅ 掃描完成 — 找到 ${_scanData.length} 檔股票${logHint}`,
     true
   );
+
+  // Show persistent log bar
+  if (logFile) {
+    document.getElementById('scanLogPath').textContent = logFile;
+    document.getElementById('scanLogBar').classList.remove('d-none');
+  }
 
   // Refresh cache info after scan completes
   loadCacheInfo();

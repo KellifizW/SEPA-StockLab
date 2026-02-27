@@ -13,13 +13,16 @@ Implements:
 """
 
 import sys
+import re as _re
 import logging
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 import numpy as np
+import requests as _requests
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -32,6 +35,20 @@ from modules.data_pipeline import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Progress tracking (mirroring screener pattern) ────────────────────────────
+_market_lock = threading.Lock()
+_market_progress = {"stage": "idle", "pct": 0, "msg": "", "step": 0, "total_steps": 7}
+
+def get_market_progress() -> dict:
+    with _market_lock:
+        return dict(_market_progress)
+
+def _mprog(stage: str, pct: int, msg: str = "", step: int = 0):
+    logger.info("[Progress %d%%] %s — %s", pct, stage, msg)
+    with _market_lock:
+        _market_progress.update({"stage": stage, "pct": pct, "msg": msg,
+                                  "step": step, "total_steps": 7})
 
 _GREEN  = "\033[92m"
 _YELLOW = "\033[93m"
@@ -53,36 +70,74 @@ def assess(verbose: bool = True) -> dict:
       sector_rankings, action_matrix, leading_sectors, lagging_sectors,
       nh_nl_ratio, assessed_at
     """
-    print("  Fetching market index data …")
+    _mprog("Fetching index data", 5, f"Downloading {', '.join(C.MARKET_INDICES.keys())}…", step=1)
+    logger.info("Fetching market index data for %s …", C.MARKET_INDICES)
 
     # Download enriched data for all four indices
     index_data = {}
-    for sym in C.MARKET_INDICES:
+    idx_names = list(C.MARKET_INDICES.keys())
+    for i, sym in enumerate(idx_names):
+        _mprog("Fetching index data", 5 + i * 3,
+               f"Downloading {sym} ({i+1}/{len(idx_names)})…", step=1)
         try:
             df = get_enriched(sym, period="1y")
             if df is not None and not df.empty:
                 index_data[sym] = df
+                logger.info("  %s: fetched %d rows, last close=%.2f",
+                            sym, len(df), float(df['Close'].iloc[-1]))
+            else:
+                logger.warning("  %s: returned empty/None dataframe", sym)
         except Exception as exc:
-            logger.warning(f"Could not fetch {sym}: {exc}")
+            logger.warning("Could not fetch %s: %s", sym, exc)
 
     if not index_data:
+        logger.error("Could not fetch ANY index data — returning UNKNOWN regime")
+        _mprog("Error", 100, "Could not fetch any index data", step=0)
         return {"regime": "UNKNOWN", "error": "Could not fetch index data"}
 
-    # Core analysis
-    spy_trend    = _analyze_index(index_data.get("SPY"))
-    qqq_trend    = _analyze_index(index_data.get("QQQ"))
-    iwm_trend    = _analyze_index(index_data.get("IWM"))
+    logger.info("Successfully fetched %d/%d indices: %s",
+                len(index_data), len(C.MARKET_INDICES), list(index_data.keys()))
 
+    # Core analysis
+    _mprog("Analysing index trends", 20, "SPY / QQQ / IWM trend analysis…", step=2)
+    logger.info("--- Analysing index trends ---")
+    spy_trend    = _analyze_index(index_data.get("SPY"))
+    logger.info("  SPY trend: %s", spy_trend)
+    qqq_trend    = _analyze_index(index_data.get("QQQ"))
+    logger.info("  QQQ trend: %s", qqq_trend)
+    iwm_trend    = _analyze_index(index_data.get("IWM"))
+    logger.info("  IWM trend: %s", iwm_trend)
+    dia_trend    = _analyze_index(index_data.get("DIA"))
+    logger.info("  DIA trend: %s", dia_trend)
+
+    _mprog("Counting distribution days", 30, "Checking last 25 sessions…", step=3)
+    logger.info("--- Counting distribution days ---")
     dist_days    = _count_distribution_days(index_data.get("SPY"))
     qqq_dist     = _count_distribution_days(index_data.get("QQQ"))
+    logger.info("  SPY dist_days=%d  QQQ dist_days=%d", dist_days, qqq_dist)
+
+    _mprog("Measuring market breadth", 40, "Fetching %% stocks above SMA200 (finviz)…", step=4)
+    logger.info("--- Measuring breadth (%%above SMA200) ---")
     breadth      = _measure_breadth()
+    logger.info("  breadth_pct=%s", breadth)
+
+    _mprog("Computing NH/NL ratio", 55, "Fetching 52-week new highs & lows (finviz)…", step=5)
+    logger.info("--- Computing NH/NL ratio ---")
     nh_nl        = _nh_nl_ratio()
+    logger.info("  nh_nl_ratio=%s", nh_nl)
+
+    _mprog("Fetching sector rankings", 70, "Querying sector performance (finviz)…", step=6)
+    logger.info("--- Fetching sector rankings ---")
     sector_df    = _get_sector_rankings()
     leading, lagging = _classify_sectors(sector_df)
+    logger.info("  leading=%s  lagging=%s", leading, lagging)
 
+    _mprog("Classifying regime", 85, "Computing regime & action matrix…", step=7)
+    logger.info("--- Classifying regime ---")
     regime       = _classify_regime(spy_trend, qqq_trend, iwm_trend,
                                     dist_days, breadth, nh_nl)
     action       = _action_matrix(regime, dist_days, breadth)
+    logger.info("  regime=%s  action=%s", regime, action)
 
     result = {
         "assessed_at":       date.today().isoformat(),
@@ -90,6 +145,7 @@ def assess(verbose: bool = True) -> dict:
         "spy_trend":         spy_trend,
         "qqq_trend":         qqq_trend,
         "iwm_trend":         iwm_trend,
+        "dia_trend":         dia_trend,
         "distribution_days": dist_days,
         "qqq_dist_days":     qqq_dist,
         "breadth_pct":       breadth,
@@ -99,6 +155,10 @@ def assess(verbose: bool = True) -> dict:
         "lagging_sectors":   lagging,
         "action_matrix":     action,
     }
+
+    logger.info("Assessment complete: regime=%s, breadth=%s, nh_nl=%s, dist_days=%d",
+                regime, breadth, nh_nl, dist_days)
+    _mprog("Complete", 100, f"Regime: {regime}", step=7)
 
     if verbose:
         _print_assessment(result)
@@ -183,62 +243,99 @@ def _count_distribution_days(df: Optional[pd.DataFrame], window: int = 25) -> in
     return len(dist)
 
 
+# ── Fast finviz count (page-1 only) ────────────────────────────────────────────────
+
+_FINVIZ_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/120.0.0.0 Safari/537.36"),
+}
+
+def _finviz_quick_count(f_param: str) -> Optional[int]:
+    """
+    Fetch ONLY page 1 of finviz screener and parse the total count.
+    This takes ~0.5s instead of the 3-6 minutes needed to download all pages.
+
+    Args:
+        f_param: comma-separated finviz filter codes, e.g.
+                 'geo_usa,sh_avgvol_o100,sh_price_o5,ta_sma200_pa'
+    Returns:
+        Total matching stock count, or None on error.
+    """
+    try:
+        url = f"https://finviz.com/screener.ashx?v=111&f={f_param}"
+        resp = _requests.get(url, headers=_FINVIZ_HEADERS, timeout=15)
+        resp.raise_for_status()
+
+        # Parse: '#1 / 4239 Total'  or  '0 Total'
+        m = _re.search(r'#1\s*/\s*([\d,]+)\s*Total', resp.text)
+        if m:
+            return int(m.group(1).replace(',', ''))
+        if '0 Total' in resp.text:
+            return 0
+        logger.warning("_finviz_quick_count: could not parse total from page")
+        return None
+    except Exception as exc:
+        logger.warning("_finviz_quick_count(%s) failed: %s", f_param, exc)
+        return None
+
+
 def _measure_breadth() -> Optional[float]:
     """
     Estimate market breadth: % of US stocks above their SMA200.
-    Uses finvizfinance screener filter 'ta_sma200' = 'price_above_sma200'.
+    Uses fast page-1-only finviz scrape (< 2 seconds total).
     Returns percentage (0-100) or None if unavailable.
     """
     try:
-        filters_above = {
-            "geo_location": "USA",
-            "ta_sma200":    "price_above_sma200",
-            "average_volume": "o100",
-            "price":         "o5",
-        }
-        df_above = get_universe(filters_above)
-        n_above  = len(df_above) if df_above is not None else 0
+        _mprog("Measuring market breadth", 42,
+               "Counting stocks above SMA200…", step=4)
+        n_above = _finviz_quick_count(
+            "geo_usa,sh_avgvol_o100,sh_price_o5,ta_sma200_pa")
+        logger.debug("Breadth: n_above=%s", n_above)
 
-        filters_total = {
-            "geo_location": "USA",
-            "average_volume": "o100",
-            "price":          "o5",
-        }
-        df_total = get_universe(filters_total)
-        n_total  = len(df_total) if df_total is not None else 1
+        _mprog("Measuring market breadth", 46,
+               "Counting total stocks…", step=4)
+        n_total = _finviz_quick_count(
+            "geo_usa,sh_avgvol_o100,sh_price_o5")
+        logger.debug("Breadth: n_total=%s", n_total)
 
-        if n_total > 0:
-            return round(n_above / n_total * 100, 1)
+        if n_above is not None and n_total and n_total > 0:
+            pct = round(n_above / n_total * 100, 1)
+            logger.info("Breadth result: %d/%d = %.1f%%",
+                        n_above, n_total, pct)
+            return pct
+        else:
+            logger.warning("Breadth: got n_above=%s n_total=%s",
+                           n_above, n_total)
     except Exception as exc:
-        logger.warning(f"Breadth measurement failed: {exc}")
+        logger.warning("Breadth measurement failed: %s", exc)
     return None
 
 
 def _nh_nl_ratio() -> Optional[float]:
-    """New 52-week High / New 52-week Low ratio from finvizfinance."""
+    """New 52-week High / New 52-week Low ratio via fast finviz count."""
     try:
-        filters_nh = {
-            "geo_location":   "USA",
-            "average_volume": "o100",
-            "price":          "o5",
-            "ta_highlow52w":  "nh",
-        }
-        df_nh = get_universe(filters_nh)
-        n_nh  = len(df_nh) if df_nh is not None else 0
+        _mprog("Computing NH/NL ratio", 57,
+               "Counting 52-week new highs…", step=5)
+        n_nh = _finviz_quick_count(
+            "geo_usa,sh_avgvol_o100,sh_price_o5,ta_highlow52w_nh")
+        logger.debug("NH/NL: n_nh=%s", n_nh)
 
-        filters_nl = {
-            "geo_location":   "USA",
-            "average_volume": "o100",
-            "price":          "o5",
-            "ta_highlow52w":  "nl",
-        }
-        df_nl = get_universe(filters_nl)
-        n_nl  = len(df_nl) if df_nl is not None else 0
+        _mprog("Computing NH/NL ratio", 62,
+               "Counting 52-week new lows…", step=5)
+        n_nl = _finviz_quick_count(
+            "geo_usa,sh_avgvol_o100,sh_price_o5,ta_highlow52w_nl")
+        logger.debug("NH/NL: n_nl=%s", n_nl)
 
-        if n_nh + n_nl > 0:
-            return round(n_nh / (n_nh + n_nl) * 100, 1)
+        if n_nh is not None and n_nl is not None and (n_nh + n_nl) > 0:
+            ratio = round(n_nh / (n_nh + n_nl) * 100, 1)
+            logger.info("NH/NL result: %d NH, %d NL → ratio=%.1f%%",
+                        n_nh, n_nl, ratio)
+            return ratio
+        else:
+            logger.warning("NH/NL: got n_nh=%s n_nl=%s", n_nh, n_nl)
     except Exception as exc:
-        logger.warning(f"NH/NL ratio failed: {exc}")
+        logger.warning("NH/NL ratio failed: %s", exc)
     return None
 
 
@@ -246,9 +343,14 @@ def _get_sector_rankings() -> Optional[pd.DataFrame]:
     """Fetch sector performance from finvizfinance Group."""
     try:
         df = get_sector_rankings("Sector")
+        if df is not None:
+            logger.info("Sector rankings: %d sectors fetched", len(df))
+            logger.debug("Sector data:\n%s", df.to_string())
+        else:
+            logger.warning("Sector rankings returned None")
         return df
     except Exception as exc:
-        logger.warning(f"Sector rankings failed: {exc}")
+        logger.warning("Sector rankings failed: %s", exc)
     return None
 
 
@@ -257,16 +359,34 @@ def _classify_sectors(sector_df: Optional[pd.DataFrame]):
     if sector_df is None or sector_df.empty:
         return [], []
     try:
-        perf_col = "Performance (Week)" if "Performance (Week)" in sector_df.columns \
-                   else sector_df.columns[1] if len(sector_df.columns) > 1 else None
-        if perf_col is None:
+        # finvizfinance returns columns like "Perf Week", not "Performance (Week)"
+        perf_candidates = ["Perf Week", "Performance (Week)"]
+        perf_col = None
+        for c in perf_candidates:
+            if c in sector_df.columns:
+                perf_col = c
+                break
+        if perf_col is None and len(sector_df.columns) > 1:
+            perf_col = sector_df.columns[1]
+        if perf_col is None or "Name" not in sector_df.columns:
             return [], []
-        top = sector_df.nlargest(3, perf_col)["Name"].tolist() \
-              if "Name" in sector_df.columns else []
-        bot = sector_df.nsmallest(3, perf_col)["Name"].tolist() \
-              if "Name" in sector_df.columns else []
+
+        # Values may be strings like "4.69%" — convert to float
+        df = sector_df.copy()
+        df[perf_col] = pd.to_numeric(
+            df[perf_col].astype(str).str.replace("%", "", regex=False),
+            errors="coerce",
+        )
+        df = df.dropna(subset=[perf_col])
+        if df.empty:
+            return [], []
+
+        top = df.nlargest(3, perf_col)["Name"].tolist()
+        bot = df.nsmallest(3, perf_col)["Name"].tolist()
+        logger.debug("Sector classify: col=%s  top=%s  bot=%s", perf_col, top, bot)
         return top, bot
-    except Exception:
+    except Exception as exc:
+        logger.warning("_classify_sectors failed: %s", exc)
         return [], []
 
 
@@ -306,6 +426,13 @@ def _classify_regime(spy: dict, qqq: dict, iwm: dict,
         nh_nl is not None and nh_nl <= 30,
         dist_days >= 6,
     ])
+
+    logger.debug("Regime inputs: spy_score=%d qqq_score=%d iwm_score=%d "
+                 "avg=%.1f dist=%d breadth=%s nh_nl=%s",
+                 spy_score, qqq_score, iwm_score, avg_score,
+                 dist_days, breadth, nh_nl)
+    logger.debug("Regime signals: bull=%d bear=%d spy_dir=%s",
+                 bull_signals, bear_signals, spy_direction)
 
     if bull_signals >= 4 and dist_days <= 3:
         return "BULL_CONFIRMED"
