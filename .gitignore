@@ -23,3 +23,4 @@ logs/
 reports/
 sepa_scan_*.csv
 data/sepa_stock.duckdb
+data/sepa_stock.duckdb
