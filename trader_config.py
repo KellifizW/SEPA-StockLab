@@ -101,6 +101,12 @@ RS_BATCH_SLEEP = 0.5               # Seconds between RS batch downloads
 RS_PARALLEL_BATCHES = 3            # Number of concurrent RS batch downloads
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SCAN OUTPUT QUALITY GATE
+# ─────────────────────────────────────────────────────────────────────────────
+SCAN_MIN_SCORE = 50.0              # Minimum total SEPA score to include in results
+SCAN_TOP_N     = 100               # Max stocks to return (top N by score)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SCAN PERFORMANCE TUNING
 # ─────────────────────────────────────────────────────────────────────────────
 STAGE2_MAX_WORKERS    = 16         # Parallel threads for Stage 2 TT validation

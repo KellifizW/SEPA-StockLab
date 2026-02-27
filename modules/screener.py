@@ -83,8 +83,9 @@ COARSE_FILTERS = {
     "Country":        "USA",
 
     # Basic technical — above key moving averages (Stage 2 prerequisite)
-    "50-Day Simple Moving Average": "Price above SMA50",
-    "200-Day Simple Moving Average":"Price above SMA200",
+    "20-Day Simple Moving Average":  "Price above SMA20",
+    "50-Day Simple Moving Average":  "Price above SMA50",
+    "200-Day Simple Moving Average": "Price above SMA200",
 }
 
 # Minimum candidates Stage 1 should yield; if fewer, fall back to broader filter
@@ -125,6 +126,7 @@ def run_stage1(custom_filters: dict = None,
             "Country":        "USA",
             "200-Day Simple Moving Average": "Price above SMA200",
             "50-Day Simple Moving Average":  "Price above SMA50",
+            "20-Day Simple Moving Average":  "Price above SMA20",
         }
         df_broad = get_universe(fallback_filters, view="Overview", verbose=False)
         # Merge: keep original results + add broader results (de-duplicated)
@@ -784,16 +786,26 @@ def run_scan(custom_filters: dict = None,
         _progress("Complete", 100, "No stocks passed all filters")
         return pd.DataFrame()
 
-    df_out = pd.DataFrame(rows)
-    df_out = df_out.sort_values("total_score", ascending=False).reset_index(drop=True)
+    df_all = pd.DataFrame(rows)
+    df_all = df_all.sort_values("total_score", ascending=False).reset_index(drop=True)
+    df_all["rank"] = df_all.index + 1
+
+    # ── Quality gate: minimum score + top-N cap ──────────────────────────
+    total_scored = len(df_all)
+    min_score = getattr(C, "SCAN_MIN_SCORE", 50.0)
+    top_n     = getattr(C, "SCAN_TOP_N", 100)
+    df_out = df_all[df_all["total_score"] >= min_score].head(top_n).reset_index(drop=True)
     df_out["rank"] = df_out.index + 1
 
-    logger.info("[Timing] Stage 3: %.1fs -> %d stocks scored", _elapsed(_t3), len(df_out))
+    logger.info("[Timing] Stage 3: %.1fs -> %d stocks scored", _elapsed(_t3), total_scored)
+    logger.info("[Quality Gate] %d scored -> %d after min_score=%.0f, top_n=%d",
+                total_scored, len(df_out), min_score, top_n)
     logger.info("[Timing] Total scan: %.1fs", _elapsed())
-    logger.info("[Stage 3] %d stocks scored and ranked", len(df_out))
+    logger.info("[Stage 3] %d stocks in final results", len(df_out))
     print("=" * 60)
-    _progress("Complete", 100, f"{len(df_out)} stocks ranked")
-    return df_out
+    _progress("Complete", 100, f"{len(df_out)} stocks ranked (from {total_scored} scored)")
+    # Return tuple: (passed quality gate, all scored stocks)
+    return df_out, df_all
 
 
 

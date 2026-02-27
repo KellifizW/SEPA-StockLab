@@ -143,35 +143,45 @@ async function generateReport() {
 }
 
 async function restartServer() {
-  if (!confirm('🔄 Restart the Flask server? Any ongoing operations will be interrupted. This is needed to apply code changes.\n\nThe server will be back online in ~2 seconds.')) return;
+  if (!confirm('🔄 Restart the Flask server? Any ongoing operations will be interrupted. This is needed to apply code changes.\n\nThe server will be back online in ~3 seconds.')) return;
   
   const btn = event.target.closest('button');
   btn.disabled = true;
   btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Restarting…';
   
   try {
-    const r = await fetch('/api/admin/restart', {method: 'POST'}).then(x => x.json());
+    const r = await fetch('/api/admin/restart', {method: 'POST'}).then(x => x.json()).catch(e => ({ok: false, error: e.message}));
     if (r.ok) {
-      toast('Server restarting… page will reconnect automatically', true);
-      // Poll for server to come back
+      toast('Server shutting down and restarting…', true);
+      // Wait 2.5s for old process to fully exit and new one to start
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      
+      // Poll for server to come back (max 30 tries = 15 seconds)
       let tries = 0;
-      const checkServer = setInterval(() => {
-        fetch('/').then(() => {
-          clearInterval(checkServer);
-          toast('✅ Server restarted and ready!', true);
-          setTimeout(() => location.reload(), 500);
-        }).catch(() => {
-          tries++;
-          if (tries > 30) { // Timeout after 30s
+      const max_tries = 30;
+      const checkServer = setInterval(async () => {
+        try {
+          const health = await fetch('/', {method: 'GET', signal: AbortSignal.timeout(2000)});
+          if (health.ok) {
             clearInterval(checkServer);
-            toast('Server did not respond in time. Please refresh manually.', false);
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Restart Server';
+            toast('✅ Server restarted and ready!', true);
+            setTimeout(() => location.reload(), 800);
+            return;
           }
-        });
+        } catch (e) {
+          // Still connecting...
+        }
+        
+        tries++;
+        if (tries >= max_tries) {
+          clearInterval(checkServer);
+          toast('⚠️ Server did not respond after 15s. Click to refresh manually.', false);
+          btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Restart Server';
+        }
       }, 500);
     } else {
-      toast('Failed to restart: ' + r.error, false);
+      toast('Failed to restart: ' + (r.error || 'Unknown error'), false);
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Restart Server';
     }

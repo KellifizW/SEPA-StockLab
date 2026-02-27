@@ -161,8 +161,12 @@
 <div id="resultsSection" class="d-none">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <span id="resultCount" class="text-muted small"></span>
-    <div class="d-flex gap-2 align-items-center">
-      <button class="btn btn-sm btn-outline-info" onclick="toggleFilterPanel()" title="Advanced filters">
+    <div class="d-flex gap-2 align-items-center">      <div class="form-check form-switch ms-2">
+        <input class="form-check-input" type="checkbox" id="chkShowAll" onchange="toggleShowAll()">
+        <label class="form-check-label text-muted small" for="chkShowAll">
+          顯示全部分析股票 <span id="allScoredCount" class="badge bg-secondary ms-1 d-none"></span>
+        </label>
+      </div>      <button class="btn btn-sm btn-outline-info" onclick="toggleFilterPanel()" title="Advanced filters">
         <i class="bi bi-funnel me-1"></i><span id="filterBadge" class="badge bg-info ms-1 d-none">0</span>
       </button>
       <input class="form-control form-control-sm" style="width:170px" id="filterInput"
@@ -322,13 +326,19 @@
 .step-label { transition: color .3s; }
 .step-label.active { color: var(--accent) !important; font-weight: 600; }
 .step-label.done   { color: #3fb950 !important; }
+
+/* Below-threshold rows — dimmed appearance */
+.row-below-threshold { opacity: 0.5; }
+.row-below-threshold:hover { opacity: 0.75; }
 </style>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-let _scanData   = [];
-let _currentJid = null;
+let _scanData      = [];   // passed quality gate
+let _allScoredData = [];   // ALL scored stocks (including below threshold)
+let _currentJid    = null;
+let _showAll       = false; // toggle state
 
 /* --- Page load: restore last scan (delayed to avoid blocking) -------- */
 window.addEventListener('DOMContentLoaded', () => {
@@ -336,14 +346,21 @@ window.addEventListener('DOMContentLoaded', () => {
   const cachedMeta = sessionStorage.getItem('sepa_scan_meta');
   if (cached) {
     try {
-      const rows = JSON.parse(cached);
-      if (rows.length) {
-        _scanData = rows;
-        // Delay rendering to avoid blocking page load (even sessionStorage can be large)
+      const parsed = JSON.parse(cached);
+      // Support both old format (array) and new format ({rows, all_scored})
+      if (Array.isArray(parsed)) {
+        _scanData = parsed;
+        _allScoredData = [];
+      } else {
+        _scanData = parsed.rows || [];
+        _allScoredData = parsed.all_scored || [];
+      }
+      if (_scanData.length) {
         setTimeout(() => {
-          renderScanTable(_scanData);
-          populateSectorFilter(_scanData);
-          showBadge(cachedMeta || `${rows.length} stocks (cached)`);
+          renderScanTable(_getDisplayData());
+          populateSectorFilter(_allScoredData.length ? _allScoredData : _scanData);
+          updateAllScoredBadge();
+          showBadge(cachedMeta || `${_scanData.length} stocks (cached)`);
         }, 50);
         return;
       }
@@ -354,18 +371,19 @@ window.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 3000);
-    fetch('/api/scan/last', {signal: ctrl.signal})
+    fetch('/api/scan/last?include_all=1', {signal: ctrl.signal})
       .then(r => r.json())
       .then(d => {
         clearTimeout(timer);
         if (d.rows && d.rows.length) {
           _scanData = d.rows;
-          // Delay rendering to avoid blocking page render
+          _allScoredData = d.all_scored || [];
           setTimeout(() => {
-            renderScanTable(_scanData);
-            populateSectorFilter(_scanData);
+            renderScanTable(_getDisplayData());
+            populateSectorFilter(_allScoredData.length ? _allScoredData : _scanData);
+            updateAllScoredBadge();
             const ts = d.saved_at ? new Date(d.saved_at).toLocaleString() : '';
-            showBadge(`Last scan: ${ts} (${d.count} stocks)`);
+            showBadge(`Last scan: ${ts} (${d.count} stocks passed, ${d.all_scored_count || d.count} scored)`);
           }, 50);
         }
       })
@@ -474,15 +492,33 @@ function onScanDone(rows, logFile) {
   const ts   = new Date().toLocaleString();
   const meta = `Last scan: ${ts} (${_scanData.length} stocks)`;
   
+  // Fetch all scored data (in background, non-blocking)
+  fetch('/api/scan/last?include_all=1')
+    .then(r => r.json())
+    .then(d => {
+      _allScoredData = d.all_scored || [];
+      updateAllScoredBadge();
+      populateSectorFilter(_allScoredData.length ? _allScoredData : _scanData);
+      // Update session cache with all_scored
+      try {
+        sessionStorage.setItem('sepa_scan_data', JSON.stringify({
+          rows: _scanData, all_scored: _allScoredData
+        }));
+      } catch(e) {}
+    })
+    .catch(() => {});
+  
   // Delay rendering to avoid blocking
   setTimeout(() => {
-    renderScanTable(_scanData);
+    renderScanTable(_getDisplayData());
     populateSectorFilter(_scanData);
     showBadge(meta);
   }, 50);
   
   try {
-    sessionStorage.setItem('sepa_scan_data', JSON.stringify(_scanData));
+    sessionStorage.setItem('sepa_scan_data', JSON.stringify({
+      rows: _scanData, all_scored: _allScoredData
+    }));
     sessionStorage.setItem('sepa_scan_meta', meta);
   } catch(e) {}
 
@@ -507,6 +543,45 @@ function populateSectorFilter(data) {
     opt.textContent = sector;
     select.appendChild(opt);
   });
+}
+
+/* ── Show-all toggle helpers ─────────────────────────────────────────── */
+function _getDisplayData() {
+  if (_showAll && _allScoredData.length) {
+    // Mark which ones passed the quality gate
+    const passedSet = new Set(_scanData.map(r => r.ticker));
+    return _allScoredData.map(r => ({...r, _passed: passedSet.has(r.ticker)}));
+  }
+  return _scanData.map(r => ({...r, _passed: true}));
+}
+
+function toggleShowAll() {
+  _showAll = document.getElementById('chkShowAll').checked;
+  if (_showAll && !_allScoredData.length) {
+    // Need to fetch all_scored from server
+    document.getElementById('chkShowAll').disabled = true;
+    fetch('/api/scan/last?include_all=1')
+      .then(r => r.json())
+      .then(d => {
+        _allScoredData = d.all_scored || [];
+        updateAllScoredBadge();
+        renderScanTable(_getDisplayData());
+        populateSectorFilter(_allScoredData.length ? _allScoredData : _scanData);
+        document.getElementById('chkShowAll').disabled = false;
+      })
+      .catch(() => { document.getElementById('chkShowAll').disabled = false; });
+    return;
+  }
+  renderScanTable(_getDisplayData());
+  populateSectorFilter(_showAll && _allScoredData.length ? _allScoredData : _scanData);
+}
+
+function updateAllScoredBadge() {
+  const badge = document.getElementById('allScoredCount');
+  if (_allScoredData.length) {
+    badge.textContent = _allScoredData.length;
+    badge.classList.remove('d-none');
+  }
 }
 
 function onScanError(err) {
@@ -539,7 +614,10 @@ function renderScanTable(data) {
   } else {
     // Use DocumentFragment to avoid O(n²) DOM operations
     const fragment = document.createDocumentFragment();
+    let passedCount = 0;
     data.forEach((r, i) => {
+      const passed = r._passed !== false;  // default to passed if not set
+      if (passed) passedCount++;
       const total  = r.total_score != null ? Number(r.total_score).toFixed(1) : '—';
       const tCls   = r.total_score >= 75 ? 'score-high' : r.total_score >= 55 ? 'score-mid' : 'score-low';
       const trend  = r.trend_score        != null ? Number(r.trend_score).toFixed(0)        : '—';
@@ -556,14 +634,17 @@ function renderScanTable(data) {
         : '<i class="bi bi-x-circle text-danger"></i>';
 
       const row = document.createElement('tr');
+      if (!passed) row.classList.add('row-below-threshold');
+      row.setAttribute('data-ticker', r.ticker);
       row.innerHTML = `
         <td class="text-muted small">${i + 1}</td>
         <td>
           <a href="/analyze?ticker=${r.ticker}" class="fw-bold text-decoration-none"
-             style="color:var(--accent)">${r.ticker}</a>
+             style="color:${passed ? 'var(--accent)' : '#6e7681'}">${r.ticker}</a>
+          ${!passed ? '<span class="badge bg-dark text-muted ms-1" style="font-size:.55rem">未通過</span>' : ''}
           <div class="text-muted" style="font-size:.7rem">${r.company || ''}</div>
         </td>
-        <td class="${tCls} fw-bold">${total}</td>
+        <td class="${passed ? tCls : 'text-muted'} fw-bold">${total}</td>
         <td class="text-muted small">${trend}</td>
         <td class="text-muted small">${fund}</td>
         <td class="text-muted">${rs}</td>
@@ -587,15 +668,19 @@ function renderScanTable(data) {
     });
     body.appendChild(fragment);
   }
-  document.getElementById('scanStatus').textContent =
-    `Showing ${data.length} stock${data.length !== 1 ? 's' : ''}`;
-  document.getElementById('resultCount').textContent =
-    `${data.length} stock${data.length !== 1 ? 's' : ''} passed SEPA filters`;
+  const totalShown = data.length;
+  const passedOnly = data.filter(r => r._passed !== false).length;
+  const statusText = _showAll
+    ? `Showing ${totalShown} stocks (${passedOnly} passed, ${totalShown - passedOnly} below threshold)`
+    : `Showing ${totalShown} stock${totalShown !== 1 ? 's' : ''}`;
+  document.getElementById('scanStatus').textContent = statusText;
+  document.getElementById('resultCount').textContent = statusText;
   document.getElementById('resultsSection').classList.remove('d-none');
 }
 
 function filterTable() {
-  if (!_scanData.length) return;
+  const displayData = _getDisplayData();
+  if (!displayData.length) return;
 
   // Get filter values
   const searchText = document.getElementById('filterInput').value.toLowerCase();
@@ -626,7 +711,7 @@ function filterTable() {
   const selectedSectors = new Set(Array.from(sectorSelect.selectedOptions).map(o => o.value));
 
   // Apply filters
-  const filtered = _scanData.filter(r => {
+  const filtered = displayData.filter(r => {
     // Text search
     if (searchText && !((r.ticker || '').toLowerCase().includes(searchText) ||
                         (r.sector || '').toLowerCase().includes(searchText) ||
@@ -776,11 +861,16 @@ async function addToWatchlist(ticker) {
 }
 
 function exportCSV() {
-  if (!_scanData.length) return;
-  const flat = _scanData.map(r => {
+  const exportData = _getDisplayData();
+  if (!exportData.length) return;
+  const flat = exportData.map(r => {
     const out = {};
     for (const [k, v] of Object.entries(r))
       if (v === null || typeof v !== 'object') out[k] = v;
+    // Add passed/failed column
+    out['quality_gate'] = r._passed !== false ? 'PASS' : 'BELOW';
+    // Remove internal _passed flag
+    delete out['_passed'];
     return out;
   });
   const keys = Object.keys(flat[0]);

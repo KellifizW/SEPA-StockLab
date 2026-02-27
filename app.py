@@ -11,6 +11,8 @@ import json
 import uuid
 import logging
 import threading
+import subprocess
+import webbrowser
 
 # Force UTF-8 stdout/stderr on Windows (avoids cp950 encode errors for ✓ ✗ → etc.)
 if hasattr(sys.stdout, "reconfigure"):
@@ -71,13 +73,15 @@ _cancel_events: dict = {}  # { job_id: threading.Event }
 # ── last scan persistence ─────────────────────────────────────────────────────
 _LAST_SCAN_FILE = ROOT / C.DATA_DIR / "last_scan.json"
 
-def _save_last_scan(rows: list):
+def _save_last_scan(rows: list, all_rows: list = None):
     try:
         data = {"saved_at": datetime.now().isoformat(),
-                "count": len(rows), "rows": rows}
+                "count": len(rows), "rows": rows,
+                "all_scored_count": len(all_rows) if all_rows else len(rows),
+                "all_scored": all_rows or []}
         _LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
-        # Also save dated CSV
+        # Also save dated CSV (passed stocks only)
         import csv, io
         if rows:
             buf = io.StringIO()
@@ -315,15 +319,24 @@ def api_scan_run():
         try:
             from modules.screener import run_scan, set_scan_cancel
             set_scan_cancel(cancel_ev)
-            results = run_scan(refresh_rs=refresh_rs)
-            if results is not None and hasattr(results, "to_dict"):
-                rows = _clean(results.where(results.notna(), other=None)
-                               .to_dict(orient="records"))
-            elif results is not None:
-                rows = _clean(list(results))
+            scan_result = run_scan(refresh_rs=refresh_rs)
+            # run_scan returns (df_passed, df_all) tuple
+            if isinstance(scan_result, tuple):
+                df_passed, df_all = scan_result
             else:
-                rows = []
-            _save_last_scan(rows)
+                df_passed = scan_result
+                df_all = scan_result
+
+            def _to_rows(df):
+                if df is not None and hasattr(df, "to_dict") and not df.empty:
+                    return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
+                elif df is not None and not hasattr(df, "to_dict"):
+                    return _clean(list(df))
+                return []
+
+            rows = _to_rows(df_passed)
+            all_rows = _to_rows(df_all)
+            _save_last_scan(rows, all_rows=all_rows)
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
         except Exception as exc:
@@ -357,7 +370,14 @@ def api_scan_cancel(jid):
 
 @app.route("/api/scan/last", methods=["GET"])
 def api_scan_last():
-    return jsonify(_load_last_scan())
+    """Return passed-only or all-scored results depending on ?include_all=1."""
+    data = _load_last_scan()
+    include_all = request.args.get("include_all", "0") == "1"
+    if not include_all:
+        # Strip the heavy all_scored list to reduce payload
+        data.pop("all_scored", None)
+        data.pop("all_scored_count", None)
+    return jsonify(data)
 
 
 @app.route("/api/scan/cache-info", methods=["GET"])
@@ -766,11 +786,26 @@ def api_rs_top():
 
 @app.route("/api/admin/restart", methods=["POST"])
 def api_restart_server():
-    """Gracefully restart the Flask development server."""
+    """Gracefully restart the Flask development server (Windows-compatible)."""
     def _restart():
         import time
-        time.sleep(1)  # Give response time to reach client
-        os.execv(sys.executable, [sys.executable, str(ROOT / "app.py")])
+        # Give the current request time to complete and response to reach client
+        time.sleep(1.5)
+        # Start new process in background, detached (so it survives when parent dies)
+        # Windows: use creationflags to detach the process
+        # Unix: use preexec_fn=os.setsid (but on Windows this doesn't apply)
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        subprocess.Popen(
+            [sys.executable, str(ROOT / "app.py")],
+            cwd=str(ROOT),
+            creationflags=creationflags,
+            start_new_session=(sys.platform != 'win32')  # Unix: detach via new session
+        )
+        # Now terminate this process to release the port
+        time.sleep(0.2)
+        os._exit(0)  # Force exit (bypasses cleanup, but needed for clean restart)
     
     try:
         threading.Thread(target=_restart, daemon=False).start()
@@ -804,4 +839,12 @@ if __name__ == "__main__":
     print("  │  http://localhost:5000                    │")
     print("  │  Press Ctrl+C to stop                    │")
     print("  └──────────────────────────────────────────┘\n")
+    
+    # Auto-open browser after a short delay
+    def _open_browser():
+        import time
+        time.sleep(1.5)  # Wait for Flask server to start
+        webbrowser.open("http://localhost:5000")
+    
+    threading.Thread(target=_open_browser, daemon=True).start()
     app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)
