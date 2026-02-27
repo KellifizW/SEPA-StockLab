@@ -1,5 +1,13 @@
 # SEPA-StockLab — GitHub Copilot Instructions
 
+> This file is the **always-on instruction** for GitHub Copilot in VS Code.
+> It is automatically included in every chat request within this workspace.
+> For task-specific workflows, use the slash commands defined in `.github/prompts/`.
+> For specialized AI personas, use the custom agents in `.github/agents/`.
+> For file-type-specific rules, see `.github/instructions/`.
+
+---
+
 ## Project Overview
 
 SEPA-StockLab is a full-stack stock screening and portfolio management tool based on
@@ -74,9 +82,41 @@ data/                   # Runtime data (JSON, CSV, Parquet, cache)
   last_scan.json        # Persisted scan results
   rs_cache.csv          # RS ranking cache
 
-GUIDE.md                # Bilingual user guide (Traditional Chinese / English)
-stockguide.md           # Comprehensive Minervini trading methodology reference (15 parts)
+.github/                # AI-assisted development configuration
+  copilot-instructions.md   # Always-on instructions (this file)
+  instructions/             # File-based instructions (applied by glob pattern)
+  prompts/                  # Prompt files — slash commands for common workflows
+  agents/                   # Custom agents — specialized AI personas
+  hooks/                    # Lifecycle hooks — automated quality checks
 ```
+
+---
+
+## AI Customization Architecture
+
+This project uses GitHub Copilot's full customization stack, inspired by the
+[everything-claude-code](https://github.com/affaan-m/everything-claude-code) methodology:
+
+| ECC Concept | Copilot Equivalent | Location | Invocation |
+|---|---|---|---|
+| CLAUDE.md / Rules | Always-on instructions | `.github/copilot-instructions.md` | Automatic |
+| File-specific rules | File-based instructions | `.github/instructions/*.instructions.md` | Auto (by glob) |
+| Skills / Commands | Prompt files | `.github/prompts/*.prompt.md` | `/command` in chat |
+| Agents / Subagents | Custom agents | `.github/agents/*.agent.md` | Agent dropdown |
+| Hooks | Agent hooks | `.github/hooks/*.json` | Lifecycle events |
+
+### Available Slash Commands (Prompt Files)
+- `/sepa-scan-debug` — Debug scan pipeline issues (Stage 1→2→3 data flow)
+- `/add-feature` — Plan and implement a new feature following project conventions
+- `/code-review` — Review code for SEPA-StockLab conventions and trading logic accuracy
+- `/tdd` — Test-driven development workflow (RED → GREEN → REFACTOR)
+- `/refactor` — Refactor code focusing on DRY, type hints, and known technical debt
+- `/trading-verify` — Verify Minervini trading logic correctness (TT, scoring, VCP)
+
+### Available Custom Agents
+- **Planner** — Read-only feature planning agent; creates implementation blueprints
+- **Code Reviewer** — Reviews code quality, security, and trading logic accuracy
+- **Trading Expert** — Minervini SEPA methodology specialist for domain questions
 
 ---
 
@@ -236,8 +276,8 @@ When adding new parameters, follow this convention:
 
 These issues exist and should be incrementally addressed:
 
-1. **No tests** — The project has no test suite. When adding new features, consider writing pytest tests for algorithmic logic (scoring, VCP detection, TT validation).
-2. **DRY violations** — ANSI colour constants (`_GREEN`, `_RED`, `_BOLD`, `_RESET`) are copy-pasted across 6+ modules. Extract to a shared `modules/utils.py`.
+1. **No tests** — The project has no test suite. When adding new features, consider writing pytest tests for algorithmic logic (scoring, VCP detection, TT validation). Use `/tdd` slash command to follow TDD workflow.
+2. **DRY violations** — ANSI colour constants (`_GREEN`, `_RED`, `_BOLD`, `_RESET`) are copy-pasted across 6+ modules. Extract to a shared `modules/utils.py`. Use `/refactor` slash command to address.
 3. **ROOT path boilerplate** — `ROOT = Path(...).parent.parent; sys.path.insert(...)` repeated in every module. Consider a package setup with proper `__init__.py`.
 4. **Missing type annotations** — Functions return `pd.DataFrame`, `dict`, or `tuple` inconsistently without type hints. Add return type annotations.
 5. **Thread safety** — `_finviz_cache` in `data_pipeline.py` is shared mutable state without locking. Needs `threading.Lock`.

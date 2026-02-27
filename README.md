@@ -188,6 +188,42 @@ This tool implements Minervini's complete system:
 
 ---
 
+## AI-Assisted Development AI 輔助開發
+
+This project uses GitHub Copilot's full customization stack, inspired by
+[everything-claude-code](https://github.com/affaan-m/everything-claude-code):
+
+本專案使用 GitHub Copilot 完整客製化架構，參考 everything-claude-code 方法論：
+
+| ECC Concept | Copilot Equivalent | Location | Invocation |
+|---|---|---|---|
+| CLAUDE.md | Always-on instructions | `.github/copilot-instructions.md` | Automatic |
+| Rules | File-based instructions | `.github/instructions/*.instructions.md` | Auto (by glob) |
+| Skills / Commands | Prompt files | `.github/prompts/*.prompt.md` | `/command` in chat |
+| Agents / Subagents | Custom agents | `.github/agents/*.agent.md` | Agent dropdown |
+| Hooks | Agent hooks | `.github/hooks/*.json` | Lifecycle events |
+
+### Slash Commands 斜線指令
+
+| Command | Purpose |
+|---------|---------|
+| `/sepa-scan-debug` | Debug scan pipeline issues (Stage 1→2→3) |
+| `/add-feature` | Plan and implement new features |
+| `/code-review` | Review code for conventions and trading logic |
+| `/tdd` | Test-driven development (RED → GREEN → REFACTOR) |
+| `/refactor` | Refactoring with DRY and tech debt focus |
+| `/trading-verify` | Verify Minervini trading logic correctness |
+
+### Custom Agents 自訂代理
+
+| Agent | Role |
+|-------|------|
+| **Planner** | Read-only feature planning — creates implementation blueprints |
+| **Code Reviewer** | Reviews code quality, security, trading logic accuracy |
+| **Trading Expert** | Minervini SEPA methodology specialist |
+
+---
+
 ## Documentation 文件
 
 | Document | Description |
@@ -196,6 +232,10 @@ This tool implements Minervini's complete system:
 | `stockguide.md` | Minervini SEPA 方法論完整參考（15 部分） |
 | `trader_config.py` | 所有參數定義及行內註解 |
 | `.github/copilot-instructions.md` | GitHub Copilot AI 輔助開發指引 |
+| `.github/instructions/` | 按檔案類型自動套用的編碼規則 |
+| `.github/prompts/` | 可重用的開發工作流程斜線指令 |
+| `.github/agents/` | 專業化 AI 代理（規劃、審查、交易邏輯） |
+| `.github/hooks/` | 儲存後自動品質檢查 |
 
 ---
 

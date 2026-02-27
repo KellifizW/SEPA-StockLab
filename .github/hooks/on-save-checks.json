@@ -1,0 +1,32 @@
+[
+  {
+    "event": "onSave",
+    "pattern": "**/*.py",
+    "steps": [
+      {
+        "name": "Python convention check",
+        "run": "Verify the saved file follows SEPA-StockLab conventions: (1) uses 'import trader_config as C' not 'from trader_config import', (2) market data access goes through data_pipeline.py, (3) external API calls wrapped in try/except, (4) NaN values sanitized before JSON response."
+      }
+    ]
+  },
+  {
+    "event": "onSave",
+    "pattern": "**/templates/**",
+    "steps": [
+      {
+        "name": "Template convention check",
+        "run": "Verify the saved template uses Bootstrap 5 dark theme CSS custom properties from base.html. Check that user-facing text is bilingual (Traditional Chinese + English). Ensure JS is inline (no external JS file references). Confirm it extends base.html."
+      }
+    ]
+  },
+  {
+    "event": "onSave",
+    "pattern": "trader_config.py",
+    "steps": [
+      {
+        "name": "Config parameter validation",
+        "run": "Verify that new parameters in trader_config.py follow UPPER_SNAKE_CASE naming convention, have inline comments explaining their trading meaning, and are grouped with related parameters."
+      }
+    ]
+  }
+]
