@@ -126,11 +126,17 @@ def analyze(ticker: str,
     }
 
     # Build fundamentals checks list for frontend
+    # _check_fundamentals returns {"checks": {id: bool}, "notes": {id: str}, "passes", "total", "pct"}
     fund_checks_list = []
-    if isinstance(fund_checks, dict):
-        for k, v in fund_checks.items():
-            desc = f"{k}: {v}"
-            fund_checks_list.append(desc)
+    if isinstance(fund_checks, dict) and "checks" in fund_checks:
+        fc = fund_checks["checks"]
+        fn = fund_checks.get("notes", {})
+        for check_id, passed in fc.items():
+            fund_checks_list.append({
+                "id":    check_id,
+                "pass":  bool(passed),
+                "note":  fn.get(check_id, ""),
+            })
 
     result = {
         "ticker":           ticker,
@@ -140,9 +146,14 @@ def analyze(ticker: str,
         "price":            round(close, 2),
         "market_cap":       info.get("marketCap", 0),
         "rs_rank":          round(rs_rank, 1),
-        "sepa_score":       scored.get("total_score", 0),  # Frontend expects sepa_score
+        "sepa_score":       scored.get("total_score", 0),
         "trend_template":   tt,
-        "fundamentals":     {"checks": fund_checks_list},  # Frontend expects checks array
+        "fundamentals":     {
+            "checks": fund_checks_list,
+            "passes": fund_checks.get("passes", 0) if isinstance(fund_checks, dict) else 0,
+            "total":  fund_checks.get("total", 0)  if isinstance(fund_checks, dict) else 0,
+            "pct":    fund_checks.get("pct", 0)    if isinstance(fund_checks, dict) else 0,
+        },
         "vcp":              vcp,
         "scored_pillars":   scored,  # Frontend expects scored_pillars, not sepa_scores
         "position":         pos,

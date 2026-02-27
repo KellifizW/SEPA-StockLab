@@ -201,11 +201,36 @@ function renderResult(d, ticker) {
 
   // Fundamentals
   const fundChecks = funds.checks || [];
+  const fundPasses = funds.passes ?? 0;
+  const fundTotal  = funds.total ?? 0;
+  const fundPct    = funds.pct ?? 0;
+  const fundLabels = {
+    'F1_EPS_QOQ_25':     'EPS 季增長 ≥ 25%',
+    'F2_EPS_ACCEL':      'EPS 加速成長',
+    'F3_ANNUAL_EPS_25':  '年度 EPS 成長 ≥ 25%',
+    'F5_REVENUE_20':     '營收成長 ≥ 20%',
+    'F7_PROFIT_MARGIN':  '淨利率 > 0%',
+    'F8_ROE_17':         'ROE ≥ 17%',
+    'F10_BEAT_ESTIMATES':'上季 EPS 超越預期',
+    'F11_REVISIONS_UP':  '分析師上調預估',
+    'F12_INST_INCREASING':'機構持股增加',
+  };
+  const fundSummary = `<li class="list-group-item d-flex justify-content-between align-items-center py-2" style="background:#0d1520;border-color:#21262d">
+    <span class="small fw-bold">Fundamentals Score</span>
+    <span class="badge ${fundPct>=70?'bg-success':fundPct>=40?'bg-warning':'bg-danger'}">${fundPasses} / ${fundTotal} (${fundPct}%)</span>
+  </li>`;
   document.getElementById('fundList').innerHTML = fundChecks.length ?
-    fundChecks.map(c =>
-      `<li class="list-group-item py-2" style="background:transparent;border-color:#21262d">
-        <span class="small">${c}</span></li>`
-    ).join('') :
+    fundSummary + fundChecks.map(c => {
+      const label = fundLabels[c.id] || c.id;
+      return `<li class="list-group-item d-flex justify-content-between align-items-center py-2" style="background:transparent;border-color:#21262d">
+        <div>
+          <span class="text-muted small">${c.id?.replace(/_/g,' ')}</span><br/>
+          <span class="small">${label}</span>
+          <div class="text-muted" style="font-size:0.75rem">${c.note||''}</div>
+        </div>
+        ${c.pass ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>'}
+      </li>`;
+    }).join('') :
     '<li class="list-group-item text-muted py-3" style="background:transparent">No fundamental data available.</li>';
 
   // Position sizing
