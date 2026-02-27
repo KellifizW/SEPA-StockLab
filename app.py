@@ -203,7 +203,16 @@ def _clean(obj):
     if obj is None:
         return None
     
-    if isinstance(obj, bool):       # Must check bool before int (bool is subclass of int)
+    # Try numpy scalar extraction FIRST (before isinstance checks)
+    # This handles np.int64, np.float64, np.bool_, etc.
+    if hasattr(obj, "item") and hasattr(obj, "dtype"):
+        try:
+            val = obj.item()
+            return _clean(val)  # Recursively clean the extracted value
+        except (TypeError, ValueError, AttributeError):
+            return None
+    
+    if isinstance(obj, bool):
         return obj
     
     if isinstance(obj, (int, float, str)):
@@ -220,20 +229,12 @@ def _clean(obj):
         cleaned = {}
         for k, v in obj.items():
             cleaned_v = _clean(v)
-            if cleaned_v is not None or v is None:  # Keep None values if original was None
+            if cleaned_v is not None or v is None:
                 cleaned[k] = cleaned_v
         return cleaned
     
     if isinstance(obj, (list, tuple)):
         return [_clean(i) for i in obj]
-    
-    # Handle numpy types
-    if hasattr(obj, "item"):        # numpy scalar
-        try:
-            val = obj.item()
-            return _clean(val)  # Recursively clean the extracted value
-        except (TypeError, ValueError, AttributeError):
-            return None
     
     # Handle pandas DataFrame or Series
     if hasattr(obj, "empty"):
@@ -647,17 +648,25 @@ def _write_analyze_report(log_file: Path, r: dict, acct: float):
         ln()
         ln("[ SEPA 5-PILLAR SCORES ]")
         pillar_map = {
-            "trend":        "趨勢 Trend",
-            "fundamental":  "基本面 Fundamentals",
-            "catalyst":     "催化劑 Catalyst",
-            "entry":        "入場時機 Entry",
-            "risk_reward":  "風險回報 R/R",
+            "trend_score":       "趨勢 Trend",
+            "fundamental_score": "基本面 Fundamentals",
+            "catalyst_score":    "催化劑 Catalyst",
+            "entry_score":       "入場時機 Entry",
+            "rr_score":          "風險回報 R/R",
         }
         for key, label in pillar_map.items():
             val = float(scored.get(key) or 0)
             bar = "█" * int(val / 5) + "░" * (20 - int(val / 5))
             ln(f"  {label:<28} {val:5.1f}  [{bar}]")
         ln(f"  {'Total':<28} {float(r.get('sepa_score') or 0):5.1f}")
+        ln(f"  R/R Ratio:  {float(scored.get('rr_ratio') or 0):.2f}:1")
+        ln(f"  Stop:       {float(scored.get('stop_pct') or 0):.1f}%")
+        ln(f"  Target:     {float(scored.get('target_pct') or 0):.1f}%")
+        ln(f"  RS Rank:    {scored.get('rs_rank') or 'N/A'}")
+        ln(f"  Close:      ${float(scored.get('close') or 0):.2f}")
+        ln(f"  ATR(14):    {float(scored.get('atr14') or 0):.2f}")
+        if scored.get('pivot'):
+            ln(f"  Pivot:      ${float(scored.get('pivot')):.2f}")
 
         # ── Trend Template TT1-TT10 ──────────────────────────────────────────
         ln()
@@ -678,16 +687,22 @@ def _write_analyze_report(log_file: Path, r: dict, acct: float):
         # ── VCP ───────────────────────────────────────────────────────────────
         ln()
         ln("[ VCP DETECTION ]")
-        ln(f"  Valid VCP:       {vcp.get('is_valid_vcp', False)}")
+        ln(f"  Valid VCP:       {'YES ✓' if vcp.get('is_valid_vcp') else 'NO'}")
         ln(f"  VCP Score:       {vcp.get('vcp_score', 0)}/100  Grade: {vcp.get('grade','—')}")
-        ln(f"  T-count:         {vcp.get('t_count', 0)}  (Min: {vcp.get('min_contractions','?')})")
+        ln(f"  T-count:         {vcp.get('t_count', 0)}")
         ln(f"  Base weeks:      {vcp.get('base_weeks', 0)}")
-        ln(f"  Base depth:      {vcp.get('base_depth_pct', 0):.1f}%")
+        base_d = vcp.get('base_depth_pct')
+        ln(f"  Base depth:      {float(base_d):.1f}%" if base_d is not None else "  Base depth:      N/A")
         if vcp.get('pivot_price'):
-            ln(f"  Pivot price:     ${vcp.get('pivot_price'):.2f}")
-        ln(f"  ATR contracting: {vcp.get('atr_contracting', False)}")
-        ln(f"  BB  contracting: {vcp.get('bb_contracting', False)}")
-        ln(f"  Volume dry-up:   {vcp.get('vol_dry', False)}")
+            ln(f"  Pivot price:     ${float(vcp['pivot_price']):.2f}")
+        ln(f"  ATR contracting: {'✓' if vcp.get('atr_contracting') else '✗'}")
+        ln(f"  BB  contracting: {'✓' if vcp.get('bb_contracting') else '✗'}")
+        ln(f"  Volume dry-up:   {'✓' if vcp.get('vol_dry') else '✗'}  (ratio: {vcp.get('vol_ratio', 'N/A')})")
+        # Contractions detail
+        for i, c_item in enumerate(vcp.get("contractions") or []):
+            ln(f"  T-{i+1}: range {c_item.get('range_pct',0):.1f}%  "
+               f"vol_ratio {c_item.get('vol_ratio',0):.2f}  "
+               f"high ${c_item.get('seg_high',0):.2f}  low ${c_item.get('seg_low',0):.2f}")
         for note in vcp.get("notes") or []:
             ln(f"  • {note}")
 
@@ -719,7 +734,12 @@ def _write_analyze_report(log_file: Path, r: dict, acct: float):
         ln(f"  R:R Ratio:      {float(pos.get('rr') or 0):.1f}:1")
 
         # ── News ─────────────────────────────────────────────────────────────
-        news = r.get("news") or []
+        news_raw = r.get("news")
+        # news may be a list of dicts or a DataFrame — normalise to list
+        if hasattr(news_raw, "to_dict"):
+            news = news_raw.to_dict(orient="records") if not news_raw.empty else []
+        else:
+            news = news_raw if isinstance(news_raw, list) else []
         if news:
             ln()
             ln("[ RECENT NEWS ]")
@@ -735,7 +755,7 @@ def _write_analyze_report(log_file: Path, r: dict, acct: float):
             f.write("\n".join(lines) + "\n")
 
     except Exception as exc:
-        logging.warning("_write_analyze_report failed: %s", exc)
+        logging.warning("_write_analyze_report failed: %s", exc, exc_info=True)
 
 @app.route("/api/analyze/status/<jid>")
 def api_analyze_status(jid):
@@ -1133,6 +1153,22 @@ def api_restart_server():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/admin/reset-yf-session", methods=["POST"])
+def api_reset_yf_session():
+    """Reset the yfinance cookie/crumb to force re-authentication on the next request.
+    Call this when you see HTTP 401 / Invalid Crumb errors in the logs."""
+    try:
+        from modules.data_pipeline import _reset_yf_crumb
+        ok = _reset_yf_crumb()
+        return jsonify({
+            "ok": ok,
+            "message": "yfinance session reset — next request will re-authenticate"
+                       if ok else "Session reset failed — check server logs"
+        }), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Serve latest HTML report inline
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1233,39 +1269,55 @@ def api_db_watchlist_history():
 
 @app.route("/api/db/price-history/<ticker>", methods=["GET"])
 def api_db_price_history(ticker: str):
-    """OHLCV price history from Parquet cache via DuckDB read_parquet()."""
+    """OHLCV price history from Parquet cache or live download."""
     days = int(request.args.get("days", 90))
+    ticker_upper = ticker.upper()
+    
     try:
-        from modules.db import query_price_history
-        df = query_price_history(ticker.upper(), days)
-        if df.empty:
-            # Fallback: read directly via pandas if DuckDB query fails
-            from modules.data_pipeline import get_historical
-            df_pd = get_historical(ticker.upper())
-            if not df_pd.empty:
-                cutoff = pd.Timestamp.today() - pd.Timedelta(days=days)
-                df_pd = df_pd[df_pd.index >= cutoff].copy()
-                df_pd.index = df_pd.index.date
-                rows = [
-                    {"date": str(idx), "open": round(float(row["Open"]), 4),
-                     "high": round(float(row["High"]), 4),
-                     "low":  round(float(row["Low"]), 4),
-                     "close": round(float(row["Close"]), 4),
-                     "volume": int(row["Volume"])}
-                    for idx, row in df_pd.iterrows()
-                ]
-                return jsonify({"ok": True, "ticker": ticker.upper(),
-                                "rows": rows, "source": "pandas"})
-            return jsonify({"ok": True, "ticker": ticker.upper(),
-                            "rows": [], "source": "none"})
-
-        rows = df.to_dict(orient="records")
-        # Convert date objects to ISO strings for JSON serialisation
-        for r in rows:
-            if hasattr(r.get("date"), "isoformat"):
-                r["date"] = r["date"].isoformat()
-        return jsonify({"ok": True, "ticker": ticker.upper(),
-                        "rows": rows, "source": "duckdb"})
+        # Try DuckDB first (if available)
+        try:
+            from modules.db import query_price_history
+            df = query_price_history(ticker_upper, days)
+            if not df.empty:
+                rows = df.to_dict(orient="records")
+                # Convert date objects to ISO strings for JSON serialisation
+                for r in rows:
+                    if hasattr(r.get("date"), "isoformat"):
+                        r["date"] = r["date"].isoformat()
+                return jsonify({"ok": True, "ticker": ticker_upper,
+                                "rows": rows, "source": "duckdb"})
+        except Exception as duckdb_err:
+            # DuckDB unavailable, will fall through to pandas fallback
+            pass
+        
+        # Fallback: Use pandas/get_historical
+        from modules.data_pipeline import get_historical
+        
+        # Try with cache first
+        df_pd = get_historical(ticker_upper, use_cache=True)
+        
+        # If cache failed or empty, force fresh download
+        if df_pd.empty:
+            df_pd = get_historical(ticker_upper, use_cache=False)
+        
+        if not df_pd.empty:
+            cutoff = pd.Timestamp.today() - pd.Timedelta(days=days)
+            df_pd = df_pd[df_pd.index >= cutoff].copy()
+            df_pd.index = df_pd.index.date
+            rows = [
+                {"date": str(idx), "open": round(float(row["Open"]), 4),
+                 "high": round(float(row["High"]), 4),
+                 "low":  round(float(row["Low"]), 4),
+                 "close": round(float(row["Close"]), 4),
+                 "volume": int(row["Volume"])}
+                for idx, row in df_pd.iterrows()
+            ]
+            return jsonify({"ok": True, "ticker": ticker_upper,
+                            "rows": rows, "source": "pandas"})
+        
+        # No data available from any source
+        return jsonify({"ok": True, "ticker": ticker_upper,
+                        "rows": [], "source": "none"})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})
 

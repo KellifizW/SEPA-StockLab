@@ -132,7 +132,7 @@ def detect_vcp(df: pd.DataFrame) -> dict:
         base_weeks=base_weeks,
     )
 
-    is_valid = (
+    is_valid = bool(
         t_count >= C.VCP_MIN_CONTRACTIONS
         and base_weeks >= C.VCP_MIN_BASE_WEEKS
         and base_depth_pct <= C.VCP_MAX_BASE_DEPTH
@@ -154,17 +154,17 @@ def detect_vcp(df: pd.DataFrame) -> dict:
 
     return {
         "vcp_score":        score,
-        "is_valid_vcp":     is_valid,
+        "is_valid_vcp":     bool(is_valid),
         "grade":            grade,
         "t_count":          t_count,
         "contractions":     contractions,
         "pivot_price":      round(float(pivot), 2) if pivot else None,
-        "base_depth_pct":   round(base_depth_pct, 1),
-        "base_weeks":       round(base_weeks, 1),
-        "atr_contracting":  atr_contracting,
-        "bb_contracting":   bb_contracting,
-        "vol_dry":          vol_dry,
-        "vol_ratio":        round(vol_ratio, 2),
+        "base_depth_pct":   float(round(base_depth_pct, 1)),
+        "base_weeks":       float(round(base_weeks, 1)),
+        "atr_contracting":  bool(atr_contracting),
+        "bb_contracting":   bool(bb_contracting),
+        "vol_dry":          bool(vol_dry),
+        "vol_ratio":        float(round(vol_ratio, 2)),
         "notes":            notes,
     }
 
@@ -369,7 +369,7 @@ def _check_atr_contraction(base_df: pd.DataFrame) -> tuple:
         return False, 1.0
 
     ratio = late_avg / early_avg
-    return ratio < 0.85, round(float(ratio), 3)   # Declining = ratio < 1
+    return bool(ratio < 0.85), round(float(ratio), 3)   # Declining = ratio < 1
 
 
 def _check_bbands_contraction(base_df: pd.DataFrame) -> tuple:
@@ -400,7 +400,7 @@ def _check_bbands_contraction(base_df: pd.DataFrame) -> tuple:
         if contracting
         else f"BBands width {current_bbw:.2f} above compressed level {recent_pct25:.2f}"
     )
-    return contracting, note
+    return bool(contracting), note
 
 
 def _check_volume_dryup(df: pd.DataFrame, base_end_idx: int) -> tuple:
@@ -422,7 +422,7 @@ def _check_volume_dryup(df: pd.DataFrame, base_end_idx: int) -> tuple:
         return False, 1.0
 
     ratio = recent_vol / context_vol
-    return ratio <= C.VCP_VOLUME_DRY_THRESHOLD, round(float(ratio), 3)
+    return bool(ratio <= C.VCP_VOLUME_DRY_THRESHOLD), round(float(ratio), 3)
 
 
 def _find_pivot(base_df: pd.DataFrame) -> Optional[float]:

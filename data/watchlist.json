@@ -1,25 +1,10 @@
 {
-  "A": {},
-  "B": {},
-  "C": {
-    "ANET": {
-      "sepa_score": null,
-      "added_date": "2026-02-27 00:00:00",
-      "note": "CANSLIM"
-    },
-    "ADEA": {
-      "added_date": "2026-02-27",
-      "last_updated": "2026-02-27",
-      "rs_rank": null,
-      "tt_score": 9,
-      "tt_passes": true,
-      "vcp_grade": "D",
-      "vcp_score": 37,
-      "t_count": 3,
-      "pivot": 21.07,
-      "price": 20.85,
-      "sector": "Technology",
-      "note": "CANSLIM"
+  "A": {
+    "TEST": {
+      "sepa_score": 75.0,
+      "added_date": "2026-02-27"
     }
-  }
+  },
+  "B": {},
+  "C": {}
 }

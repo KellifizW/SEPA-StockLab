@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from datetime import date
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import trader_config as C

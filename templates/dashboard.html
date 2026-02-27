@@ -207,7 +207,7 @@ async function generateReport() {
   toast('Generating report…');
   const r = await fetch('/api/report/generate', {method:'POST'}).then(x=>x.json());
   pollJob(`/api/report/generate`, () => {
-    toast('Report ready!'); 
+    toastCompletion('✅ 報告已生成完成'); 
   }, e => toast('Error: ' + e, false));
 }
 
@@ -233,8 +233,8 @@ async function restartServer() {
           const health = await fetch('/', {method: 'GET', signal: AbortSignal.timeout(2000)});
           if (health.ok) {
             clearInterval(checkServer);
-            toast('✅ Server restarted and ready!', true);
-            setTimeout(() => location.reload(), 800);
+            toastCompletion('✅ 服務器已重啟並就緒', true);
+            setTimeout(() => location.reload(), 1500);
             return;
           }
         } catch (e) {

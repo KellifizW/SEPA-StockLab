@@ -75,6 +75,33 @@ def _fvf_sleep(min_gap: float = 1.2):
     _last_fvf_call = time.time()
 
 
+# ─── yfinance authentication helpers ─────────────────────────────────────────
+
+def _is_crumb_error(exc: Exception) -> bool:
+    """Return True if the exception looks like a Yahoo Finance 401/crumb error."""
+    desc = str(exc).lower()
+    return ("401" in desc or "unauthorized" in desc
+            or "invalid crumb" in desc or "crumb" in desc)
+
+
+def _reset_yf_crumb() -> bool:
+    """
+    Force yfinance to re-authenticate on the next API request by clearing
+    the cached cookie/crumb from the YfData singleton.
+    Returns True on success.
+    """
+    try:
+        from yfinance.data import YfData  # noqa: PLC0415
+        yd = YfData()
+        yd._crumb = None
+        yd._cookie = None
+        logger.info("[DataPipeline] yfinance crumb reset — will re-authenticate on next request")
+        return True
+    except Exception as e:
+        logger.warning(f"[DataPipeline] crumb reset failed: {e}")
+        return False
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # A. finvizfinance — Screener & Snapshots  (with TTL cache)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -231,30 +258,38 @@ def get_historical(ticker: str, period: str = "2y",
         except Exception:
             pass
 
-    # Download from yfinance
-    try:
-        tkr = yf.Ticker(ticker)
-        df = tkr.history(period=period, interval="1d", auto_adjust=True)
-        if df is None or df.empty:
-            return pd.DataFrame()
-        # Keep only OHLCV columns
-        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-        df.index = pd.to_datetime(df.index)
-        if df.index.tzinfo is not None:
-            df.index = df.index.tz_localize(None)
-        df = df.dropna()
-
-        # Save cache
+    # Download from yfinance (retry once on 401/crumb error)
+    for _attempt in range(2):
         try:
-            df.to_parquet(cache_file)
-            cache_file.with_suffix(".meta").write_text(today)
-        except Exception:
-            pass
+            tkr = yf.Ticker(ticker)
+            df = tkr.history(period=period, interval="1d", auto_adjust=True)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            # Keep only OHLCV columns
+            df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+            df.index = pd.to_datetime(df.index)
+            if df.index.tzinfo is not None:
+                df.index = df.index.tz_localize(None)
+            df = df.dropna()
 
-        return df
-    except Exception as exc:
-        logger.warning(f"get_historical({ticker}) error: {exc}")
-        return pd.DataFrame()
+            # Save cache
+            try:
+                df.to_parquet(cache_file)
+                cache_file.with_suffix(".meta").write_text(today)
+            except Exception:
+                pass
+
+            return df
+        except Exception as exc:
+            if _attempt == 0 and _is_crumb_error(exc):
+                logger.warning(
+                    f"get_historical({ticker}) crumb/401 error — resetting session and retrying"
+                )
+                _reset_yf_crumb()
+                continue
+            logger.warning(f"get_historical({ticker}) error: {exc}")
+            return pd.DataFrame()
+    return pd.DataFrame()
 
 
 def get_bulk_historical(tickers: list, period: str = "1y",
@@ -337,131 +372,181 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
             cached_dt  = date.fromisoformat(cache_date)
             if (date.today() - cached_dt).days < getattr(C, "FUNDAMENTALS_CACHE_DAYS", 1):
                 raw = json.loads(cache_file.read_text(encoding="utf-8"))
-                # Restore DataFrames from dict lists
-                for key in ("quarterly_eps", "earnings_surprise", "eps_revisions",
-                            "eps_trend", "institutional_holders", "insider_transactions",
-                            "analyst_targets", "quarterly_revenue"):
-                    val = raw.get(key)
-                    if isinstance(val, list):
-                        raw[key] = pd.DataFrame(val) if val else pd.DataFrame()
-                    elif not isinstance(val, pd.DataFrame):
-                        raw[key] = pd.DataFrame()
-                logger.debug("[Cache HIT] get_fundamentals(%s) from cache", ticker)
-                return raw
+                # If cached info is empty, the cache was written during an auth failure.
+                # Delete the stale files now and fall through to re-fetch.
+                if not raw.get("info"):
+                    logger.warning(
+                        "[Cache STALE] get_fundamentals(%s) — cached info is empty "
+                        "(likely prior 401). Deleting and re-fetching.", ticker
+                    )
+                    try:
+                        cache_file.unlink(missing_ok=True)
+                        meta_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                else:
+                    # Restore DataFrames from dict lists
+                    for key in ("quarterly_eps", "earnings_surprise", "eps_revisions",
+                                "eps_trend", "institutional_holders", "insider_transactions",
+                                "analyst_targets", "quarterly_revenue"):
+                        val = raw.get(key)
+                        if isinstance(val, list):
+                            raw[key] = pd.DataFrame(val) if val else pd.DataFrame()
+                        elif not isinstance(val, pd.DataFrame):
+                            raw[key] = pd.DataFrame()
+                    logger.debug("[Cache HIT] get_fundamentals(%s) from cache", ticker)
+                    return raw
         except Exception:
             pass
 
-    # ── Fetch from yfinance ──────────────────────────────────────────────
-    result = {
-        "ticker": ticker.upper(),
-        "info": {},
-        "quarterly_eps": pd.DataFrame(),
-        "earnings_surprise": pd.DataFrame(),
-        "eps_revisions": pd.DataFrame(),
-        "eps_trend": pd.DataFrame(),
-        "institutional_holders": pd.DataFrame(),
-        "insider_transactions": pd.DataFrame(),
-        "analyst_targets": pd.DataFrame(),
-        "quarterly_revenue": pd.DataFrame(),
-    }
-    try:
-        tkr = yf.Ticker(ticker)
-
-        # .info — price, valuation, margins, ROE, SMA50/200, etc.
+    # ── Fetch from yfinance ── (retry once on 401/crumb error) ─────────────
+    for _attempt in range(2):
+        result = {
+            "ticker": ticker.upper(),
+            "info": {},
+            "quarterly_eps": pd.DataFrame(),
+            "earnings_surprise": pd.DataFrame(),
+            "eps_revisions": pd.DataFrame(),
+            "eps_trend": pd.DataFrame(),
+            "institutional_holders": pd.DataFrame(),
+            "insider_transactions": pd.DataFrame(),
+            "analyst_targets": pd.DataFrame(),
+            "quarterly_revenue": pd.DataFrame(),
+        }
+        _retry = False
         try:
-            info = tkr.info or {}
-            result["info"] = info
-        except Exception:
-            pass
+            tkr = yf.Ticker(ticker)
 
-        # Quarterly income statement (for EPS acceleration detection)
-        try:
-            qi = tkr.quarterly_income_stmt
-            if qi is not None and not qi.empty:
-                result["quarterly_eps"] = qi
-        except Exception:
-            pass
+            # .info — price, valuation, margins, ROE, SMA50/200, etc.
+            try:
+                info = tkr.info or {}
+                result["info"] = info
+            except Exception as _inf_exc:
+                if _attempt == 0 and _is_crumb_error(_inf_exc):
+                    logger.warning(
+                        f"get_fundamentals({ticker}) crumb/401 on .info — resetting session"
+                    )
+                    _reset_yf_crumb()
+                    _retry = True
+                pass
 
-        # Earnings history (EPS surprise data)
-        try:
-            eh = tkr.get_earnings_history()
-            if eh is not None and not eh.empty:
-                result["earnings_surprise"] = eh
-        except Exception:
-            pass
+            # yfinance 1.2.0 silently returns {} on 401 without raising.
+            # If info is empty on the first attempt, reset crumb and retry.
+            if not _retry and not result["info"] and _attempt == 0:
+                logger.warning(
+                    f"get_fundamentals({ticker}) .info is empty on attempt 1 — "
+                    "resetting yfinance session and retrying"
+                )
+                _reset_yf_crumb()
+                _retry = True
 
-        # EPS revisions (analyst upgrades/downgrades of estimates)
-        try:
-            er = tkr.get_eps_revisions()
-            if er is not None and not er.empty:
-                result["eps_revisions"] = er
-        except Exception:
-            pass
+            if _retry:
+                continue
 
-        # EPS trend over time
-        try:
-            et = tkr.get_eps_trend()
-            if et is not None and not et.empty:
-                result["eps_trend"] = et
-        except Exception:
-            pass
+            # Quarterly income statement (for EPS acceleration detection)
+            try:
+                qi = tkr.quarterly_income_stmt
+                if qi is not None and not qi.empty:
+                    result["quarterly_eps"] = qi
+            except Exception:
+                pass
 
-        # Institutional holders
-        try:
-            ih = tkr.get_institutional_holders()
-            if ih is not None and not ih.empty:
-                result["institutional_holders"] = ih
-        except Exception:
-            pass
+            # Earnings history (EPS surprise data)
+            try:
+                eh = tkr.get_earnings_history()
+                if eh is not None and not eh.empty:
+                    result["earnings_surprise"] = eh
+            except Exception:
+                pass
 
-        # Insider transactions
-        try:
-            it = tkr.get_insider_transactions()
-            if it is not None and not it.empty:
-                result["insider_transactions"] = it
-        except Exception:
-            pass
+            # EPS revisions (analyst upgrades/downgrades of estimates)
+            try:
+                er = tkr.get_eps_revisions()
+                if er is not None and not er.empty:
+                    result["eps_revisions"] = er
+            except Exception:
+                pass
 
-        # Analyst price targets
-        try:
-            at = tkr.analyst_price_targets
-            if at is not None and not at.empty:
-                result["analyst_targets"] = at
-        except Exception:
-            pass
+            # EPS trend over time
+            try:
+                et = tkr.get_eps_trend()
+                if et is not None and not et.empty:
+                    result["eps_trend"] = et
+            except Exception:
+                pass
 
-        # Quarterly revenue from income statement
-        try:
-            if not result["quarterly_eps"].empty:
-                qi = result["quarterly_eps"]
-                if "Total Revenue" in qi.index:
-                    result["quarterly_revenue"] = qi.loc[["Total Revenue"]]
-        except Exception:
-            pass
+            # Institutional holders
+            try:
+                ih = tkr.get_institutional_holders()
+                if ih is not None and not ih.empty:
+                    result["institutional_holders"] = ih
+            except Exception:
+                pass
 
-    except Exception as exc:
-        logger.warning(f"get_fundamentals({ticker}) error: {exc}")
+            # Insider transactions
+            try:
+                it = tkr.get_insider_transactions()
+                if it is not None and not it.empty:
+                    result["insider_transactions"] = it
+            except Exception:
+                pass
+
+            # Analyst price targets
+            try:
+                at = tkr.analyst_price_targets
+                if at is not None and not at.empty:
+                    result["analyst_targets"] = at
+            except Exception:
+                pass
+
+            # Quarterly revenue from income statement
+            try:
+                if not result["quarterly_eps"].empty:
+                    qi = result["quarterly_eps"]
+                    if "Total Revenue" in qi.index:
+                        result["quarterly_revenue"] = qi.loc[["Total Revenue"]]
+            except Exception:
+                pass
+
+            break  # fetched successfully — exit retry loop
+
+        except Exception as exc:
+            if _attempt == 0 and _is_crumb_error(exc):
+                logger.warning(
+                    f"get_fundamentals({ticker}) crumb/401 error — resetting session and retrying"
+                )
+                _reset_yf_crumb()
+                continue
+            logger.warning(f"get_fundamentals({ticker}) error: {exc}")
+            break
 
     # ── Save to cache ────────────────────────────────────────────────────
-    try:
-        def _to_serialisable(v):
-            if isinstance(v, pd.DataFrame):
-                if v.empty:
-                    return []
-                return json.loads(v.to_json(orient="records", date_format="iso",
-                                            default_handler=str))
-            if isinstance(v, pd.Series):
-                return v.tolist()
-            return v
+    # Do NOT cache if info is empty — likely an auth failure.
+    # Caching bad data would cause repeated auth warnings on every subsequent request.
+    if not result.get("info"):
+        logger.warning(
+            f"get_fundamentals({ticker}) — skipping cache write (empty info, possible auth failure)"
+        )
+    else:
+        try:
+            def _to_serialisable(v):
+                if isinstance(v, pd.DataFrame):
+                    if v.empty:
+                        return []
+                    return json.loads(v.to_json(orient="records", date_format="iso",
+                                                default_handler=str))
+                if isinstance(v, pd.Series):
+                    return v.tolist()
+                return v
 
-        cache_data = {k: _to_serialisable(v) for k, v in result.items()}
-        cache_file.write_text(
-            json.dumps(cache_data, ensure_ascii=False, default=str),
-            encoding="utf-8")
-        meta_file.write_text(today_str)
-        logger.debug("[Cache SAVE] get_fundamentals(%s)", ticker)
-    except Exception as exc:
-        logger.debug(f"Could not save fundamentals cache for {ticker}: {exc}")
+            cache_data = {k: _to_serialisable(v) for k, v in result.items()}
+            cache_file.write_text(
+                json.dumps(cache_data, ensure_ascii=False, default=str),
+                encoding="utf-8")
+            meta_file.write_text(today_str)
+            logger.debug("[Cache SAVE] get_fundamentals(%s)", ticker)
+        except Exception as exc:
+            logger.debug(f"Could not save fundamentals cache for {ticker}: {exc}")
 
     # ── Also persist to DuckDB fundamentals_cache (background, non-blocking) ───────────
     if getattr(C, "DB_ENABLED", False):

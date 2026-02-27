@@ -33,6 +33,19 @@
 <!-- Error -->
 <div id="errBox" class="alert alert-danger d-none"></div>
 
+<!-- Yahoo Finance auth warning (shown when yfinance returns no info due to 401/crumb) -->
+<div id="yf401Warning" class="alert d-none mb-3"
+     style="background:#2e1a00;border-left:4px solid #e3b341;color:#e3b341">
+  <i class="bi bi-exclamation-triangle-fill me-2"></i>
+  <strong>Yahoo Finance 認証失效 (Invalid Crumb)</strong> —
+  基本面數據可能不完整，分析結果可能不準確。
+  <button class="btn btn-sm ms-3"
+          style="background:#4a3800;color:#e3b341;border:1px solid #e3b341"
+          onclick="resetYfSession()">
+    <i class="bi bi-arrow-clockwise me-1"></i>重置連接 Reset Session
+  </button>
+</div>
+
 <!-- Result -->
 <div id="result" class="d-none">
   <div class="row g-3 mb-3" id="summaryCards"></div>
@@ -168,6 +181,15 @@ function renderResult(d, ticker) {
   const scored = d.scored_pillars || {};
   const cls    = scoreClass(score);
 
+  // Show/hide 401 auth warning
+  const w401 = document.getElementById('yf401Warning');
+  if (d.yf_auth_warning) {
+    w401.classList.remove('d-none');
+    toast('Yahoo Finance 認証失效 — 基本面數據可能不完整', false);
+  } else {
+    w401.classList.add('d-none');
+  }
+
   // Summary cards
   document.getElementById('summaryCards').innerHTML = `
     <div class="col-6 col-md-3"><div class="metric-card">
@@ -207,14 +229,21 @@ function renderResult(d, ticker) {
     </li>`
   ).join('');
 
-  // SEPA pillar scores
-  document.getElementById('sepaScores').innerHTML = Object.entries(scored).map(([k, v]) => {
-    const pct = Math.round(v);
+  // SEPA pillar scores — only show the 5 pillars, not all scored_pillars keys
+  const pillarDefs = [
+    ['trend_score',       '趨勢 Trend'],
+    ['fundamental_score', '基本面 Fundamentals'],
+    ['catalyst_score',    '催化劑 Catalyst'],
+    ['entry_score',       '入場時機 Entry'],
+    ['rr_score',          '風險回報 Risk/Reward'],
+  ];
+  document.getElementById('sepaScores').innerHTML = pillarDefs.map(([k, lbl]) => {
+    const pct = Math.round(scored[k] || 0);
     const bar = `<div class="progress mt-1 mb-2" style="height:6px">
       <div class="progress-bar ${pct>=70?'bg-success':pct>=50?'bg-warning':'bg-danger'}"
            style="width:${pct}%"></div></div>`;
-    return `<div><div class="d-flex justify-content-between"><span class="small text-capitalize">${k}</span><span class="small fw-bold">${pct}</span></div>${bar}</div>`;
-  }).join('');
+    return `<div><div class="d-flex justify-content-between"><span class="small">${lbl}</span><span class="small fw-bold">${pct}</span></div>${bar}</div>`;
+  }).join('') + `<div class="mt-2 pt-2" style="border-top:1px solid #21262d"><div class="d-flex justify-content-between"><span class="small fw-bold">總分 Total</span><span class="small fw-bold ${scoreClass(score)}">${Number(score).toFixed(1)}</span></div></div>`;
 
   // VCP box
   document.getElementById('vcpBox').innerHTML = `
@@ -518,6 +547,9 @@ async function loadPriceHistory(ticker) {
     });
     loadEl.style.display = 'none';
     wrapEl.style.display = 'block';
+    
+    // 分析完成通知（不自動關閉）
+    toastCompletion(`✅ ${ticker} 分析完成`, true);
   } catch(e) {
     console.error('loadPriceHistory error:', e);
     loadEl.style.display = 'none';
@@ -538,6 +570,24 @@ async function addToWatchlist(ticker) {
     );
   } else {
     toast(`Error: ${r.error || 'Failed to add to watchlist'}`, false);
+  }
+}
+
+async function resetYfSession() {
+  const btn = event.target.closest('button');
+  if (btn) { btn.disabled = true; btn.textContent = '重置中…'; }
+  try {
+    const r = await fetch('/api/admin/reset-yf-session', {method:'POST'}).then(x=>x.json());
+    if (r.ok) {
+      toast('✅ Session 已重置，請重新查詢', true);
+      document.getElementById('yf401Warning').classList.add('d-none');
+    } else {
+      toast('⚠️ 重置失敗: ' + (r.error || r.message), false);
+    }
+  } catch(e) {
+    toast('⚠️ 重置失敗: ' + e, false);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>重置連接 Reset Session'; }
   }
 }
 

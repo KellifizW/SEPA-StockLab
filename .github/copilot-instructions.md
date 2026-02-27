@@ -40,10 +40,11 @@ Minervini trailing stops, market regime classification, watchlist management, RS
 - **pandas_ta** — Technical indicators (SMA, RSI, ATR, Bollinger Bands)
 - **pandas + numpy** — Data manipulation
 - **pyarrow** — Parquet file I/O for price cache
+- **duckdb** — Analytical SQL database for historical scan/RS/market/position/watchlist persistence
 - **tabulate** — Terminal table formatting
 - **threading** — Background jobs for long-running scans
 
-**No database.** All persistence uses JSON files, Parquet, and CSV in `data/`.
+**Hybrid persistence:** DuckDB (`data/sepa_stock.duckdb`) is the primary store for watchlist, positions, and historical data. Flat files (JSON, Parquet, CSV) remain as fallback/cache and receive dual-writes for safety.
 
 ---
 
@@ -57,6 +58,9 @@ trader_config.py        # Centralized config — ALL Minervini parameters as con
 modules/
   data_pipeline.py      # SINGLE data access layer — wraps finvizfinance, yfinance, pandas_ta
                         # All other modules import ONLY from here for market data
+  db.py                 # DuckDB persistence layer — scan_history, rs_history, market_env_history,
+                        # watchlist_store, open_positions, closed_positions, fundamentals_cache
+                        # Public APIs: wl_load/wl_save, pos_load/pos_save, append_*, query_*, db_stats
   screener.py           # 3-stage SEPA scan funnel (Stage 1→2→3), TT validation, 5-pillar scoring
   rs_ranking.py         # IBD-style Relative Strength percentile ranking engine
   vcp_detector.py       # VCP auto-detection — swing contractions, ATR/BBands, volume dry-up
@@ -77,10 +81,14 @@ templates/              # Jinja2 HTML templates (Bootstrap 5 dark theme)
   vcp.html              # VCP detection results
   guide.html            # Renders GUIDE.md
 
-data/                   # Runtime data (JSON, CSV, Parquet, cache)
+data/                   # Runtime data (DuckDB, JSON, CSV, Parquet, cache)
+  sepa_stock.duckdb     # DuckDB database — primary persistent store (Phase 2+)
   price_cache/          # yfinance OHLCV cache (Parquet + .meta files)
-  last_scan.json        # Persisted scan results
-  rs_cache.csv          # RS ranking cache
+  db_backups/           # Daily JSON backups written by DuckDB dual-write safety
+  last_scan.json        # Persisted scan results (also written to scan_history table)
+  rs_cache.csv          # RS ranking cache (also written to rs_history table)
+  watchlist.json        # Watchlist JSON backup (primary source is watchlist_store table)
+  positions.json        # Positions JSON backup (primary source is open_positions table)
 
 .github/                # AI-assisted development configuration
   copilot-instructions.md   # Always-on instructions (this file)
@@ -189,9 +197,14 @@ Progress tracking uses module-level `threading.Lock` + dict.
 - Use `_clean()` to recursively sanitize numpy NaN/DataFrame values before JSON response
 - Write per-scan log files to `logs/` directory
 
-### JSON Persistence
-For stateful features (watchlist, positions), use the `_load()` / `_save()` pattern
-with JSON files in `data/`.
+### Persistence Pattern (Phase 2+)
+All stateful data (watchlist, positions, scan history, RS, market env) is persisted in DuckDB via `modules/db.py`.
+- **Watchlist / Positions**: `db.wl_load()` / `db.wl_save()`, `db.pos_load()` / `db.pos_save()`
+  — DuckDB is primary; JSON files in `data/` receive dual-writes as safety backup (`DB_JSON_BACKUP_ENABLED`)
+- **Historical logging**: `db.append_scan_history()`, `db.append_rs_history()`, `db.append_market_env()`
+  — Append-only; used for trend charts and persistent signal detection
+- **Flat-file fallback**: If DuckDB is unavailable, all operations fall back to `_load()` / `_save()` JSON helpers
+  in the respective module (`watchlist.py`, `position_monitor.py`)
 
 ---
 
@@ -210,6 +223,7 @@ Organized into named groups with inline comments:
 | VCP | `VCP_` | `VCP_MIN_CONTRACTIONS`, `VCP_MIN_BASE_WEEKS` |
 | RS Ranking | `RS_` | `RS_WEIGHT_3M`, `RS_WEIGHT_12M` |
 | Market | (none) | `MKT_INDICES` |
+| Database (DuckDB) | `DB_` | `DB_FILE`, `DB_JSON_BACKUP_ENABLED`, `DB_JSON_BACKUP_DIR` |
 | SEPA Weights | `W_` | `W_TREND`, `W_FUNDAMENTAL` |
 
 When adding new parameters, follow this convention:
@@ -263,11 +277,16 @@ When adding new parameters, follow this convention:
        ↓
   screener.py Stage 3 (SEPA 5-pillar scoring, final ranked list)
        ↓
+  modules/db.py append_scan_history() — persisted to DuckDB scan_history
+       ↓
   ┌─ stock_analyzer.py (deep single-stock analysis → BUY/WATCH/AVOID)
   ├─ vcp_detector.py (VCP pattern detection on candidates)
   ├─ position_monitor.py (daily health checks on held positions)
+  │    └─ db.pos_load() / db.pos_save() — DuckDB open_positions + closed_positions
   ├─ watchlist.py (A/B/C grading and tracking)
-  └─ market_env.py (regime classification for overall exposure)
+  │    └─ db.wl_load() / db.wl_save() — DuckDB watchlist_store
+  ├─ rs_ranking.py → db.append_rs_history() — DuckDB rs_history
+  └─ market_env.py → db.append_market_env() — DuckDB market_env_history
 ```
 
 ---
@@ -276,13 +295,14 @@ When adding new parameters, follow this convention:
 
 These issues exist and should be incrementally addressed:
 
-1. **No tests** — The project has no test suite. When adding new features, consider writing pytest tests for algorithmic logic (scoring, VCP detection, TT validation). Use `/tdd` slash command to follow TDD workflow.
+1. **Partial test coverage** — `tests/` directory exists with integration tests. Unit tests for core algorithmic logic (scoring, VCP detection, TT validation) are still sparse. Use `/tdd` slash command to add coverage.
 2. **DRY violations** — ANSI colour constants (`_GREEN`, `_RED`, `_BOLD`, `_RESET`) are copy-pasted across 6+ modules. Extract to a shared `modules/utils.py`. Use `/refactor` slash command to address.
 3. **ROOT path boilerplate** — `ROOT = Path(...).parent.parent; sys.path.insert(...)` repeated in every module. Consider a package setup with proper `__init__.py`.
 4. **Missing type annotations** — Functions return `pd.DataFrame`, `dict`, or `tuple` inconsistently without type hints. Add return type annotations.
-5. **Thread safety** — `_finviz_cache` in `data_pipeline.py` is shared mutable state without locking. Needs `threading.Lock`.
+5. **Thread safety** — `_finviz_cache` in `data_pipeline.py` is shared mutable state without locking. Needs `threading.Lock`. (`db.py` is protected by its own `_lock` and `_schema_lock`.)
 6. **Large templates** — `scan.html` is ~1000 lines. Consider splitting JS logic.
 7. **Inline HTML in report.py** — Should be moved to a Jinja2 template.
+8. **DuckDB migration** — `scripts/migrate_phase2.py` handles one-time JSON→DuckDB import for existing installs. New installs start with an empty DuckDB that is populated on first use.
 
 ---
 

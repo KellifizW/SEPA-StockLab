@@ -225,7 +225,7 @@ async function addPosition() {
         addForm.classList.remove('show');
       }
       
-      toast(`${t} position added successfully`);
+      toastCompletion(`✅ ${t} 持倉已新增`, true);
       console.log(`[addPosition] Row updated, total time: ${Date.now() - fetchStart}ms`);
     }
     else {
@@ -272,9 +272,9 @@ async function confirmClose() {
     body: JSON.stringify({ticker:_closingTicker, exit_price:exitP, reason})
   }).then(x=>x.json());
   if (r.ok) {
-    toast(`${_closingTicker} closed successfully`);
+    toastCompletion(`✅ ${_closingTicker} 持倉已平倉`, true);
     // After brief delay, reload page
-    setTimeout(() => window.location.reload(), 100);
+    setTimeout(() => window.location.reload(), 1500);
   }
   else toast(`Error: ${r.error}`, false);
 }

@@ -192,7 +192,7 @@ async function refreshWatchlist() {
     res => {
       document.getElementById('wlLoading').classList.add('d-none');
       renderWatchlist(res.watchlist);
-      toast('Watchlist refreshed');
+      toastCompletion('✅ 觀察列表已重新分析完成', true);
     },
     err => {
       document.getElementById('wlLoading').classList.add('d-none');

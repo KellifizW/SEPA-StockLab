@@ -114,8 +114,14 @@ def analyze(ticker: str,
 
     # ── 8. Recommendation ────────────────────────────────────────────────────
     recommendation = _make_recommendation(tt, scored, vcp, pos)
-    # ── 9. Recent news ────────────────────────────────────────────────────────
-    news = get_news_fvf(ticker)
+    # ── 9. Recent news (convert DataFrame → list[dict] for JSON safety) ──────
+    news_raw = get_news_fvf(ticker)
+    if hasattr(news_raw, "to_dict") and not news_raw.empty:
+        news = news_raw.to_dict(orient="records")
+    elif hasattr(news_raw, "empty") and news_raw.empty:
+        news = []
+    else:
+        news = news_raw if isinstance(news_raw, list) else []
 
     # Build recommendation with frontend-expected fields
     rec_base = _make_recommendation(tt, scored, vcp, pos)
@@ -160,6 +166,8 @@ def analyze(ticker: str,
         "eps_acceleration": eps_accel,
         "recommendation":   recommendation,
         "news":             news,
+        # True when yfinance returned no .info (likely 401 / invalid crumb)
+        "yf_auth_warning":  not bool(funds.get("info")),
     }
 
     if print_report:
@@ -435,7 +443,7 @@ def _make_recommendation(tt: dict, scored: dict,
     return {
         "signal": signal,
         "colour": colour,
-        "reason": f"SEPA score {total:.0f}/100, RS {scored.get('rs_rank', 0):.0f}, "
+        "reason": f"SEPA score {total:.0f}/100, RS {(scored.get('rs_rank') or 0):.0f}, "
                   f"VCP {'✓' if vcp_valid else '–'}, R:R {rr:.1f}:1",
         "action": action,
     }
@@ -556,13 +564,13 @@ def _print_full_report(r: dict):
           f"({pos.get('position_pct',0):.1f}%)  "
           f"Risk: ${pos.get('risk_dollar',0):,.0f}")
 
-    # News
-    news = r.get("news")
-    if news is not None and not news.empty:
+    # News (now always a list of dicts)
+    news = r.get("news") or []
+    if news:
         print(f"\n{thin}")
         print(f"  {_BOLD}RECENT NEWS (latest 3){_RESET}")
-        for _, row in news.head(3).iterrows():
-            title = str(row.get("Title", row.get("title", "News headline")))[:70]
+        for item in news[:3]:
+            title = str(item.get("Title", item.get("title", "News headline")))[:70]
             print(f"  • {title}")
 
     print(f"\n{sep}\n")

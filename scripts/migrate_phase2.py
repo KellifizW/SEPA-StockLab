@@ -25,7 +25,7 @@ from datetime import date, datetime
 from pathlib import Path
 from shutil import copy2
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import trader_config as C

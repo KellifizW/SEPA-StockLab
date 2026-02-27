@@ -6,10 +6,12 @@ import json
 import time
 import subprocess
 import sys
+from pathlib import Path
 
 # Start the Flask app in the background
+ROOT = Path(__file__).resolve().parent.parent
 print("Starting Flask app...")
-proc = subprocess.Popen([sys.executable, 'app.py'], 
+proc = subprocess.Popen([sys.executable, str(ROOT / 'app.py')], 
                         stdout=subprocess.PIPE, 
                         stderr=subprocess.PIPE)
 time.sleep(2)

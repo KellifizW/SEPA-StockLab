@@ -9,6 +9,15 @@ data/rs_cache.csv
 data/last_scan.json
 data/sepa_scan_*.csv
 
+# DuckDB database — local development only
+data/sepa_stock.duckdb
+data/sepa_stock.duckdb-wal
+data/sepa_stock.duckdb-shm
+
+# Backups and cache
+data/db_backups/
+data/price_cache/
+
 # 執行時產生
 logs/
 reports/

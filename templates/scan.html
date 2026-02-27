@@ -532,9 +532,9 @@ function onScanDone(rows, logFile) {
     sessionStorage.setItem('sepa_scan_meta', meta);
   } catch(e) {}
 
-  // Dismissible notification with log path
-  const logHint = logFile ? `<br><small class="text-muted">Log: ${logFile}</small>` : '';
-  toastDismissible(
+  // 持久完成通知（不自動關閉）
+  const logHint = logFile ? `<br><small class="text-muted">日誌: ${logFile}</small>` : '';
+  toastCompletion(
     `✅ 掃描完成 — 找到 ${_scanData.length} 檔股票${logHint}`,
     true
   );
@@ -973,25 +973,6 @@ function loadCacheInfo() {
 
 // Load cache info on page load
 setTimeout(loadCacheInfo, 500);
-
-/* ─── Dismissible toast (stays until user closes) ─────────────────────── */
-function toastDismissible(htmlMsg, ok=true) {
-  const el = document.createElement('div');
-  el.className = 'toast-msg ' + (ok ? 'ok' : 'err');
-  el.style.cssText = 'display:flex; align-items:flex-start; gap:8px; max-width:380px;';
-  const body = document.createElement('span');
-  body.innerHTML = htmlMsg;
-  body.style.flex = '1';
-  const btn = document.createElement('button');
-  btn.innerHTML = '&times;';
-  btn.style.cssText = 'background:none; border:none; color:#8b949e; font-size:1.2rem; cursor:pointer; padding:0; line-height:1;';
-  btn.onclick = () => el.remove();
-  el.appendChild(body);
-  el.appendChild(btn);
-  document.getElementById('toast-container').appendChild(el);
-  // Auto-dismiss after 30s if user doesn't close
-  setTimeout(() => { if (el.parentNode) el.remove(); }, 30000);
-}
 
 /* ─── Trading date display ────────────────────────────────────────────── */
 function updateTradingDate() {

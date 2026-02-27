@@ -1,97 +1,22 @@
 {
   "positions": {
-    "TSLA": {
-      "buy_price": 420.0,
-      "shares": 1,
-      "stop_loss": 400.0,
-      "stop_pct": 4.76,
-      "target": 500.0,
-      "rr": 4.0,
-      "risk_dollar": 20.0,
-      "entry_date": null,
-      "last_stop_update": null,
-      "trailing_stop": null,
-      "pnl_pct": null,
-      "note": ""
-    },
-    "RIOT": {
-      "buy_price": 15.0,
-      "shares": 10,
-      "stop_loss": 11.0,
-      "stop_pct": 26.67,
-      "target": 19.0,
-      "rr": 1.0,
-      "risk_dollar": 40.0,
-      "entry_date": null,
-      "last_stop_update": null,
-      "trailing_stop": null,
-      "pnl_pct": null,
-      "note": ""
-    },
-    "MU": {
-      "buy_price": 200.0,
-      "shares": 1,
-      "stop_loss": 100.0,
-      "stop_pct": 50.0,
-      "target": 400.0,
+    "TEST": {
+      "buy_price": 100.0,
+      "shares": 100,
+      "stop_loss": 95.0,
+      "stop_pct": 5.0,
+      "target": 120.0,
       "rr": 2.0,
-      "risk_dollar": 100.0,
-      "buy_date": "2026-02-27",
-      "days_held": 0,
-      "max_price": 200.0,
-      "note": ""
+      "risk_dollar": 500.0
     }
   },
   "closed": [
     {
       "ticker": "OLD",
-      "entry_date": "NaT",
-      "exit_date": "NaT",
       "buy_price": 50.0,
       "exit_price": 55.0,
-      "shares": null,
-      "pnl_amount": null,
-      "pnl_pct": 10.0,
-      "hold_days": null,
-      "exit_reason": "",
-      "note": ""
-    },
-    {
-      "buy_price": 130.0,
-      "shares": 1,
-      "stop_loss": 110.0,
-      "stop_pct": 15.38,
-      "target": 150.0,
-      "rr": 1.0,
-      "risk_dollar": 20.0,
-      "buy_date": "2026-02-27",
-      "days_held": 0,
-      "max_price": 130.0,
-      "note": "",
-      "exit_price": 130.0,
-      "exit_date": "2026-02-27",
-      "pnl_pct": 0.0,
-      "pnl_dollar": 0.0,
-      "reason": ""
-    },
-    {
-      "buy_price": 300.0,
-      "shares": 1,
-      "stop_loss": 200.0,
-      "stop_pct": 33.33,
-      "target": 400.0,
-      "rr": 1.0,
-      "risk_dollar": 100.0,
-      "buy_date": "2026-02-27",
-      "days_held": 0,
-      "max_price": 300.0,
-      "note": "",
-      "exit_price": 300.0,
-      "exit_date": "2026-02-27",
-      "pnl_pct": 0.0,
-      "pnl_dollar": 0.0,
-      "reason": ""
+      "pnl_pct": 10.0
     }
   ],
-  "account_high": 100000
+  "account_high": 100000.0
 }

@@ -258,7 +258,7 @@ async function runAssess() {
           document.getElementById('marketLogPath').textContent = job.log_file;
           document.getElementById('marketLogBar').classList.remove('d-none');
         }
-        toast(`✅ 市場評估完成 — ${(job.result||{}).regime||'UNKNOWN'}`, true);
+        toastCompletion(`✅ 市場評估完成 — 市場狀態: ${(job.result||{}).regime||'UNKNOWN'}`, true);
       }, 400);
     } else if (job.status === 'error') {
       clearInterval(_marketPollId);
