@@ -3,9 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-# 第三方 repo（應刪除）
-finviz-master/
-
 # 執行時快取與資料
 data/price_cache/
 data/rs_cache.csv
