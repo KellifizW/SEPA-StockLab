@@ -91,10 +91,28 @@
             <div class="spinner-border spinner-border-sm text-info"></div>
             <div class="text-muted small mt-2">Loading chart…</div>
           </div>
-          <div id="historyChart" style="position:relative;height:300px;display:none"></div>
+          <div id="historyChartWrap" style="position:relative;height:300px;display:none"><canvas id="historyChart"></canvas></div>
           <div id="historyEmpty" style="display:none" class="text-center py-4 text-muted">
             <i class="bi bi-inbox fs-2 d-block mb-2"></i>
             這隻股票還沒有出現在之前的掃描中。
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Price History Chart -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-bar-chart-line me-2"></i>Price History (Last 90 days)</div>
+        <div class="card-body">
+          <div id="priceLoading" class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-success"></div>
+            <div class="text-muted small mt-2">Loading price data…</div>
+          </div>
+          <div id="priceChartWrap" style="position:relative;height:280px;display:none"><canvas id="priceChart"></canvas></div>
+          <div id="priceEmpty" style="display:none" class="text-center py-4 text-muted">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>
+            No price cache found for this ticker.
           </div>
         </div>
       </div>
@@ -302,12 +320,13 @@ function renderResult(d, ticker) {
 
   // Load and render score history chart asynchronously
   loadScoreHistory(ticker);
+  loadPriceHistory(ticker);
 }
 
 async function loadScoreHistory(ticker) {
   try {
     document.getElementById('historyLoading').style.display = 'block';
-    document.getElementById('historyChart').style.display = 'none';
+    document.getElementById('historyChartWrap').style.display = 'none';
     document.getElementById('historyEmpty').style.display = 'none';
 
     const scanTrend = await fetch(`/api/db/scan-trend/${ticker}?days=90`).then(x => x.json());
@@ -399,16 +418,111 @@ async function loadScoreHistory(ticker) {
     });
 
     document.getElementById('historyLoading').style.display = 'none';
-    document.getElementById('historyChart').style.display = 'block';
+    document.getElementById('historyChartWrap').style.display = 'block';
   } catch (e) {
     console.error('Error loading score history:', e);
     document.getElementById('historyLoading').style.display = 'none';
+    document.getElementById('historyEmpty').style.display = 'block';
   }
 }
 
 function prefillPosition(ticker, entry, shares, stop, target) {
   const params = new URLSearchParams({ticker, entry, shares, stop, target});
   window.location.href = `/positions?prefill=${encodeURIComponent(JSON.stringify({ticker,entry,shares,stop,target}))}`;
+}
+
+async function loadPriceHistory(ticker) {
+  const loadEl  = document.getElementById('priceLoading');
+  const chartEl = document.getElementById('priceChart');
+  const emptyEl = document.getElementById('priceEmpty');
+  const wrapEl = document.getElementById('priceChartWrap');
+  loadEl.style.display = 'block';
+  wrapEl.style.display = 'none';
+  emptyEl.style.display = 'none';
+  try {
+    const res = await fetch(`/api/db/price-history/${ticker}?days=90`).then(x => x.json());
+    const rows = res.rows || [];
+    if (!rows.length) {
+      loadEl.style.display = 'none';
+      emptyEl.style.display = 'block';
+      return;
+    }
+    const dates  = rows.map(r => r.date.slice(0, 10));  // trim T00:00:00
+    const closes = rows.map(r => +r.close);
+    const vols   = rows.map(r => +r.volume);
+    const maxVol = Math.max(...vols) || 1;
+    // Y-axis: 5% padding below low, 5% above high — no zero baseline
+    const priceMin = Math.min(...closes);
+    const priceMax = Math.max(...closes);
+    const pricePad = (priceMax - priceMin) * 0.05 || priceMin * 0.03;
+    const yMin = priceMin - pricePad;
+    const yMax = priceMax + pricePad;
+    if (chartEl._chart) chartEl._chart.destroy();
+    chartEl._chart = new Chart(chartEl, {
+      type: 'bar',
+      data: {
+        labels: dates,
+        datasets: [
+          {
+            type: 'line',
+            label: 'Close',
+            data: closes,
+            borderColor: '#3fb950',
+            backgroundColor: 'rgba(63,185,80,0.08)',
+            yAxisID: 'yPrice',
+            tension: 0.2,
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 5,
+          },
+          {
+            type: 'bar',
+            label: 'Volume',
+            data: vols.map(v => yMin + (v / maxVol) * (priceMax - priceMin) * 0.25),
+            backgroundColor: 'rgba(88,166,255,0.22)',
+            yAxisID: 'yVol',
+            borderWidth: 0,
+          },
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#c9d1d9', usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label: ctx => ctx.dataset.label === 'Volume'
+                ? `Vol: ${(vols[ctx.dataIndex] / 1e6).toFixed(2)}M`
+                : `Close: $${(+ctx.raw).toFixed(2)}`
+            }
+          }
+        },
+        scales: {
+          x: { grid: { color: '#30363d' }, ticks: { color: '#8b949e', maxTicksLimit: 8 } },
+          yPrice: {
+            type: 'linear', position: 'left',
+            grid: { color: '#30363d' }, ticks: { color: '#8b949e' },
+            min: yMin, max: yMax,
+            title: { display: true, text: 'Price ($)', color: '#3fb950' }
+          },
+          yVol: {
+            type: 'linear', position: 'right',
+            grid: { drawOnChartArea: false },
+            ticks: { display: false },
+            min: yMin, max: yMax + (priceMax - priceMin) * 0.25
+          }
+        }
+      }
+    });
+    loadEl.style.display = 'none';
+    wrapEl.style.display = 'block';
+  } catch(e) {
+    console.error('loadPriceHistory error:', e);
+    loadEl.style.display = 'none';
+    emptyEl.style.display = 'block';
+  }
 }
 
 async function addToWatchlist(ticker) {

@@ -32,7 +32,9 @@ import trader_config as C
 logger = logging.getLogger(__name__)
 
 _DB_PATH = ROOT / C.DATA_DIR / "sepa_stock.duckdb"
-_lock = threading.Lock()   # DuckDB write-lock (single writer)
+_lock = threading.Lock()        # DuckDB write-lock (single writer)
+_schema_ready = False           # one-time schema initialisation flag
+_schema_lock  = threading.Lock()  # separate lock for schema init
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
@@ -187,6 +189,24 @@ def _ensure_schema(conn):
     """)
 
 
+def _init_schema_once():
+    """Create DuckDB schema exactly once per process (double-checked locking, thread-safe)."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        try:
+            conn = _get_conn()
+            _ensure_schema(conn)
+            conn.close()
+            _schema_ready = True
+            logger.info("[DB] Schema initialised")
+        except Exception as exc:
+            logger.error("[DB] _init_schema_once failed: %s", exc)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public write APIs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -247,10 +267,10 @@ def append_scan_history(rows: list, scan_date: date = None) -> int:
 
     df = pd.DataFrame(records)
     inserted = 0
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             # INSERT OR REPLACE semantics via DELETE + INSERT
             conn.execute(
                 "DELETE FROM scan_history WHERE scan_date = ?", [today]
@@ -292,10 +312,10 @@ def append_rs_history(df_rs: pd.DataFrame, rank_date: date = None) -> int:
         return 0
 
     inserted = 0
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             conn.execute(
                 "DELETE FROM rs_history WHERE rank_date = ?", [today]
             )
@@ -340,10 +360,10 @@ def append_market_env(env: dict, env_date: date = None) -> bool:
         "action_note":       str(action_matrix.get("note") or ""),
     }
 
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             conn.execute(
                 "DELETE FROM market_env_history WHERE env_date = ?", [today]
             )
@@ -371,10 +391,10 @@ def log_watchlist_action(ticker: str, action: str, grade: str = None,
         "sepa_score": _to_float(sepa_score),
         "note":       note or "",
     }
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             df = pd.DataFrame([record])
             conn.execute("INSERT OR REPLACE INTO watchlist_log SELECT * FROM df")
             conn.close()
@@ -403,10 +423,10 @@ def log_position_action(ticker: str, action: str, price: float = None,
         "hold_days":  _to_int(hold_days),
         "note":       note or "",
     }
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             df = pd.DataFrame([record])
             conn.execute("INSERT INTO position_log SELECT * FROM df")
             conn.close()
@@ -425,9 +445,9 @@ def query_scan_trend(ticker: str, days: int = 90) -> pd.DataFrame:
     Return scan_history for a ticker over the last N days.
     Used for score trend charts in analyze.html.
     """
+    _init_schema_once()
     try:
         conn = _get_conn()
-        _ensure_schema(conn)
         df = conn.execute("""
             SELECT scan_date, sepa_score, vcp_grade, rs_rank, close_price,
                    tt_passed, recommendation
@@ -448,9 +468,9 @@ def query_persistent_signals(min_appearances: int = 5, days: int = 30) -> pd.Dat
     Return tickers that appeared in scan results ≥ N times in last D days.
     Helps identify stable, recurring SEPA signals.
     """
+    _init_schema_once()
     try:
         conn = _get_conn()
-        _ensure_schema(conn)
         df = conn.execute("""
             SELECT ticker,
                    COUNT(*)           AS appearances,
@@ -473,9 +493,9 @@ def query_persistent_signals(min_appearances: int = 5, days: int = 30) -> pd.Dat
 
 def query_rs_trend(ticker: str, days: int = 90) -> pd.DataFrame:
     """Return RS rank history for a ticker (for trend acceleration analysis)."""
+    _init_schema_once()
     try:
         conn = _get_conn()
-        _ensure_schema(conn)
         df = conn.execute("""
             SELECT rank_date, rs_raw, rs_rank
             FROM rs_history
@@ -492,9 +512,9 @@ def query_rs_trend(ticker: str, days: int = 90) -> pd.DataFrame:
 
 def query_market_env_history(days: int = 60) -> pd.DataFrame:
     """Return market regime history for the last N days."""
+    _init_schema_once()
     try:
         conn = _get_conn()
-        _ensure_schema(conn)
         df = conn.execute("""
             SELECT env_date, regime, distribution_days, breadth_pct,
                    spy_close, qqq_close, iwm_close
@@ -509,15 +529,47 @@ def query_market_env_history(days: int = 60) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def query_price_history(ticker: str, days: int = 90) -> pd.DataFrame:
+    """
+    Return OHLCV price history for a ticker by reading directly from the
+    Parquet cache (no additional download needed).  Uses DuckDB read_parquet().
+
+    Columns returned: date, open, high, low, close, volume
+    """
+    parquet_file = _DB_PATH.parent / "price_cache" / f"{ticker.upper()}_2y.parquet"
+    if not parquet_file.exists():
+        logger.warning("[DB] query_price_history: no parquet file for %s", ticker)
+        return pd.DataFrame()
+    try:
+        conn = _get_conn()
+        df = conn.execute(f"""
+            SELECT
+                CAST("Date" AS DATE) AS date,
+                "Open"   AS open,
+                "High"   AS high,
+                "Low"    AS low,
+                "Close"  AS close,
+                "Volume" AS volume
+            FROM read_parquet('{parquet_file.as_posix()}')
+            WHERE CAST("Date" AS DATE) >= CURRENT_DATE - INTERVAL ({days}) DAY
+            ORDER BY date
+        """).df()
+        conn.close()
+        return df
+    except Exception as exc:
+        logger.error("[DB] query_price_history(%s) failed: %s", ticker, exc)
+        return pd.DataFrame()
+
+
 def db_stats() -> dict:
     """Return row counts for all tables (for health check / UI display)."""
     tables = ["scan_history", "rs_history", "market_env_history",
               "watchlist_log", "position_log", "watchlist_store",
               "open_positions", "closed_positions", "fundamentals_cache"]
     stats = {}
+    _init_schema_once()
     try:
         conn = _get_conn()
-        _ensure_schema(conn)
         for t in tables:
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()
@@ -539,10 +591,10 @@ def db_stats() -> dict:
 
 def wl_load() -> dict:
     """Load watchlist from DuckDB, fallback to JSON if DB fails."""
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             df = conn.execute("""
                 SELECT ticker, grade, sepa_score, added_date, note
                 FROM watchlist_store
@@ -593,10 +645,10 @@ def wl_save(data: dict) -> bool:
                 "note":        info.get("note", ""),
             })
 
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             conn.execute("DELETE FROM watchlist_store")
             if records:
                 df = pd.DataFrame(records)
@@ -626,10 +678,10 @@ def wl_save(data: dict) -> bool:
 
 def pos_load() -> dict:
     """Load positions from DuckDB, fallback to JSON if DB fails."""
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             
             # Load open positions
             df_open = conn.execute("SELECT * FROM open_positions").df()
@@ -751,10 +803,10 @@ def pos_save(data: dict) -> bool:
             "note": str(closed.get("note", "")),
         })
 
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             
             # Save open positions
             conn.execute("DELETE FROM open_positions")
@@ -792,9 +844,9 @@ def pos_save(data: dict) -> bool:
 
 def fund_cache_get(ticker: str) -> Optional[dict]:
     """Retrieve fundamentals from cache (as dict, rehydrated from JSON)."""
+    _init_schema_once()
     try:
         conn = _get_conn()
-        _ensure_schema(conn)
         row = conn.execute(
             "SELECT data_json FROM fundamentals_cache WHERE ticker = ?",
             [ticker.upper()]
@@ -823,10 +875,10 @@ def fund_cache_set(ticker: str, data: dict) -> bool:
         logger.error("[DB] fund_cache_set: JSON serialize failed — %s", exc)
         return False
 
+    _init_schema_once()
     with _lock:
         try:
             conn = _get_conn()
-            _ensure_schema(conn)
             conn.execute(
                 "INSERT OR REPLACE INTO fundamentals_cache (ticker, last_update, data_json) VALUES (?, ?, ?)",
                 [ticker.upper(), date.today(), data_json]

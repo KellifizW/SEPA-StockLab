@@ -555,21 +555,187 @@ def api_analyze():
     acct   = float(data.get("account_size", C.ACCOUNT_SIZE))
     jid    = _new_job()
 
+    # Per-analyze log file
+    analyze_log_file = _LOG_DIR / f"analyze_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    analyze_handler  = logging.FileHandler(analyze_log_file, encoding="utf-8")
+    analyze_handler.setLevel(logging.DEBUG)
+    analyze_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s  %(message)s")
+    )
+    _ANALYZE_LOGGERS = [
+        "modules.stock_analyzer", "modules.data_pipeline",
+        "modules.screener", "modules.vcp_detector",
+        "modules.rs_ranking", "modules.db",
+    ]
+    for ln in _ANALYZE_LOGGERS:
+        _lg = logging.getLogger(ln)
+        _lg.setLevel(logging.DEBUG)   # ensure DEBUG messages flow through
+        _lg.addHandler(analyze_handler)
+
     def _run():
         try:
             from modules.stock_analyzer import analyze
+            logging.getLogger("modules.stock_analyzer").info(
+                "=== Analyze started: %s  account=$%.0f (job %s) ===", ticker, acct, jid)
             r = analyze(ticker, account_size=acct, print_report=False)
             if r is None:
+                logging.getLogger("modules.stock_analyzer").warning(
+                    "=== Analyze returned None for %s ===", ticker)
                 _finish_job(jid, error=f"No data returned for {ticker}")
                 return
+            logging.getLogger("modules.stock_analyzer").info(
+                "=== Analyze finished: %s  sepa_score=%.1f  recommendation=%s ===",
+                ticker,
+                float(r.get("sepa_score") or 0),
+                (r.get("recommendation") or {}).get("action", "N/A"),
+            )
+            # Write full structured result to log file
+            _write_analyze_report(analyze_log_file, r, acct)
             _finish_job(jid, result=_clean(r))
         except Exception as exc:
-            logging.exception(f"Analyze thread error for {ticker}")
+            logging.exception("Analyze thread error for %s", ticker)
             _finish_job(jid, error=str(exc))
+        finally:
+            # Remove per-analyze handler to avoid duplicate log entries
+            for ln in _ANALYZE_LOGGERS:
+                logging.getLogger(ln).removeHandler(analyze_handler)
+            analyze_handler.close()
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": jid})
+    return jsonify({"job_id": jid, "log_file": analyze_log_file.name})
 
+
+def _write_analyze_report(log_file: Path, r: dict, acct: float):
+    """Append a human-readable full analysis report to the log file."""
+    try:
+        sep  = "=" * 72
+        sep2 = "-" * 72
+        lines = []
+        def ln(s=""): lines.append(s)
+
+        ticker  = r.get("ticker", "?")
+        company = r.get("company", ticker)
+        rec     = r.get("recommendation") or {}
+        tt      = r.get("trend_template") or {}
+        scored  = r.get("scored_pillars") or {}
+        pos     = r.get("position") or {}
+        vcp     = r.get("vcp") or {}
+        funds   = r.get("fundamentals") or {}
+        fund_checks = funds.get("checks") or []
+        eps_accel   = r.get("eps_acceleration") or {}
+
+        ln(sep)
+        ln(f"  SEPA ANALYSIS REPORT — {ticker} ({company})")
+        ln(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  Account: ${acct:,.0f}")
+        ln(sep)
+
+        # ── Summary ──────────────────────────────────────────────────────────
+        ln()
+        ln("[ SUMMARY ]")
+        ln(f"  Sector:         {r.get('sector','')} / {r.get('industry','')}")
+        ln(f"  Price:          ${r.get('price', 0):.2f}")
+        mktcap = r.get('market_cap') or 0
+        ln(f"  Market Cap:     ${mktcap/1e9:.2f}B" if mktcap >= 1e9 else f"  Market Cap:     ${mktcap/1e6:.0f}M")
+        ln(f"  RS Rank:        {r.get('rs_rank', 0):.1f} percentile")
+        ln(f"  SEPA Score:     {float(r.get('sepa_score') or 0):.1f} / 100")
+        ln(f"  Recommendation: {rec.get('action','N/A')}  —  {rec.get('description','')}")
+        for reason in rec.get("reasons") or []:
+            if reason:
+                ln(f"    • {reason}")
+
+        # ── SEPA 5-Pillar Scores ─────────────────────────────────────────────
+        ln()
+        ln("[ SEPA 5-PILLAR SCORES ]")
+        pillar_map = {
+            "trend":        "趨勢 Trend",
+            "fundamental":  "基本面 Fundamentals",
+            "catalyst":     "催化劑 Catalyst",
+            "entry":        "入場時機 Entry",
+            "risk_reward":  "風險回報 R/R",
+        }
+        for key, label in pillar_map.items():
+            val = float(scored.get(key) or 0)
+            bar = "█" * int(val / 5) + "░" * (20 - int(val / 5))
+            ln(f"  {label:<28} {val:5.1f}  [{bar}]")
+        ln(f"  {'Total':<28} {float(r.get('sepa_score') or 0):5.1f}")
+
+        # ── Trend Template TT1-TT10 ──────────────────────────────────────────
+        ln()
+        ln("[ TREND TEMPLATE (TT1-TT10) ]")
+        tt_labels = {
+            "tt1":"Price>SMA50>SMA150>SMA200", "tt2":"Price>SMA200",
+            "tt3":"SMA150>SMA200",              "tt4":"SMA200 rising 22d",
+            "tt5":"SMA50>SMA150 & SMA200",      "tt6":"Price>SMA50",
+            "tt7":"Price >25% above 52W low",   "tt8":"Within 25% of 52W high",
+            "tt9":"RS Rank ≥70",                "tt10":"Sector top 35%",
+        }
+        passed = sum(1 for k in tt_labels if tt.get(k))
+        ln(f"  Passed: {passed}/10")
+        for k, lbl in tt_labels.items():
+            mark = "PASS" if tt.get(k) else "FAIL"
+            ln(f"  [{mark}] {k.upper()}: {lbl}")
+
+        # ── VCP ───────────────────────────────────────────────────────────────
+        ln()
+        ln("[ VCP DETECTION ]")
+        ln(f"  Valid VCP:       {vcp.get('is_valid_vcp', False)}")
+        ln(f"  VCP Score:       {vcp.get('vcp_score', 0)}/100  Grade: {vcp.get('grade','—')}")
+        ln(f"  T-count:         {vcp.get('t_count', 0)}  (Min: {vcp.get('min_contractions','?')})")
+        ln(f"  Base weeks:      {vcp.get('base_weeks', 0)}")
+        ln(f"  Base depth:      {vcp.get('base_depth_pct', 0):.1f}%")
+        if vcp.get('pivot_price'):
+            ln(f"  Pivot price:     ${vcp.get('pivot_price'):.2f}")
+        ln(f"  ATR contracting: {vcp.get('atr_contracting', False)}")
+        ln(f"  BB  contracting: {vcp.get('bb_contracting', False)}")
+        ln(f"  Volume dry-up:   {vcp.get('vol_dry', False)}")
+        for note in vcp.get("notes") or []:
+            ln(f"  • {note}")
+
+        # ── Fundamentals ─────────────────────────────────────────────────────
+        ln()
+        ln("[ FUNDAMENTALS CHECKLIST ]")
+        ln(f"  Score: {funds.get('passes',0)}/{funds.get('total',0)} ({funds.get('pct',0)}%)")
+        for fc in fund_checks:
+            mark = "PASS" if fc.get("pass") else "FAIL"
+            ln(f"  [{mark}] {fc.get('id',''):<25} {fc.get('note','')}")
+
+        # ── EPS Acceleration ─────────────────────────────────────────────────
+        ln()
+        ln("[ EPS ACCELERATION ]")
+        ln(f"  Accelerating: {eps_accel.get('is_accelerating', False)}")
+        ln(f"  Note:         {eps_accel.get('note', 'N/A')}")
+        for q in eps_accel.get("quarters") or []:
+            ln(f"  {q}")
+
+        # ── Position Sizing ───────────────────────────────────────────────────
+        ln()
+        ln("[ POSITION SIZING ]")
+        ln(f"  Entry:          ${float(pos.get('entry') or 0):.2f}")
+        ln(f"  Stop Loss:      ${float(pos.get('stop') or 0):.2f}  (-{float(pos.get('risk_pct') or 0):.1f}%)")
+        ln(f"  Target:         ${float(pos.get('target') or 0):.2f}")
+        ln(f"  Shares:         {int(pos.get('shares') or 0)}")
+        ln(f"  Position Value: ${float(pos.get('position_value') or 0):,.0f}")
+        ln(f"  Risk $:         ${float(pos.get('risk_dollar') or 0):,.0f}")
+        ln(f"  R:R Ratio:      {float(pos.get('rr') or 0):.1f}:1")
+
+        # ── News ─────────────────────────────────────────────────────────────
+        news = r.get("news") or []
+        if news:
+            ln()
+            ln("[ RECENT NEWS ]")
+            for item in news[:5]:
+                title = item.get("title") or item.get("headline") or str(item)
+                ln(f"  • {title}")
+
+        ln()
+        ln(sep)
+        ln()
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    except Exception as exc:
+        logging.warning("_write_analyze_report failed: %s", exc)
 
 @app.route("/api/analyze/status/<jid>")
 def api_analyze_status(jid):
@@ -1061,6 +1227,45 @@ def api_db_watchlist_history():
         _set_cache("watchlist-history", rows)
         
         return jsonify({"ok": True, "rows": rows, "cached": False})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/db/price-history/<ticker>", methods=["GET"])
+def api_db_price_history(ticker: str):
+    """OHLCV price history from Parquet cache via DuckDB read_parquet()."""
+    days = int(request.args.get("days", 90))
+    try:
+        from modules.db import query_price_history
+        df = query_price_history(ticker.upper(), days)
+        if df.empty:
+            # Fallback: read directly via pandas if DuckDB query fails
+            from modules.data_pipeline import get_historical
+            df_pd = get_historical(ticker.upper())
+            if not df_pd.empty:
+                cutoff = pd.Timestamp.today() - pd.Timedelta(days=days)
+                df_pd = df_pd[df_pd.index >= cutoff].copy()
+                df_pd.index = df_pd.index.date
+                rows = [
+                    {"date": str(idx), "open": round(float(row["Open"]), 4),
+                     "high": round(float(row["High"]), 4),
+                     "low":  round(float(row["Low"]), 4),
+                     "close": round(float(row["Close"]), 4),
+                     "volume": int(row["Volume"])}
+                    for idx, row in df_pd.iterrows()
+                ]
+                return jsonify({"ok": True, "ticker": ticker.upper(),
+                                "rows": rows, "source": "pandas"})
+            return jsonify({"ok": True, "ticker": ticker.upper(),
+                            "rows": [], "source": "none"})
+
+        rows = df.to_dict(orient="records")
+        # Convert date objects to ISO strings for JSON serialisation
+        for r in rows:
+            if hasattr(r.get("date"), "isoformat"):
+                r["date"] = r["date"].isoformat()
+        return jsonify({"ok": True, "ticker": ticker.upper(),
+                        "rows": rows, "source": "duckdb"})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})
 

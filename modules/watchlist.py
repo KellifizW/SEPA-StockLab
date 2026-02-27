@@ -13,6 +13,7 @@ Storage: data/watchlist.json  (auto-created on first use)
 import sys
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -53,44 +54,23 @@ _RESET  = "\033[0m"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _load() -> dict:
-    """Load watchlist from DuckDB (Phase 2), fallback to JSON for compatibility."""
-    if not C.DB_ENABLED:
-        # DB disabled: use JSON only
-        if WATCHLIST_FILE.exists():
-            try:
-                return json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        return {"A": {}, "B": {}, "C": {}}
-    
-    # Try DuckDB first
-    try:
-        from modules import db
-        data = db.wl_load()
-        if data and any(data.get(g) for g in "ABC"):
-            logger.info("[watchlist] Loaded from DuckDB")
-            return data
-    except Exception as exc:
-        logger.warning("[watchlist] DuckDB load failed: %s, trying JSON fallback", exc)
-    
-    # Fallback to JSON
+    """Load watchlist from JSON (source of truth; DuckDB is write-only analytics store)."""
     if WATCHLIST_FILE.exists():
         try:
             data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
-            logger.info("[watchlist] Loaded from JSON (fallback)")
+            logger.debug("[watchlist] Loaded from JSON")
             return data
-        except Exception:
-            pass
-    
+        except Exception as exc:
+            logger.warning("[watchlist] JSON load failed: %s", exc)
     return {"A": {}, "B": {}, "C": {}}
 
 
 def _save(data: dict):
-    """Save watchlist to DuckDB (Phase 2), with JSON backup."""
+    """Save watchlist: JSON sync (fast) + DuckDB async background thread."""
     if not data:
         return
-    
-    # Always save to JSON for compatibility/backup
+
+    # 1. JSON write — synchronous, always first (source of truth)
     try:
         WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
         WATCHLIST_FILE.write_text(
@@ -100,14 +80,25 @@ def _save(data: dict):
         logger.debug("[watchlist] Saved to JSON")
     except Exception as exc:
         logger.warning("[watchlist] JSON save failed: %s", exc)
-    
-    # If DuckDB enabled, also save to DB
+
+    # 2. DuckDB write — fire-and-forget background thread (non-blocking)
     if C.DB_ENABLED:
-        try:
-            from modules import db
-            db.wl_save(data)
-        except Exception as exc:
-            logger.warning("[watchlist] DuckDB save failed: %s", exc)
+        threading.Thread(
+            target=_bg_wl_db_save,
+            args=(data.copy(),),
+            daemon=True,
+            name="wl_db_save",
+        ).start()
+
+
+def _bg_wl_db_save(data: dict):
+    """Background worker: sync watchlist to DuckDB watchlist_store."""
+    try:
+        from modules import db
+        db.wl_save(data)
+        logger.debug("[watchlist] Background DuckDB sync complete")
+    except Exception as exc:
+        logger.warning("[watchlist] Background DuckDB sync failed: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

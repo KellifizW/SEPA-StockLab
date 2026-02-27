@@ -17,6 +17,7 @@ Storage: data/positions.json
 import sys
 import json
 import logging
+import threading
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
@@ -64,14 +65,14 @@ def _load() -> dict:
 
 
 def _save(data: dict):
-    """Save positions to JSON only (DuckDB is for historical analysis, not real-time positions)."""
+    """Save positions: JSON sync (fast) + DuckDB async background thread."""
     if not data:
         return
-    
+
     import time
     start = time.time()
-    
-    # Save to JSON (fast, reliable)
+
+    # 1. JSON write — synchronous, always first (< 5 ms)
     try:
         POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
         POSITIONS_FILE.write_text(
@@ -82,6 +83,25 @@ def _save(data: dict):
         logger.debug(f"[position_monitor] Saved to JSON in {elapsed*1000:.1f}ms")
     except Exception as exc:
         logger.warning("[position_monitor] JSON save failed: %s", exc)
+
+    # 2. DuckDB write — fire-and-forget background thread (non-blocking)
+    if C.DB_ENABLED:
+        threading.Thread(
+            target=_bg_db_save,
+            args=(data.copy(),),
+            daemon=True,
+            name="pos_db_save",
+        ).start()
+
+
+def _bg_db_save(data: dict):
+    """Background worker: archive positions to DuckDB (runs in daemon thread)."""
+    try:
+        from modules import db
+        db.pos_save(data)
+        logger.debug("[position_monitor] Background DuckDB archive complete")
+    except Exception as exc:
+        logger.warning("[position_monitor] Background DuckDB archive failed: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

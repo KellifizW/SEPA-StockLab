@@ -13,6 +13,7 @@ import os
 import sys
 import time
 import json
+import threading
 import warnings
 import logging
 from datetime import datetime, date, timedelta
@@ -462,7 +463,40 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
     except Exception as exc:
         logger.debug(f"Could not save fundamentals cache for {ticker}: {exc}")
 
+    # ── Also persist to DuckDB fundamentals_cache (background, non-blocking) ───────────
+    if getattr(C, "DB_ENABLED", False):
+        _bg_args = (ticker, result.copy())
+        threading.Thread(
+            target=_bg_fund_cache_set,
+            args=_bg_args,
+            daemon=True,
+            name=f"fund_cache_{ticker}",
+        ).start()
+
     return result
+
+
+def _bg_fund_cache_set(ticker: str, data: dict):
+    """Background worker: store fundamentals result in DuckDB cache."""
+    try:
+        import trader_config as _C
+        if not getattr(_C, "DB_ENABLED", False):
+            return
+        from modules import db
+        # Serialize DataFrames to JSON-safe dicts before storing
+        safe = {}
+        for k, v in data.items():
+            if isinstance(v, pd.DataFrame):
+                safe[k] = [] if v.empty else json.loads(
+                    v.to_json(orient="records", date_format="iso", default_handler=str))
+            elif isinstance(v, pd.Series):
+                safe[k] = v.tolist()
+            else:
+                safe[k] = v
+        db.fund_cache_set(ticker, safe)
+        logger.debug("[data_pipeline] DuckDB fund_cache_set(%s) done", ticker)
+    except Exception as exc:
+        logger.debug("[data_pipeline] _bg_fund_cache_set(%s) failed: %s", ticker, exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
