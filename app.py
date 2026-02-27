@@ -97,6 +97,24 @@ def _save_last_scan(rows: list, all_rows: list = None):
     except Exception as exc:
         logging.warning(f"Could not save last_scan: {exc}")
 
+    # ── DuckDB 歷史記錄（非破壞性追加）────────────────────────────────
+    if getattr(C, "DB_ENABLED", True):
+        try:
+            from modules.db import append_scan_history
+            # 同時儲存通過及所有評分股票（包括未通過的，供趨勢分析）
+            all_to_save = (all_rows or []) + rows
+            # 去重（以 ticker 為 key）
+            seen = set()
+            deduped = []
+            for r in all_to_save:
+                if r.get("ticker") not in seen:
+                    seen.add(r.get("ticker"))
+                    deduped.append(r)
+            append_scan_history(deduped)
+        except Exception as exc:
+            logging.warning(f"DB scan_history write skipped: {exc}")
+
+
 def _load_last_scan() -> dict:
     try:
         if _LAST_SCAN_FILE.exists():
@@ -860,6 +878,59 @@ def latest_report_page():
     if rpt is None:
         return "<h3>No report generated yet. Go to Dashboard → Generate Report.</h3>", 404
     return rpt.read_text(encoding="utf-8"), 200, {"Content-Type": "text/html"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DB History API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/db/stats", methods=["GET"])
+def api_db_stats():
+    """DuckDB health check — row counts and file size."""
+    try:
+        from modules.db import db_stats
+        return jsonify({"ok": True, "stats": db_stats()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/db/scan-trend/<ticker>", methods=["GET"])
+def api_db_scan_trend(ticker: str):
+    """Score trend for a ticker over last N days."""
+    days = int(request.args.get("days", 90))
+    try:
+        from modules.db import query_scan_trend
+        df = query_scan_trend(ticker.upper(), days)
+        return jsonify({"ok": True, "ticker": ticker.upper(),
+                        "rows": df.to_dict(orient="records")})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/db/persistent-signals", methods=["GET"])
+def api_db_persistent_signals():
+    """Tickers with ≥N appearances in last D days (stable signals)."""
+    days = int(request.args.get("days", 30))
+    min_app = int(request.args.get("min", 5))
+    try:
+        from modules.db import query_persistent_signals
+        df = query_persistent_signals(min_app, days)
+        return jsonify({"ok": True, "rows": df.to_dict(orient="records")})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/db/rs-trend/<ticker>", methods=["GET"])
+def api_db_rs_trend(ticker: str):
+    """RS ranking trend for a ticker."""
+    days = int(request.args.get("days", 90))
+    try:
+        from modules.db import query_rs_trend
+        df = query_rs_trend(ticker.upper(), days)
+        return jsonify({"ok": True, "ticker": ticker.upper(),
+                        "rows": df.to_dict(orient="records")})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

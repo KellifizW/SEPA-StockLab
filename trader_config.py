@@ -163,6 +163,12 @@ DATA_DIR      = "data"
 PRICE_CACHE_DIR = "data/price_cache"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DATABASE  (DuckDB historical storage)
+# ─────────────────────────────────────────────────────────────────────────────
+DB_FILE = "data/sepa_stock.duckdb"      # DuckDB historical store location
+DB_ENABLED = True                        # Set False to disable all DB writes
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SEPA SCORING WEIGHTS  (relative importance of each pillar)
 # ─────────────────────────────────────────────────────────────────────────────
 SEPA_WEIGHTS = {

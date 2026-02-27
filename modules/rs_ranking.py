@@ -262,7 +262,16 @@ def compute_rs_rankings(universe: list = None,
     except Exception as exc:
         logger.warning(f"Could not save RS cache: {exc}")
 
+    # — DuckDB 歷史記錄 —
+    if getattr(C, "DB_ENABLED", True):
+        try:
+            from modules.db import append_rs_history
+            append_rs_history(result)
+        except Exception as exc:
+            logger.warning("DB rs_history write skipped: %s", exc)
+
     return result
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

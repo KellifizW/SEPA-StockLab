@@ -119,6 +119,20 @@ def add(ticker: str, grade: str = None, note: str = ""):
         wl[grade][ticker] = entry
         _save(wl)
 
+        # — DuckDB 異動日誌 ————————————————────
+        if getattr(C, "DB_ENABLED", True):
+            try:
+                from modules.db import log_watchlist_action
+                score = tt.get("score", 0)
+                try:
+                    score = float(score)
+                except (ValueError, TypeError):
+                    score = None
+                log_watchlist_action(ticker, "ADD", grade=grade,
+                                     sepa_score=score, note=note)
+            except Exception:
+                pass
+
         g_colour = _GREEN if grade == "A" else _YELLOW if grade == "B" else _CYAN
         print(f"  ✓ {ticker} added to {g_colour}Grade-{grade}{_RESET}: {GRADE_LABELS[grade]}")
         print(f"    TT: {tt.get('score', 0)}/10  RS: {rs:.0f}  "
@@ -134,6 +148,16 @@ def add(ticker: str, grade: str = None, note: str = ""):
         }
         wl[grade or "C"][ticker] = entry
         _save(wl)
+        
+        # — DuckDB 異動日誌 ————————————————————
+        if getattr(C, "DB_ENABLED", True):
+            try:
+                from modules.db import log_watchlist_action
+                log_watchlist_action(ticker, "ADD", grade=grade or "C",
+                                     sepa_score=None, note=note)
+            except Exception:
+                pass
+
         print(f"  Added {ticker} to Grade-{grade or 'C'} (no analysis data: {exc})")
 
 
@@ -142,15 +166,25 @@ def remove(ticker: str):
     ticker = ticker.upper().strip()
     wl = _load()
     removed = False
+    removed_grade = None
     for g in "ABC":
         if ticker in wl[g]:
             del wl[g][ticker]
             removed = True
+            removed_grade = g
             print(f"  ✓ Removed {ticker} from Grade-{g} watchlist")
     if not removed:
         print(f"  {ticker} not found in watchlist")
     else:
         _save(wl)
+        
+        # — DuckDB 異動日誌 ————————————————————
+        if getattr(C, "DB_ENABLED", True):
+            try:
+                from modules.db import log_watchlist_action
+                log_watchlist_action(ticker, "REMOVE", grade=removed_grade)
+            except Exception:
+                pass
 
 
 def promote(ticker: str):
