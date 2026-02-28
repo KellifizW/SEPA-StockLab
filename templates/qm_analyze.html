@@ -184,6 +184,8 @@
 {% block extra_js %}
 <script>
 let _radarChart = null;
+let _qmChart = null;
+let _qmChartData = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el =>
@@ -462,47 +464,191 @@ function renderAnalysis(ticker, r) {
   `;
 
   // ── Lightweight chart ─────────────────────────────────────────────────────
+  // Store price levels in DOM for chart to access
+  document.body.setAttribute('data-qm-close', close.toString());
+  document.body.setAttribute('data-qm-day1-stop', (plan.day1_stop || '').toString());
+  document.body.setAttribute('data-qm-day3-stop', (plan.day3plus_stop || '').toString());
+  document.body.setAttribute('data-qm-profit-target', (plan.profit_target_px || '').toString());
+  
   loadChart(ticker);
+}
+
+function _destroyQmChart() {
+  if (_qmChart) {
+    try { _qmChart.remove(); } catch(e) {}
+    _qmChart = null;
+  }
+  _qmChartData = null;
 }
 
 async function loadChart(ticker) {
   const container = document.getElementById('chart-container');
-  container.innerHTML = '';
+  container.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-info"></div><div class="text-muted small mt-2">載入圖表 Loading chart…</div></div>';
+  
+  _destroyQmChart();
+  
   try {
-    const chart = LightweightCharts.createChart(container, {
-      width: container.clientWidth,
+    // Fetch enriched chart data (same as SEPA mode)
+    const resp = await fetch(`/api/chart/enriched/${ticker}?days=504`);
+    if (!resp.ok) throw new Error('API returned ' + resp.status);
+    
+    const data = await resp.json();
+    if (!data.ok || !data.candles || !data.candles.length) {
+      throw new Error(data.error || 'No price data');
+    }
+    
+    _qmChartData = data;
+    
+    // Clear loading indicator before creating chart
+    container.innerHTML = '';
+    
+    // Get proper container width (like SEPA mode)
+    const containerWidth = container.clientWidth || window.innerWidth - 40;
+    
+    // Create chart with same options as SEPA
+    const LWC = LightweightCharts;
+    _qmChart = LWC.createChart(container, {
+      width: containerWidth,
       height: 370,
-      layout: { background: { color: '#0d1117' }, textColor: '#c9d1d9' },
+      layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
       grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      crosshair: { mode: LWC.CrosshairMode.Normal },
       rightPriceScale: { borderColor: '#30363d' },
-      timeScale: { borderColor: '#30363d', timeVisible: true },
+      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+      handleScroll: true,
+      handleScale: true,
     });
-    const candleSeries = chart.addCandlestickSeries({
+    
+    // K線 Candlestick series
+    const candleSeries = _qmChart.addCandlestickSeries({
       upColor: '#3fb950', downColor: '#f85149',
       borderUpColor: '#3fb950', borderDownColor: '#f85149',
       wickUpColor: '#3fb950', wickDownColor: '#f85149',
     });
-
-    // Fetch chart data from /api/chart/enriched (SEPA enriched OHLCV endpoint)
-    const resp = await fetch(`/api/chart/enriched/${ticker}?days=504`);
+    candleSeries.setData(data.candles);
     
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.ok && data.candles && data.candles.length > 0) {
-        candleSeries.setData(data.candles);
-        chart.timeScale().fitContent();
-        return;  // Success
-      } else {
-        throw new Error(data.error || 'No chart data');
-      }
-    } else {
-      throw new Error('Failed to fetch chart data');
+    // 成交量 Volume histogram (lower 18% of chart)
+    if (data.volume && data.volume.length) {
+      const volSeries = _qmChart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'vol',
+      });
+      _qmChart.priceScale('vol').applyOptions({
+        scaleMargins: { top: 0.82, bottom: 0 },
+        drawTicks: false,
+        borderVisible: false,
+      });
+      volSeries.setData(data.volume);
     }
+    
+    // SMA overlays: 50/150/200
+    [
+      { key: 'sma50', color: '#58a6ff', title: 'SMA50' },
+      { key: 'sma150', color: '#e3b341', title: 'SMA150' },
+      { key: 'sma200', color: '#f85149', title: 'SMA200' },
+    ].forEach(({ key, color, title }) => {
+      if (data[key] && data[key].length) {
+        _qmChart.addLineSeries({
+          color, lineWidth: 1.5, title,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        }).setData(data[key]);
+      }
+    });
+    
+    // Bollinger Bands (upper/lower dashed, middle dotted)
+    if (data.bbu && data.bbu.length) {
+      _qmChart.addLineSeries({
+        color: 'rgba(136,136,136,0.5)',
+        lineWidth: 1,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }).setData(data.bbu);
+    }
+    if (data.bbl && data.bbl.length) {
+      _qmChart.addLineSeries({
+        color: 'rgba(136,136,136,0.5)',
+        lineWidth: 1,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }).setData(data.bbl);
+    }
+    if (data.bbm && data.bbm.length) {
+      _qmChart.addLineSeries({
+        color: 'rgba(136,136,136,0.25)',
+        lineWidth: 1,
+        lineStyle: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }).setData(data.bbm);
+    }
+    
+    // Add price lines from trade plan
+    // Extract from DOM (we set it in renderAnalysis)
+    const closePx = parseFloat(document.body.getAttribute('data-qm-close')) || data.candles[data.candles.length-1].close;
+    const day1StopPx = parseFloat(document.body.getAttribute('data-qm-day1-stop'));
+    const day3StopPx = parseFloat(document.body.getAttribute('data-qm-day3-stop'));
+    const profitTargetPx = parseFloat(document.body.getAttribute('data-qm-profit-target'));
+    
+    if (day1StopPx && !isNaN(day1StopPx)) {
+      candleSeries.createPriceLine({
+        price: day1StopPx,
+        color: '#f85149',
+        lineWidth: 2,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Day1 Stop $${day1StopPx.toFixed(2)}`,
+      });
+    }
+    if (closePx && !isNaN(closePx)) {
+      candleSeries.createPriceLine({
+        price: closePx,
+        color: '#00d4ff',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Entry $${closePx.toFixed(2)}`,
+      });
+    }
+    if (day3StopPx && !isNaN(day3StopPx)) {
+      candleSeries.createPriceLine({
+        price: day3StopPx,
+        color: '#e3b341',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Day3+ Trail $${day3StopPx.toFixed(2)}`,
+      });
+    }
+    if (profitTargetPx && !isNaN(profitTargetPx)) {
+      candleSeries.createPriceLine({
+        price: profitTargetPx,
+        color: '#3fb950',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Profit Target $${profitTargetPx.toFixed(2)}`,
+      });
+    }
+    
+    // Fit content and default to 1Y range
+    _qmChart.timeScale().fitContent();
+    
+    // Responsive resize observer - reuse container reference
+    new ResizeObserver(() => {
+      const newWidth = container.clientWidth || window.innerWidth - 40;
+      if (_qmChart) _qmChart.applyOptions({ width: newWidth });
+    }).observe(container);
+    
   } catch(e) {
+    console.error('loadChart error:', e);
     container.innerHTML = `<div class="text-secondary text-center py-4">
       <i class="bi bi-graph-up" style="font-size:2rem;opacity:0.3"></i>
-      <div class="mt-2" style="font-size:12px">圖表載入失敗 / Chart unavailable</div>
-      <div class="mt-1" style="font-size:10px;opacity:0.7">${e.message}</div></div>`;
+      <div class="mt-2" style="font-size:12px">圖表載入失敗 Chart unavailable</div>
+      <div class="mt-1" style="font-size:10px;opacity:0.7">${e.message || 'Unknown error'}</div>
+    </div>`;
   }
 }
 
