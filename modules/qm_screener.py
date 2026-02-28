@@ -285,11 +285,17 @@ def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
     from modules.data_pipeline import (
         get_ma_alignment, get_higher_lows, get_consolidation_tightness
     )
+    from modules.qm_setup_detector import detect_setup_type
 
     ticker = row["ticker"]
 
     if df.empty or len(df) < 50:
         return None
+
+    # ── Setup type detection ───────────────────────────────────────────────
+    setup_info = detect_setup_type(df, ticker)
+    setup_type = setup_info.get("primary_type", "")
+    type_code  = setup_info.get("type_code", "")
 
     # ── MA alignment ───────────────────────────────────────────────────────
     ma = get_ma_alignment(df)
@@ -376,6 +382,8 @@ def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         return None
 
     result = {**row,
+        "setup_type":      setup_type,
+        "setup_code":      type_code,
         "sma_10":          sma_10,
         "sma_20":          sma_20,
         "sma_50":          sma_50,
