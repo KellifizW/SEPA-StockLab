@@ -716,6 +716,41 @@ def api_qm_scan_progress():
         return jsonify({"stage": "Error", "pct": 0, "msg": str(exc)})
 
 
+@app.route("/api/qm/scan/logs/<jid>")
+def api_qm_scan_logs(jid):
+    """Retrieve detailed diagnostic logs for a QM scan job."""
+    if jid not in _scan_log_paths:
+        return jsonify({"ok": False, "error": "Job ID not found or logs not available"}), 404
+    
+    log_file = _scan_log_paths[jid]
+    if not log_file.exists():
+        return jsonify({"ok": False, "error": "Log file not found"}), 404
+    
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Filter for Stage 1 related logs (finvizfinance diagnostics)
+        stage1_logs = []
+        for line in content.split("\n"):
+            if any(marker in line for marker in [
+                "[QM Stage1]", "[Finviz", "finvizfinance", "screener_view",
+                "Performance", "Overview", "fallback"
+            ]):
+                stage1_logs.append(line)
+        
+        return jsonify({
+            "ok": True,
+            "job_id": jid,
+            "log_file": str(log_file.relative_to(ROOT)),
+            "full_logs": content.split("\n")[-100:],  # Last 100 lines
+            "stage1_diagnostics": stage1_logs[-50:],  # Last 50 Stage 1 lines
+            "total_lines": len(content.split("\n"))
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Failed to read logs: {exc}"}), 500
+
+
 @app.route("/api/qm/analyze", methods=["POST"])
 def api_qm_analyze():
     """

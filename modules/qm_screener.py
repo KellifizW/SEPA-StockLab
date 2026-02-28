@@ -79,7 +79,8 @@ def _is_cancelled() -> bool:
 
 def run_qm_stage1(min_price: float = 5.0,
                   min_avg_vol: int = 300_000,
-                  verbose: bool = True) -> list[str]:
+                  verbose: bool = True,
+                  timeout_sec: float = 30.0) -> list[str]:
     """
     Stage 1 — Fast coarse filter using finvizfinance.
     Returns a list of candidate ticker strings.
@@ -89,50 +90,134 @@ def run_qm_stage1(min_price: float = 5.0,
       • Price ≥ $5 (liquidity floor)
       • Avg volume ≥ 300K shares (for position-building)
       • No explicit fundamental filter — this is a pure tech system
+    
+    Note: finvizfinance pagination is slow. We allow generous timeout (45s)
+    and show detailed progress to user, even during long downloads.
     """
     from modules.data_pipeline import get_universe
+    import time as time_module
 
-    _progress("Stage 1", 2, "Running finvizfinance coarse filter…")
+    _progress("Stage 1", 2, "連接 finvizfinance 中… Connecting to finvizfinance…")
+    logger.info("[QM Stage1] Starting coarse filter with patient timeout")
 
-    # Finviz performance filter: 1-month change > 10% as rough momentum proxy
+    # ── Qullamaggie's universe (basic filters only via Finviz) ──
     filters = {
         "Price":   "Over $5",
         "Average Volume": "Over 300K",
         "Country": "USA",
     }
 
+    # Try finvizfinance views with detailed progress reporting
+    tickers = []
+    final_df = pd.DataFrame()
+    
+    # ── Attempt 1: Performance view (richest data) ──
     try:
-        df = get_universe(filters, view="Performance", verbose=verbose)
-    except Exception as exc:
-        logger.warning("[QM Stage1] finvizfinance failed (%s) — trying Overview fallback", exc)
-        try:
-            from modules.data_pipeline import get_universe as gu
-            df = gu({"Price": "Over $5", "Average Volume": "Over 300K"}, view="Overview")
-        except Exception:
-            df = pd.DataFrame()
-
-    if df.empty:
-        logger.warning("[QM Stage1] Empty result from finvizfinance — using Overview view")
-        try:
-            from modules.data_pipeline import get_universe as gu
-            df = gu({"Price": "Over $5"}, view="Overview")
-        except Exception:
-            return []
-
-    # Normalise ticker column
-    for col in ("Ticker", "ticker", "Symbol"):
-        if col in df.columns:
-            tickers = [str(t).strip().upper() for t in df[col].dropna().tolist()
-                       if str(t).strip() and str(t).strip() != "nan"]
-            break
-    else:
-        if df.index.name in ("Ticker", "Symbol"):
-            tickers = [str(t).strip().upper() for t in df.index.tolist()]
+        _progress("Stage 1", 3, "嘗試 Performance 數據層 (包含漲跌幅)… Fetching Performance view (may take 0-45 seconds)…")
+        logger.info("[QM Stage1] → Attempt 1: Performance view with full fundamentals")
+        
+        start_time = time_module.time()
+        df = get_universe(filters, view="Performance", verbose=False)
+        elapsed = time_module.time() - start_time
+        
+        logger.info("[QM Stage1] Performance view completed after %.1f seconds, got %d rows",
+                   elapsed, len(df) if df is not None and not df.empty else 0)
+        
+        if df is not None and not df.empty:
+            _progress("Stage 1", 5, f"✓ Performance view: {len(df):,} 股票於 {elapsed:.1f}s 內獲得")
+            final_df = df
         else:
-            tickers = []
+            logger.warning("[QM Stage1] Performance view returned 0 rows, trying Overview fallback…")
+            _progress("Stage 1", 4, f"Performance 無結果 ({elapsed:.1f}s)，切換至 Overview…")
 
-    _progress("Stage 1", 10, f"Coarse filter: {len(tickers)} candidates", "")
-    logger.info("[QM Stage1] %d raw candidates from finvizfinance", len(tickers))
+    except Exception as exc:
+        elapsed = time_module.time() - start_time
+        logger.warning("[QM Stage1] Performance view failed after %.1f seconds: %s",
+                      elapsed, str(exc)[:200])
+        _progress("Stage 1", 4, f"Performance 失敗 ({elapsed:.1f}s)，試 Overview…")
+
+    # ── Attempt 2: Overview view (simpler, less data) ──
+    if final_df.empty:
+        try:
+            _progress("Stage 1", 6, "嘗試 Overview 視圖 (基礎信息)… Attempting Overview view (0-45 seconds)…")
+            logger.info("[QM Stage1] → Attempt 2: Overview view with price + volume only")
+            
+            start_time = time_module.time()
+            df = get_universe({"Price": "Over $5", "Average Volume": "Over 300K"}, 
+                            view="Overview", verbose=False)
+            elapsed = time_module.time() - start_time
+            
+            logger.info("[QM Stage1] Overview view completed after %.1f seconds, got %d rows",
+                       elapsed, len(df) if df is not None and not df.empty else 0)
+            
+            if df is not None and not df.empty:
+                _progress("Stage 1", 7, f"✓ Overview: {len(df):,} 股票於 {elapsed:.1f}s 內獲得")
+                final_df = df
+            else:
+                logger.warning("[QM Stage1] Overview view returned 0 rows, trying price-only…")
+                _progress("Stage 1", 6, f"Overview 無結果 ({elapsed:.1f}s)，試最小過濾…")
+                
+        except Exception as exc:
+            elapsed = time_module.time() - start_time
+            logger.warning("[QM Stage1] Overview view failed after %.1f seconds: %s",
+                          elapsed, str(exc)[:200])
+            _progress("Stage 1", 6, f"Overview 失敗 ({elapsed:.1f}s)，試最小過濾…")
+
+    # ── Attempt 3: Price-only filter (minimal, last resort) ──
+    if final_df.empty:
+        try:
+            _progress("Stage 1", 7, "最小過濾（僅價格 > $5）… Minimal filter (price only, 0-45 seconds)…")
+            logger.info("[QM Stage1] → Attempt 3: Price-only filter (absolute fallback)")
+            
+            start_time = time_module.time()
+            df = get_universe({"Price": "Over $5"}, view="Overview", verbose=False)
+            elapsed = time_module.time() - start_time
+            
+            logger.info("[QM Stage1] Price-only view completed after %.1f seconds, got %d rows",
+                       elapsed, len(df) if df is not None and not df.empty else 0)
+            
+            if df is not None and not df.empty:
+                _progress("Stage 1", 8, f"✓ 最小過濾: {len(df):,} 股票於 {elapsed:.1f}s 內獲得")
+                final_df = df
+            else:
+                logger.error("[QM Stage1] All three finvizfinance attempts returned 0 rows")
+                _progress("Stage 1", 8, f"⚠ 所有過濾層都無結果 ({elapsed:.1f}s)，Stage 1 返回空列表")
+                
+        except Exception as exc:
+            elapsed = time_module.time() - start_time
+            logger.error("[QM Stage1] Price-only filter failed after %.1f seconds: %s",
+                        elapsed, str(exc)[:200])
+            _progress("Stage 1", 8, f"最小過濾失敗 ({elapsed:.1f}s)，返回空")
+
+    # Normalise ticker column from whichever view succeeded
+    _progress("Stage 1", 8, f"正在處理... Processing {len(final_df)} rows…")
+    
+    if not final_df.empty:
+        for col in ("Ticker", "ticker", "Symbol"):
+            if col in final_df.columns:
+                tickers = [str(t).strip().upper() for t in final_df[col].dropna().tolist()
+                           if str(t).strip() and str(t).strip() != "nan"]
+                logger.info("[QM Stage1] Extracted %d tickers from column '%s'", len(tickers), col)
+                break
+        else:
+            if final_df.index.name in ("Ticker", "Symbol"):
+                tickers = [str(t).strip().upper() for t in final_df.index.tolist()]
+                logger.info("[QM Stage1] Extracted %d tickers from index", len(tickers))
+            else:
+                logger.warning("[QM Stage1] Could not find ticker column in any finvizfinance result")
+                tickers = []
+    else:
+        logger.error("[QM Stage1] All fallback attempts exhausted, returning empty list")
+        tickers = []
+
+    # Final status message
+    if tickers:
+        _progress("Stage 1", 10, f"✓ Stage 1 完成: {len(tickers):,} 個候選股票準備進入 Stage 2")
+        logger.info("[QM Stage1] ✓ ✓ ✓ SUCCESS: %d raw candidates ready for Stage 2", len(tickers))
+    else:
+        _progress("Stage 1", 10, "⚠ Stage 1 未找到任何符合條件的股票。請檢查市場或調整篩選條件。")
+        logger.warning("[QM Stage1] ⚠ ⚠ ⚠ FAILURE: No candidates found from any finvizfinance view")
+    
     return tickers
 
 
@@ -189,11 +274,15 @@ def _check_qm_stage2(ticker: str, df: pd.DataFrame) -> dict | None:
         return None
 
     # ── 4. 6-day range proximity (consolidation proximity check) ──────────
+    # Rule: Price MUST be within 15% of 6-day high AND 15% of 6-day low
+    # (i.e., within the 6-day consolidation rectangle, not just touching one edge)
+    # This filters out stocks that have had large intraday swings or recent drops.
     rng = get_6day_range_proximity(df)
     near_high = rng.get("near_high", False)
     near_low  = rng.get("near_low",  False)
-    if not (near_high or near_low):
-        logger.debug("[QM S2 VETO] %s not near 6-day high/low", ticker)
+    if not (near_high and near_low):
+        logger.debug("[QM S2 VETO] %s not near 6-day consolidation (high=%s low=%s)",
+                     ticker, near_high, near_low)
         return None
 
     close = float(df["Close"].iloc[-1])
@@ -236,7 +325,7 @@ def run_qm_stage2(tickers: list[str], verbose: bool = True) -> list[dict]:
 
     enriched = batch_download_and_enrich(
         tickers,
-        period="1y",  # 1 year is sufficient for QM (needs 6M momentum + context)
+        period="6mo",  # 6 months sufficient: ADR(14d) + mom 6M(126d) + 6d consolidation + SMA50
         progress_cb=_progress_cb,
     )
 

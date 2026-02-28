@@ -121,6 +121,9 @@ def get_universe(filters_dict: dict, view: str = "Overview",
     Returns a DataFrame with Ticker + metadata columns.
     Falls back to empty DataFrame if network error.
     Results are cached in-memory for FINVIZ_CACHE_TTL_HOURS to speed up repeated scans.
+    
+    NOTE: Finvizfinance pagination is slow (~1s per 20 rows). This function allows
+    up to max_time_sec (45s default) for finvizfinance to complete. Partial results OK.
     """
     if not FVF_AVAILABLE:
         logger.error("finvizfinance not available.")
@@ -148,10 +151,153 @@ def get_universe(filters_dict: dict, view: str = "Overview",
         }
         cls = view_map.get(view, FVOverview)
         screener = cls()
+        
+        # ── Enhanced logging: Boost finvizfinance library logging ────────────────────
+        try:
+            import urllib3
+            urllib3_logger = logging.getLogger("urllib3")
+            urllib3_logger.setLevel(logging.DEBUG)
+            requests_logger = logging.getLogger("requests")
+            requests_logger.setLevel(logging.DEBUG)
+            logger.debug("[Finviz] Enabled urllib3/requests DEBUG logging")
+        except:
+            pass
+        
+        logger.info("[Finviz] Creating screener for view=%s", view)
+        logger.debug("[Finviz] Filters: %s", filters_dict)
+        
         screener.set_filter(filters_dict=filters_dict)
-        df = screener.screener_view(verbose=verbose)
-        if df is None or df.empty:
+        logger.debug("[Finviz] Filter set successfully")
+        
+        # ── Execute with patient timeout (allow partial results) ────────────────────
+        import threading
+        import traceback
+        
+        max_time_sec = getattr(C, "FINVIZ_TIMEOUT_SEC", 45.0)  # 45s default for finviz pagination
+        result_container = {
+            "df": None, 
+            "error": None, 
+            "status": "pending",
+            "full_traceback": None,
+            "http_response": None
+        }
+        
+        def _fetch_screener():
+            try:
+                import time as time_module
+                start = time_module.time()
+                logger.info("[Finviz] Starting screener_view() call for view=%s…", view)
+                logger.debug("[Finviz] screener_view may take 0-45 seconds, patience required…")
+                
+                df = screener.screener_view()
+                
+                elapsed = time_module.time() - start
+                logger.info("[Finviz] screener_view() returned in %.1f seconds", elapsed)
+                
+                if df is None:
+                    logger.warning("[Finviz] screener_view() returned None (NoneType)")
+                    result_container["df"] = None
+                elif isinstance(df, pd.DataFrame):
+                    shape = df.shape
+                    logger.info("[Finviz] Result is DataFrame: shape=%s (rows=%d, cols=%d)",
+                               shape, shape[0], shape[1])
+                    if shape[0] > 0:
+                        logger.info("[Finviz] ✓ Got data! First 3 tickers: %s",
+                                   list(df.iloc[:3, 0].values) if shape[1] > 0 else "N/A")
+                    else:
+                        logger.warning("[Finviz] ⚠ WARNING: Returned empty DataFrame (0 rows, %d cols)", shape[1])
+                    result_container["df"] = df
+                else:
+                    logger.error("[Finviz] screener_view() returned unexpected type: %s",
+                               type(df).__name__)
+                    result_container["df"] = None
+                    
+                result_container["status"] = "completed"
+                
+            except Exception as e:
+                elapsed = time_module.time() - start
+                error_type = type(e).__name__
+                error_msg = str(e)
+                
+                # Detailed error diagnostics
+                logger.error("[Finviz] EXCEPTION after %.1f seconds: [%s] %s",
+                           elapsed, error_type, error_msg[:500])
+                
+                # Check for common errors
+                if "429" in error_msg or "Too Many Requests" in error_msg:
+                    logger.error("[Finviz] ⚠⚠⚠ RATE LIMITED (HTTP 429)! finvizfinance.com rejected request")
+                    logger.error("[Finviz]     (Possible cause: too many requests in short time)")
+                elif "403" in error_msg or "Forbidden" in error_msg:
+                    logger.error("[Finviz] ⚠⚠⚠ ACCESS FORBIDDEN (HTTP 403)! May be IP-blocked")
+                elif "timeout" in error_msg.lower():
+                    logger.error("[Finviz] ⚠⚠⚠ NETWORK TIMEOUT! finvizfinance request timed out")
+                elif "connection" in error_msg.lower():
+                    logger.error("[Finviz] ⚠⚠⚠ CONNECTION ERROR! Cannot reach finvizfinance/finviz.com")
+                else:
+                    logger.error("[Finviz] Unknown error type - see traceback below")
+                
+                # Full traceback for debugging
+                tb_str = traceback.format_exc()
+                logger.debug("[Finviz] Full traceback:\n%s", tb_str)
+                result_container["full_traceback"] = tb_str
+                result_container["error"] = e
+                result_container["status"] = "error"
+        
+        # Run in daemon thread with generous timeout
+        logger.info("[Finviz] Spawning thread for screener_view (timeout=%.0fs + 20s patience buffer)",
+                   max_time_sec)
+        thread = threading.Thread(target=_fetch_screener, daemon=True, name=f"Finviz-{view}")
+        thread.daemon = True
+        thread.start()
+        
+        logger.debug("[Finviz] Thread started, waiting…")
+        thread.join(timeout=max_time_sec)
+        
+        if thread.is_alive():
+            logger.warning("[Finviz] ⚠ TIMEOUT after %.0fs, thread still running… "
+                          "being patient for 20 more seconds", max_time_sec)
+            thread.join(timeout=20.0)
+            
+            if thread.is_alive():
+                logger.error("[Finviz] ⚠⚠⚠ HARD TIMEOUT after %.0fs total! Thread won't stop. " 
+                           "finvizfinance appears to be hung or severely limited.",
+                           max_time_sec + 20)
+                return pd.DataFrame()
+            else:
+                logger.info("[Finviz] ✓ Thread eventually completed after extended patience")
+        else:
+            logger.debug("[Finviz] Thread completed within initial timeout")
+        
+        # Examine result
+        if result_container["status"] == "error":
+            logger.error("[Finviz] Thread encountered exception: %s",
+                        result_container["error"].__class__.__name__)
+            if result_container["full_traceback"]:
+                logger.debug("[Finviz] Exception traceback:\n%s",
+                           result_container["full_traceback"])
             return pd.DataFrame()
+        
+        if result_container["status"] == "pending":
+            logger.error("[Finviz] ⚠⚠⚠ Thread timeout - no result available")
+            return pd.DataFrame()
+        
+        df = result_container["df"]
+        
+        if df is None:
+            logger.error("[Finviz] ⚠⚠⚠ Result is None, cannot proceed")
+            return pd.DataFrame()
+        
+        if not isinstance(df, pd.DataFrame):
+            logger.error("[Finviz] ⚠⚠⚠ Result is not a DataFrame: %s", type(df).__name__)
+            return pd.DataFrame()
+        
+        if df.empty:
+            logger.warning("[Finviz] ⚠ Empty DataFrame returned (0 rows, %d columns)", len(df.columns))
+            logger.warning("[Finviz]   Columns: %s", list(df.columns)[:20])
+            return pd.DataFrame()
+            
+        logger.info("[Finviz] ✓✓✓ SUCCESS! Got %d rows, %d columns", df.shape[0], df.shape[1])
+        
         # Normalise Ticker column
         if "Ticker" not in df.columns and df.index.name == "Ticker":
             df = df.reset_index()
@@ -160,9 +306,13 @@ def get_universe(filters_dict: dict, view: str = "Overview",
         # Save to in-memory cache
         _finviz_cache[cache_key] = (time.time(), df.copy())
         logger.debug("[Finviz Cache SAVE] %d rows, view=%s", len(df), view)
+        logger.info("[Finviz] ✓ Successfully cached %d rows from %s view", len(df), view)
         return df
     except Exception as exc:
-        logger.warning(f"get_universe error: {exc}")
+        logger.error("[Finviz] OUTER EXCEPTION: [%s] %s",
+                    type(exc).__name__, str(exc)[:500])
+        import traceback
+        logger.debug("[Finviz] Outer exception traceback:\n%s", traceback.format_exc())
         return pd.DataFrame()
 
 

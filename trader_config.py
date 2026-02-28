@@ -117,6 +117,7 @@ STAGE2_BATCH_SLEEP    = 1.5        # Sleep between Stage 2 download batches (sec
 STAGE3_MAX_WORKERS    = 6          # Parallel threads for Stage 3 SEPA scoring
 FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamentals
 FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
+FINVIZ_TIMEOUT_SEC    = 45.0       # Max wait for finvizfinance pagination (sec, patient). Allow partial results.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ACCOUNT DRAWDOWN ALERT LEVELS  (Minervini H1-H5)
@@ -298,10 +299,12 @@ QM_SCAN_TOP_N              = 50   # Max candidates to return from QM scan
 QM_SCAN_MIN_STAR           = 3.0  # Minimum star rating to appear in results
 QM_SCAN_MIN_DOLLAR_VOL     = 5_000_000  # Min $Volume gate for scan output
 
-# ── QM scan performance tuning ────────────────────────────────────────────────
+# ── QM scan performance tuning ─────────────────────────────────────────────────
+# Stage 2: Historical data and batch download optimization
+# (Stage 1 remains simple: Price > $5, Volume > 300K, USA only)
 QM_STAGE2_MAX_WORKERS      = 12   # Parallel threads for Stage 2 historical enrichment
-QM_STAGE2_BATCH_SIZE       = 40   # Tickers per yf.download() batch
-QM_STAGE2_BATCH_SLEEP      = 1.5  # Seconds between batch downloads
+QM_STAGE2_BATCH_SIZE       = 60   # Tickers per yf.download() batch (increased from 40)
+QM_STAGE2_BATCH_SLEEP      = 1.0  # Seconds between batch downloads (reduced from 1.5)
 
 # ── Market environment gate for QM ───────────────────────────────────────────
 # QM breakout trades are blocked in confirmed bear markets

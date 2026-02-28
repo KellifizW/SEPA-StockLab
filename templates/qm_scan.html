@@ -81,6 +81,18 @@
           <div id="progressBar" class="progress-bar" style="background:var(--accent);width:0%;transition:width .4s"></div>
         </div>
         <div class="progress-stage" id="progressStage">準備中…</div>
+        
+        <!-- Diagnostics panel (toggle-able) -->
+        <div class="mt-3">
+          <a href="#" onclick="toggleDiagnostics(event)" class="text-secondary" style="font-size:12px">
+            <i class="bi bi-chevron-right" id="diagToggleIcon"></i> 詳細診斷日誌 Detailed Diagnostics
+          </a>
+          <div id="diagnosticsPanel" class="mt-2 p-3 bg-black rounded" style="display:none;border:1px solid #30363d;max-height:300px;overflow-y:auto">
+            <small class="text-monospace text-secondary" id="diagnosticsContent">
+              Loading diagnostics…
+            </small>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -277,6 +289,26 @@ function pollProgress() {
         document.getElementById('progressStage').textContent = stageText;
       }
 
+      // Fetch and display diagnostics if still running
+      if (r.status !== 'done' && r.status !== 'error') {
+        try {
+          const logs = await fetch('/api/qm/scan/logs/' + _jobId)
+            .then(x => x.json())
+            .catch(() => null);
+          if (logs && logs.ok) {
+            const diag = logs.stage1_diagnostics || [];
+            if (diag.length > 0) {
+              const diagHtml = diag.map(line => 
+                `<div>${escapeHtml(line)}</div>`
+              ).join('');
+              document.getElementById('diagnosticsContent').innerHTML = diagHtml;
+            }
+          }
+        } catch(e) {
+          // Silently ignore log fetch errors during polling
+        }
+      }
+
       if (r.status === 'done') {
         clearInterval(_pollInterval);
         const elapsed = ((Date.now() - _scanStartTime) / 1000).toFixed(0);
@@ -301,6 +333,26 @@ function resetScanUI(done=false) {
   document.getElementById('btnCancel').classList.add('d-none');
   if (!done) document.getElementById('progressArea').classList.add('d-none');
   _jobId = null;
+}
+
+function toggleDiagnostics(e) {
+  e.preventDefault();
+  const panel = document.getElementById('diagnosticsPanel');
+  const icon = document.getElementById('diagToggleIcon');
+  const isVisible = panel.style.display !== 'none';
+  panel.style.display = isVisible ? 'none' : 'block';
+  icon.className = isVisible ? 'bi bi-chevron-right' : 'bi bi-chevron-down';
+}
+
+function escapeHtml(text) {
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+  return text.replace(/[&<>"']/g, m => map[m]);
 }
 
 async function loadLast() {
