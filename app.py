@@ -744,7 +744,15 @@ def api_qm_analyze():
     try:
         from modules.qm_analyzer import analyze_qm
         result = analyze_qm(ticker, print_report=False)
+        # DEBUG: Print trade plan before _clean
+        if result and 'trade_plan' in result:
+            tp = result['trade_plan']
+            print(f"[DEBUG] Before _clean: day2_stop type = {type(tp.get('day2_stop'))}, value = {tp.get('day2_stop')}")
         clean_result = _clean(result) if result else {}
+        #DEBUG: Print trade plan after _clean
+        if clean_result and 'trade_plan' in clean_result:
+            tp = clean_result['trade_plan']
+            print(f"[DEBUG] After _clean: day2_stop type = {type(tp.get('day2_stop'))}, value = {tp.get('day2_stop')}")
         log_rel = str(analyze_log_file.relative_to(ROOT)) if analyze_log_file.exists() else ""
         return jsonify({"ok": True, "ticker": ticker,
                         "result": clean_result, "log_file": log_rel})

@@ -544,54 +544,80 @@ def _build_trade_plan(stars: float, row: dict) -> dict:
     sma_10    = row.get("sma_10")
     sma_20    = row.get("sma_20")
     account   = getattr(C, "ACCOUNT_SIZE", 100_000)
+    
+    # LOD (low of day) is preferred entry/stop, fallback to 10SMA
+    lod         = row.get("lod")
+    if not lod or lod <= 0:
+        lod = sma_10 or close
+    lod_stop    = round(lod * (1 - getattr(C, "QM_STOP_PCT", 0.07)), 2) if lod else None
 
-    # Position size
-    sizing = getattr(C, "QM_POSITION_SIZING", {})
+    # ── Position allocation % based on star rating ────────────────────────
+    sizing = getattr(C, "QM_POSITION_SIZING", {
+        "5+": (20.0, 25.0), "5": (15.0, 25.0),
+        "4": (10.0, 15.0),  "3": (5.0, 10.0), "0": (0.0, 0.0),
+    })
     if stars >= 5.5:
-        lo, hi = sizing.get("5+", (20, 25))
+        allocation_pct_lo, allocation_pct_hi = sizing.get("5+", (20, 25))
     elif stars >= 5.0:
-        lo, hi = sizing.get("5", (15, 25))
+        allocation_pct_lo, allocation_pct_hi = sizing.get("5", (15, 25))
     elif stars >= 4.0:
-        lo, hi = sizing.get("4", (10, 15))
+        allocation_pct_lo, allocation_pct_hi = sizing.get("4", (10, 15))
     elif stars >= 3.0:
-        lo, hi = sizing.get("3", (5, 10))
+        allocation_pct_lo, allocation_pct_hi = sizing.get("3", (5, 10))
     else:
-        return {"action": "PASS", "note": "星級不足，不交易"}
+        allocation_pct_lo, allocation_pct_hi = sizing.get("0", (0, 0))
 
-    pos_value = account * ((lo + hi) / 2 / 100)
+    # Position value in USD
+    pos_value_lo      = account * (allocation_pct_lo / 100.0)
+    pos_value_hi      = account * (allocation_pct_hi / 100.0)
+    pos_value_mid     = (pos_value_lo + pos_value_hi) / 2.0
+    
+    # Calculate share count (use mid-point for primary calculation)
+    shares = int(pos_value_mid / close) if close > 0 else 1
+    max_shares = int(account * 0.25 / close) if close > 0 else 1  # Never exceed 25% of account
+    shares = min(shares, max(1, max_shares))
+    
+    # Actual position value after share rounding
+    pos_value = shares * close
+    
+    # Risk per share (from entry to day1 stop)
+    risk_per_share = round(close - lod_stop, 2) if lod_stop else 0.0
+    total_risk_usd = shares * risk_per_share
+    risk_pct_of_account = (total_risk_usd / account * 100) if account > 0 else 0.0
+    stop_pct = round(risk_pct_of_account, 2)
 
-    # Stop loss — Day 1 = LOD (approximated as most recent low)
-    day1_low = float(row.get("low", close * 0.97)) if close else None
-    lod_stop = round(day1_low * (1 - getattr(C, "QM_DAY1_STOP_BELOW_LOD_PCT", 0.5) / 100), 2) \
-               if day1_low else None
-    stop_pct = round((close - lod_stop) / close * 100, 2) if lod_stop and close else None
-
-    # Shares
-    shares = int(pos_value / close) if close > 0 else 0
-
-    # Day 3-5 profit taking
+    # Day 2-3 stops and profit taking
     profit_pct_1   = getattr(C, "QM_PROFIT_TAKE_1ST_GAIN", 10.0)
     profit_target  = round(close * (1 + profit_pct_1 / 100), 2) if close else None
     take_pct       = 25.0 if stars >= 5.0 else 33.0 if stars >= 4.0 else 50.0
-    trail_ma       = f"{getattr(C, 'QM_TRAIL_MA_PERIOD', 10)}SMA (soft stop)"
+    
+    # Day 2 stop = cost (break-even = entry price)
+    day2_stop_px   = round(close, 2) if close else None
+    
+    # Day 3+ stop = 10MA trail (actual price) or None if not available
+    day3_stop_px   = round(sma_10, 2) if sma_10 else None
+    
+    ma_period      = getattr(C, 'QM_TRAIL_MA_PERIOD', 10)
 
     return {
         "action":               "BUY" if stars >= 3.0 else "PASS",
-        "position_lo_pct":      lo,
-        "position_hi_pct":      hi,
+        "position_lo_pct":      allocation_pct_lo,
+        "position_hi_pct":      allocation_pct_hi,
         "suggested_shares":     shares,
         "suggested_value_usd":  round(pos_value, 0),
+        "suggested_risk_usd":   round(total_risk_usd, 2),
         "day1_stop":            lod_stop,
         "day1_stop_pct_risk":   stop_pct,
-        "day2_stop":            "移至成本價 (move to break-even entry price)",
-        "day3plus_stop":        trail_ma,
-        "sma_10_trail":         round(sma_10, 2) if sma_10 else None,
+        "day2_stop":            day2_stop_px,
+        "day2_stop_label":      "成本價 Break-even",
+        "day3plus_stop":        day3_stop_px,
+        "day3plus_stop_label":  f"{ma_period}MA 追蹤 Trail",
+        "sma_10_trail":         day3_stop_px,
         "profit_take_day":      f"Day 3-5 或獲利達{profit_pct_1:.0f}%",
         "profit_take_qty":      f"先出 {take_pct:.0f}% 持倉",
         "profit_target_px":     profit_target,
-        "remainder_management": f"剩餘持倉用{trail_ma}管理，跟随趋势",
+        "remainder_management": f"剩餘持倉用{ma_period}MA管理，跟随趋势",
     }
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main public function

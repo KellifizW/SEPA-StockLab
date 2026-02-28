@@ -342,13 +342,19 @@ def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
     elif adr < getattr(C, "QM_ADR_PENALTY_MARGINAL", 8.0):
         star -= 0.5
 
-    # Dimension C: Consolidation
+    # Dimension C: Consolidation (very important for Qullamaggie)
+    # Higher Lows are critical evidence of institutional accumulation
     if is_tight and has_hl:
-        star += 1.0
-    elif is_tight or (has_hl and num_lows >= 2):
-        star += 0.5
-    elif range_trend == "expanding":
-        star -= 0.5
+        star += 1.0  # Tight + higher lows = perfect setup
+    elif is_tight and num_lows >= 2:
+        star += 0.75  # Tight + some higher lows
+    elif has_hl and num_lows >= 3:
+        star += 0.7   # Multiple higher lows without tightness
+    elif has_hl or (is_tight and num_lows >= 2):
+        star += 0.5  # Either tight or some higher lows
+    else:
+        star -= 0.75  # No consolidation quality evidence (like ASTI) — significant penalty
+        # This reflects that without higher lows, setup is less reliable
 
     # Dimension D: MA alignment
     if surfing_ma == 20:
@@ -531,6 +537,14 @@ def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None)
     df_passed = df_passed.sort_values("qm_star", ascending=False)
     if top_n_val and len(df_passed) > top_n_val:
         df_passed = df_passed.head(top_n_val)
+
+    # ── Final sorting and filtering ────────────────────────────────────────
+    # Note: qm_star is a heuristic approximation. For precise rating including 
+    # all 6 dimensions (especially consolidation quality), users should click 
+    # into detailed analysis (analyze_qm) which computes capped_stars.
+    if not df_passed.empty:
+        df_passed = df_passed.sort_values("qm_star", ascending=False)
+
 
     elapsed = (datetime.now() - scan_start).total_seconds()
     logger.info("[QM Scan] FINAL: %d passed | %d scored total | %.0fs elapsed",

@@ -228,13 +228,12 @@ async function analyzeStock() {
 function renderAnalysis(ticker, r) {
   if (!r) return;
 
-  const rating = r.rating || {};
-  const star = parseFloat(rating.stars ?? r.stars ?? 0);
-  const veto = rating.veto || r.veto;
-  const dims = r.dimensions || {};
-  const setup = r.setup || {};
+  // ── Extract data from analyze_qm result ─────────────────────────────────────
+  const star = parseFloat(r.capped_stars ?? r.stars ?? 0);
+  const veto = r.veto;
+  const dims = r.dim_scores || {};
+  const setup = r.setup_type || {};
   const plan  = r.trade_plan || {};
-  const sizing = r.sizing || {};
 
   // ── Star display ──────────────────────────────────────────────────────────
   const starClass = star >= 5 ? 'star-5p' : star >= 4 ? 'star-4' : star >= 3 ? 'star-3' : 'star-low';
@@ -257,11 +256,11 @@ function renderAnalysis(ticker, r) {
 
   // ── Radar chart ──────────────────────────────────────────────────────────
   const dimLabels = ['A · 動力', 'B · ADR', 'C · 整固', 'D · 均線', 'E · 類型', 'F · 市場'];
-  const dimKeys   = ['a_momentum', 'b_adr', 'c_consolidation', 'd_ma', 'e_type', 'f_market'];
+  const dimKeys   = ['A', 'B', 'C', 'D', 'E', 'F'];
   const dimVals   = dimKeys.map(k => {
     const d = dims[k] || {};
     // Normalize score to 0-100 range for display
-    const raw = d.adj ?? d.score ?? 0;
+    const raw = d.score ?? 0;
     return Math.max(0, Math.min(100, (raw + 2) * 20));  // -2~+2 → 0~80
   });
 
@@ -386,8 +385,8 @@ function renderAnalysis(ticker, r) {
         <i class="bi bi-3-circle me-1"></i>第3天起 Day 3+ Trail
         <span class="ms-2" data-bs-toggle="tooltip" title="第3天起使用10日均線作追蹤停損。收盤低於10MA則出場（軟止損）；盤中大幅跌破10MA則立即止損（硬止損）。"></span>
       </div>
-      <div class="fw-bold" style="color:#3fb950;font-size:15px">${plan.day3_stop != null ? '$'+parseFloat(plan.day3_stop).toFixed(2) : '10MA 追蹤'}</div>
-      <div style="font-size:11px;color:#8b949e">10MA 追蹤 Trail 10SMA</div>
+      <div class="fw-bold" style="color:#3fb950;font-size:15px">${plan.day3plus_stop != null ? '$'+parseFloat(plan.day3plus_stop).toFixed(2) : '10MA 追蹤'}</div>
+      <div style="font-size:11px;color:#8b949e">${plan.day3plus_stop_label || '10MA 追蹤'}</div>
     </div>
     <hr style="border-color:#30363d">
     <div class="profit-step">
@@ -411,34 +410,38 @@ function renderAnalysis(ticker, r) {
   document.getElementById('tradePlan').innerHTML = planHtml;
 
   // ── Position sizing ───────────────────────────────────────────────────────
-  const sizeRec = sizing.recommendation || '';
-  const minPct  = sizing.min_pct ?? null;
-  const maxPct  = sizing.max_pct ?? null;
-  const shares  = sizing.shares ?? null;
-  const riskDlr = sizing.risk_dollar ?? null;
+  const minPct  = r.position_pct_min ?? plan.position_lo_pct ?? null;
+  const maxPct  = r.position_pct_max ?? plan.position_hi_pct ?? null;
+  const shares  = plan.suggested_shares ?? null;
+  const posValue = plan.suggested_value_usd ?? null;
+  
+  // Calculate risk in dollars: (close - day1_stop) * shares
+  const close = r.close ?? 0;
+  const day1Stop = plan.day1_stop ?? 0;
+  const riskDlr = shares && close && day1Stop ? (close - day1Stop) * shares : null;
   document.getElementById('positionSizing').innerHTML = `
     <div class="row g-3">
       <div class="col-6 col-md-3 text-center">
         <div class="metric-card">
-          <div class="metric-val" style="font-size:22px">${minPct != null ? minPct + '–' + maxPct + '%' : '—'}</div>
+          <div class="metric-val" style="font-size:22px">${minPct != null && maxPct != null ? Math.round(minPct) + '–' + Math.round(maxPct) + '%' : '—'}</div>
           <div class="metric-lbl">建議倉位 Suggested Alloc.</div>
         </div>
       </div>
       <div class="col-6 col-md-3 text-center">
         <div class="metric-card">
-          <div class="metric-val" style="font-size:22px">${shares != null ? shares : '—'}</div>
+          <div class="metric-val" style="font-size:22px">${shares != null ? shares.toLocaleString() : '—'}</div>
           <div class="metric-lbl">建議股數 Suggested Shares</div>
         </div>
       </div>
       <div class="col-6 col-md-3 text-center">
         <div class="metric-card">
-          <div class="metric-val" style="font-size:22px;color:#f85149">${riskDlr != null ? '$'+parseFloat(riskDlr).toFixed(0) : '—'}</div>
+          <div class="metric-val" style="font-size:22px;color:#f85149">${riskDlr != null ? '$'+Math.round(riskDlr).toLocaleString() : '—'}</div>
           <div class="metric-lbl">風險金額 Risk ($)</div>
         </div>
       </div>
       <div class="col-6 col-md-3 text-center">
         <div class="metric-card">
-          <div class="metric-val" style="font-size:18px;color:${sizeRec==='PASS'?'#f85149':'#3fb950'}">${sizeRec || '—'}</div>
+          <div class="metric-val" style="font-size:18px;color:${rec.startsWith('BUY')?'#3fb950':rec.startsWith('WATCH')?'#e3b341':'#f85149'}">${rec || '—'}</div>
           <div class="metric-lbl">建議動作 Action</div>
         </div>
       </div>
@@ -446,6 +449,7 @@ function renderAnalysis(ticker, r) {
     <div class="mt-2" style="font-size:12px;color:#8b949e">
       <i class="bi bi-info-circle me-1"></i>
       Qullamaggie 倉位指引：5★+=15–25%，5★=15–25%，4★=10–15%，3★=5–10%，&lt;3★=不入場。
+      建議倉位金額 $${posValue != null ? Math.round(posValue).toLocaleString() : '—'}。
       風險金額 = 每股損失 × 股數，不應超過賬戶規模的 1–1.5%。
     </div>
   `;
