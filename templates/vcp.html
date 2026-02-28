@@ -23,6 +23,12 @@
       VCP (Volatility Contraction Pattern) — Minervini's proprietary entry setup.
       Uses 2 years of price history + ATR + Bollinger Bands + Volume analysis.
     </div>
+    <div class="mt-2 small text-muted">
+      <div><strong>輔助說明 Helper</strong></div>
+      <div>• <strong>ATR 收縮 ATR Contracting</strong>：代表日內真實波動幅度逐步下降，常見於基底後段，表示拋壓減弱與風險可控。</div>
+      <div>• <strong>布林帶收縮 BB Contracting</strong>：Band Width 變窄屬於波動壓縮（Volatility Squeeze），通常是突破前能量累積訊號。</div>
+      <div>• <strong>量能乾涸 Volume Dry-up</strong>：接近 pivot 時成交量低於均量，代表供給減少；若後續放量突破，訊號更可靠。</div>
+    </div>
   </div>
 </div>
 
@@ -155,6 +161,7 @@
 {% block extra_js %}
 <script>
 let _currentTicker = '';
+let _currentVcpResult = null;
 
 async function runVcp() {
   const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
@@ -186,6 +193,7 @@ async function runVcp() {
 }
 
 function renderVcp(ticker, d) {
+  _currentVcpResult = d || null;
   const grade  = d.grade || 'D';
   const score  = d.vcp_score || 0;
   const valid  = d.is_valid_vcp;
@@ -250,7 +258,7 @@ function renderVcp(ticker, d) {
   document.getElementById('btnAnalyze').href = `/analyze?ticker=${ticker}`;
   document.getElementById('result').classList.remove('d-none');
   // Load VCP technical chart after result is rendered
-  loadVcpChart(ticker, pivot ? Number(pivot) : null);
+  loadVcpChart(ticker, pivot ? Number(pivot) : null, d);
 }
 
 // ── VCP Chart state ───────────────────────────────────────────────────────────
@@ -266,7 +274,7 @@ function setVcpRange(days, btn) {
   _vcpChart.timeScale().setVisibleRange({ from, to: last });
 }
 
-async function loadVcpChart(ticker, pivotPrice) {
+async function loadVcpChart(ticker, pivotPrice, vcpData) {
   const section = document.getElementById('vcpChartSection');
   const loadEl  = document.getElementById('vcpChartLoading');
   const wrapEl  = document.getElementById('vcpChartWrap');
@@ -347,6 +355,33 @@ async function loadVcpChart(ticker, pivotPrice) {
       });
     }
 
+    // VCP signal markers on the latest bar (ATR / BB / Volume)
+    if (vcpData && res.candles && res.candles.length) {
+      const lastTime = res.candles[res.candles.length - 1].time;
+      const markers = [];
+      const signalDefs = [
+        { key: 'atr_contracting', label: 'ATR', passText: 'ATR✓', failText: 'ATR✗' },
+        { key: 'bb_contracting',  label: 'BB',  passText: 'BB✓',  failText: 'BB✗' },
+        { key: 'vol_dry',         label: 'VOL', passText: 'VOL✓', failText: 'VOL✗' },
+      ];
+
+      signalDefs.forEach((sig, idx) => {
+        const passed = Boolean(vcpData[sig.key]);
+        markers.push({
+          time: lastTime,
+          position: passed ? 'aboveBar' : 'belowBar',
+          color: passed ? '#3fb950' : '#f85149',
+          shape: passed ? 'circle' : 'square',
+          text: passed ? sig.passText : sig.failText,
+          size: 1 + idx,
+        });
+      });
+
+      if (typeof candleSeries.setMarkers === 'function') {
+        candleSeries.setMarkers(markers);
+      }
+    }
+
     // Responsive resize — observe parent card-body
     new ResizeObserver(() => {
       const w = wrapDiv.parentElement.clientWidth || window.innerWidth - 40;
@@ -358,6 +393,26 @@ async function loadVcpChart(ticker, pivotPrice) {
 
     loadEl.style.display = 'none';
     wrapEl.style.display = 'block';
+
+    // Render signal badges under chart for quick read
+    let signalEl = document.getElementById('vcpSignalOverlay');
+    if (!signalEl) {
+      signalEl = document.createElement('div');
+      signalEl.id = 'vcpSignalOverlay';
+      signalEl.className = 'px-3 py-2 small';
+      signalEl.style.background = '#0d1117';
+      signalEl.style.borderTop = '1px solid #21262d';
+      wrapEl.appendChild(signalEl);
+    }
+    const fmtSignal = (name, pass) => `
+      <span class="badge ${pass ? 'text-bg-success' : 'text-bg-danger'} me-1">${name}: ${pass ? 'YES' : 'NO'}</span>
+    `;
+    signalEl.innerHTML = `
+      <span class="text-muted me-2">Signal Overlay</span>
+      ${fmtSignal('ATR Contracting', Boolean(vcpData && vcpData.atr_contracting))}
+      ${fmtSignal('BB Contracting', Boolean(vcpData && vcpData.bb_contracting))}
+      ${fmtSignal('Volume Dry-up', Boolean(vcpData && vcpData.vol_dry))}
+    `;
   } catch(e) {
     console.error('loadVcpChart error:', e);
     loadEl.style.display  = 'none';

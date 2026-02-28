@@ -227,10 +227,18 @@
 let _btChart        = null;
 let _btCandles      = null;
 let _btEquityChart  = null;
+let _btChartResizeObserver = null;
+let _btEquityResizeObserver = null;
 let _currentTicker  = "";
 let _allSignals     = [];
 let _btPollTimer    = null;
 let _currentRangeDays = 365;
+
+function _getBtChartWidth(el) {
+  if (!el) return 0;
+  const w = el.clientWidth || (el.parentElement ? el.parentElement.clientWidth : 0) || (window.innerWidth - 48);
+  return Math.max(280, Math.floor(w));
+}
 
 // ── Presets ────────────────────────────────────────────────────────────────
 function quickPick(sym) {
@@ -429,9 +437,10 @@ function buildBtPriceChart(ticker, days) {
   _currentRangeDays = days;
   const wrap = document.getElementById("btChartWrap");
   const div  = document.getElementById("btChartDiv");
-  const w    = wrap.parentElement.clientWidth || window.innerWidth - 48;
+  const w    = _getBtChartWidth(wrap ? wrap.parentElement : null);
 
   if (_btChart) { _btChart.remove(); _btChart = null; _btCandles = null; }
+  if (_btChartResizeObserver) { try { _btChartResizeObserver.disconnect(); } catch(e) {} _btChartResizeObserver = null; }
 
   _btChart = LightweightCharts.createChart(div, {
     width:  w,
@@ -497,17 +506,18 @@ function buildBtPriceChart(ticker, days) {
     }
     markers.sort((a, b) => a.time - b.time);
     _btCandles.setMarkers(markers);
-    _btChart.timeScale().scrollToPosition(0, false);
+    _btChart.timeScale().fitContent();
   })
   .catch(console.error);
 
   // Responsive
-  new ResizeObserver(entries => {
+  _btChartResizeObserver = new ResizeObserver(entries => {
     for (const e of entries) {
       if (e.contentRect.width > 100 && _btChart)
         _btChart.applyOptions({ width: e.contentRect.width });
     }
-  }).observe(wrap.parentElement);
+  });
+  if (wrap && wrap.parentElement) _btChartResizeObserver.observe(wrap.parentElement);
 }
 
 // ── Set chart range ────────────────────────────────────────────────────────
@@ -522,9 +532,10 @@ function setBtRange(days, btn) {
 function buildEquityChart(curveData) {
   const wrap = document.getElementById("btEquityWrap");
   const div  = document.getElementById("btEquityDiv");
-  const w    = wrap.parentElement.clientWidth || window.innerWidth - 48;
+  const w    = _getBtChartWidth(wrap ? wrap.parentElement : null);
 
   if (_btEquityChart) { _btEquityChart.remove(); _btEquityChart = null; }
+  if (_btEquityResizeObserver) { try { _btEquityResizeObserver.disconnect(); } catch(e) {} _btEquityResizeObserver = null; }
 
   if (!curveData || curveData.length < 2) {
     div.innerHTML = `<div class="text-muted text-center small py-5">
@@ -555,13 +566,15 @@ function buildEquityChart(curveData) {
     .sort((a, b) => a.time - b.time);
 
   equitySeries.setData(pts);
+  _btEquityChart.timeScale().fitContent();
 
-  new ResizeObserver(entries => {
+  _btEquityResizeObserver = new ResizeObserver(entries => {
     for (const e of entries) {
       if (e.contentRect.width > 100 && _btEquityChart)
         _btEquityChart.applyOptions({ width: e.contentRect.width });
     }
-  }).observe(wrap.parentElement);
+  });
+  if (wrap && wrap.parentElement) _btEquityResizeObserver.observe(wrap.parentElement);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────

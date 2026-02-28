@@ -488,16 +488,24 @@ async function loadMarketHistory() {
 
 // ── Index Mini Charts ─────────────────────────────────────────────────────────
 const _mktCharts = {};
+const _mktChartObservers = {};
+
+function _getMiniChartWidth(div) {
+  if (!div) return 0;
+  const w = div.clientWidth || (div.parentElement ? div.parentElement.clientWidth : 0) || (window.innerWidth / 2 - 20);
+  return Math.max(220, Math.floor(w));
+}
 
 async function _buildMiniChart(divId, ticker) {
   const div = document.getElementById(divId);
   if (!div) return;
   if (_mktCharts[divId]) { try { _mktCharts[divId].remove(); } catch(e) {} delete _mktCharts[divId]; }
+  if (_mktChartObservers[divId]) { try { _mktChartObservers[divId].disconnect(); } catch(e) {} delete _mktChartObservers[divId]; }
   try {
     const res = await fetch(`/api/chart/enriched/${ticker}?days=90`).then(x => x.json());
     if (!res.ok || !res.candles || !res.candles.length) return;
     const LWC   = LightweightCharts;
-    const containerWidth = div.parentElement.clientWidth || window.innerWidth / 2 - 20;
+    const containerWidth = _getMiniChartWidth(div);
     const chart = LWC.createChart(div, {
       layout:    { background: { color: '#0d1117' }, textColor: '#8b949e' },
       grid:      { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
@@ -523,10 +531,18 @@ async function _buildMiniChart(divId, ticker) {
     if (res.sma50  && res.sma50.length)  chart.addLineSeries({ color: 'rgba(88,166,255,0.75)',  lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(res.sma50);
     if (res.sma200 && res.sma200.length) chart.addLineSeries({ color: 'rgba(248,81,73,0.75)',   lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(res.sma200);
 
-    new ResizeObserver(() => {
-      const w = div.parentElement.clientWidth || window.innerWidth / 2 - 20;
-      if (_mktCharts[divId]) _mktCharts[divId].applyOptions({ width: w });
-    }).observe(div.parentElement);
+    chart.timeScale().fitContent();
+
+    const observer = new ResizeObserver(() => {
+      const target = _mktCharts[divId];
+      if (!target) return;
+      const w = _getMiniChartWidth(div);
+      target.applyOptions({ width: w });
+      target.timeScale().fitContent();
+    });
+    observer.observe(div);
+    if (div.parentElement) observer.observe(div.parentElement);
+    _mktChartObservers[divId] = observer;
   } catch(e) {
     console.error(`_buildMiniChart(${ticker}) error:`, e);
   }
@@ -535,6 +551,10 @@ async function _buildMiniChart(divId, ticker) {
 async function loadIndexCharts() {
   const row = document.getElementById('indexChartsRow');
   if (row) row.style.display = '';
+
+  // Wait for layout after showing the hidden row, then build charts at correct width.
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
   await Promise.allSettled([
     _buildMiniChart('lwcSpyChart', 'SPY'),
     _buildMiniChart('lwcQqqChart', 'QQQ'),
@@ -548,4 +568,5 @@ window.addEventListener('DOMContentLoaded', () => {
   new bootstrap.Tooltip(document.body, {selector: '[data-bs-toggle="tooltip"]'});
 });
 
+</script>
 {% endblock %}

@@ -340,6 +340,13 @@ function renderHealth(results) {
 
 // ── Position mini charts ──────────────────────────────────────────────────────
 const _posCharts = {};
+const _posChartObservers = {};
+
+function _getPosChartWidth(div) {
+  if (!div) return 0;
+  const w = div.clientWidth || (div.parentElement ? div.parentElement.clientWidth : 0) || (window.innerWidth / 3 - 20);
+  return Math.max(180, Math.floor(w));
+}
 
 async function loadPositionMiniCharts(results) {
   for (const r of results) {
@@ -347,11 +354,12 @@ async function loadPositionMiniCharts(results) {
     const div = document.getElementById(divId);
     if (!div) continue;
     if (_posCharts[r.ticker]) { try { _posCharts[r.ticker].remove(); } catch(e) {} delete _posCharts[r.ticker]; }
+    if (_posChartObservers[r.ticker]) { try { _posChartObservers[r.ticker].disconnect(); } catch(e) {} delete _posChartObservers[r.ticker]; }
     try {
       const res = await fetch(`/api/chart/enriched/${r.ticker}?days=90`).then(x => x.json());
       if (!res.ok || !res.candles || !res.candles.length) continue;
       const LWC   = LightweightCharts;
-      const posWidth = div.parentElement.clientWidth || window.innerWidth / 3 - 20;
+      const posWidth = _getPosChartWidth(div);
       const chart = LWC.createChart(div, {
         layout:    { background: { color: 'transparent' }, textColor: '#8b949e' },
         grid:      { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
@@ -380,10 +388,18 @@ async function loadPositionMiniCharts(results) {
       if (r.stop_loss)  cs.createPriceLine({ price: Number(r.stop_loss),  color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop'  });
       if (r.target)     cs.createPriceLine({ price: Number(r.target),     color: '#3fb950', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Target'});
 
-      new ResizeObserver(() => {
-        const w = div.parentElement.clientWidth || window.innerWidth / 3 - 20;
-        if (_posCharts[r.ticker]) _posCharts[r.ticker].applyOptions({ width: w });
-      }).observe(div.parentElement);
+      chart.timeScale().fitContent();
+
+      const observer = new ResizeObserver(() => {
+        const target = _posCharts[r.ticker];
+        if (!target) return;
+        const w = _getPosChartWidth(div);
+        target.applyOptions({ width: w });
+        target.timeScale().fitContent();
+      });
+      observer.observe(div);
+      if (div.parentElement) observer.observe(div.parentElement);
+      _posChartObservers[r.ticker] = observer;
     } catch(e) {
       console.error(`loadPositionMiniCharts(${r.ticker}) error:`, e);
     }
