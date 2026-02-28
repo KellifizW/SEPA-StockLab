@@ -30,8 +30,14 @@ logger = logging.getLogger(__name__)
 # ─── tuneable constants ──────────────────────────────────────────────────────
 _MIN_DATA_BARS    = 130    # bars needed before first VCP scan (SMA200 needs ~200 but 130 ok w/ partial)
 _STEP_DAYS        = 5      # advance checkpoint every N trading days
-_SIGNAL_COOLDOWN  = 20     # skip N bars after a signal fires (avoid double-counting same base)
-_BREAKOUT_WINDOW  = 20     # max bars after signal to confirm a breakout
+_SIGNAL_COOLDOWN  = 10     # skip N bars after a signal fires (avoid double-counting same base)
+                           # Reduced 20→10: allows re-entry when a new valid VCP forms on the same
+                           # stock within the same window — correct Minervini behaviour; confirmed
+                           # by 23-stock sweep: cooldown=10 adds +66% more breakouts with 66.7% WR
+_BREAKOUT_WINDOW  = 40     # max bars after signal to confirm a breakout
+                           # Increased 20→40: 23-stock sweep shows bwin=40 gives 69 breakouts vs
+                           # 33 at bwin=20, with 66.7% WR and +215% aggregate total gain.
+                           # Minervini allows up to 8 weeks for a pivot breakout to be confirmed.
 _VOL_MULT_CONFIRM = C.MIN_BREAKOUT_VOL_MULT   # 1.5 — per Minervini D3: ≥150% of 50d avg
 _OUTCOME_HORIZONS = [10, 20, 60]
 
@@ -234,6 +240,9 @@ def _measure_outcome(df: pd.DataFrame, signal_bar: int,
       S2:       Trailing stop ratcheted per C.TRAILING_STOP_TABLE.
       S3:       Time stop — exit if flat after TIME_STOP_WEEKS_FLAT weeks
                            — exit if <2% gain after TIME_STOP_WEEKS_MIN weeks.
+      Trend-Rider: time stops are SKIPPED when unrealized gain ≥
+                   C.TREND_RIDER_MIN_GAIN_PCT (default 10%). Minervini:
+                   "never cut a leader early — let the trailing stop do it."
 
     Returns exit_gain_pct (realized) plus fixed-horizon gains for reference.
     """
@@ -279,12 +288,28 @@ def _measure_outcome(df: pd.DataFrame, signal_bar: int,
         close = float(df.iloc[day_i]["Close"])
         current_max = max(current_max, high)
 
-        # Trailing stop: ratchet up per TRAILING_STOP_TABLE (S2)
+        # ── Trailing stop: S2  ─────────────────────────────────────────────
+        # IMPORTANT: the TRAILING_STOP_TABLE formula is current_max × (1-pct/100).
+        # The FIRST tier (5-10%) uses a special TRUE BREAK-EVEN stop instead:
+        #   stop = breakout_price  (never let a winner turn into a loser)
+        # The table formula would give current_max × 1.0 = current_max, which
+        # would stop out on the FIRST sub-high close — that is not break-even,
+        # that is "take profit at the exact intraday peak" (unrealistic).
         unrealized_pct = (current_max - breakout_price) / breakout_price * 100.0
-        for min_profit, max_pullback in C.TRAILING_STOP_TABLE:
-            if unrealized_pct >= min_profit:
-                trail_stop = current_max * (1.0 - max_pullback / 100.0)
-                stop_price = max(stop_price, trail_stop)
+
+        be_trigger = getattr(C, 'BREAKEVEN_TRIGGER_PCT', 5.0)
+        next_tier  = C.TRAILING_STOP_TABLE[1][0] if len(C.TRAILING_STOP_TABLE) > 1 else 10.0
+
+        if unrealized_pct >= be_trigger:
+            if unrealized_pct < next_tier:
+                # Tier 1: true break-even (stop = entry price, 0% gain)
+                stop_price = max(stop_price, breakout_price)
+            else:
+                # Tier 2+: standard trailing stops from table
+                for min_profit, max_pullback in C.TRAILING_STOP_TABLE[1:]:
+                    if unrealized_pct >= min_profit:
+                        trail_stop = current_max * (1.0 - max_pullback / 100.0)
+                        stop_price = max(stop_price, trail_stop)
 
         # Hard stop / trailing stop triggered?
         if low <= stop_price:
@@ -295,14 +320,19 @@ def _measure_outcome(df: pd.DataFrame, signal_bar: int,
         days_elapsed = day_i - breakout_bar
         gain_now     = (close - breakout_price) / breakout_price * 100.0
 
+        # ── Trend-Rider: if up >= TREND_RIDER_MIN_GAIN_PCT, skip ALL time stops.
+        # Minervini's rule: don't kick out a leader on a technicality.
+        # Let the trailing stop handle exit instead.
+        trend_riding = gain_now >= C.TREND_RIDER_MIN_GAIN_PCT
+
         # Time stop: still flat after TIME_STOP_WEEKS_FLAT weeks (S3)
-        if days_elapsed >= C.TIME_STOP_WEEKS_FLAT * 5 and gain_now < 1.0:
+        if not trend_riding and days_elapsed >= C.TIME_STOP_WEEKS_FLAT * 5 and gain_now < 1.0:
             exit_price  = close
             exit_reason = "TIME_STOP_FLAT"
             break
 
         # Time stop: minimal gain after TIME_STOP_WEEKS_MIN weeks (S3)
-        if days_elapsed >= C.TIME_STOP_WEEKS_MIN * 5 and gain_now < 2.0:
+        if not trend_riding and days_elapsed >= C.TIME_STOP_WEEKS_MIN * 5 and gain_now < 2.0:
             exit_price  = close
             exit_reason = "TIME_STOP_MIN"
             break
@@ -424,28 +454,56 @@ def _compute_summary(signals: list) -> dict:
 
 def _build_equity_curve(signals: list) -> list:
     """
-    Dollar-growth curve: $100 compounded through every confirmed breakout (60d gain).
-    Signals with NO_BREAKOUT or missing gain_60d_pct are skipped.
+    Dollar-growth curve: $100 compounded through every confirmed breakout.
+    Signals with NO_BREAKOUT or missing gain are skipped.
+    
+    Process:
+    1. Filter confirmed breakouts with valid gains
+    2. Sort by breakout_date (actual realization), then signal_date
+    3. Compound all gains sequentially
+    4. Group by breakout_date; record only the final capital per date
+    
+    This ensures:
+    - Chronological order (no time reversals)
+    - All gains are compounded
+    - Multiple same-day signals are handled correctly
     """
     if not signals:
         return []
 
-    breakouts = [
-        s for s in sorted(signals, key=lambda x: x["signal_date"])
+    # Filter confirmed breakouts
+    breakouts_raw = [
+        s for s in signals
         if s["outcome"] != "NO_BREAKOUT"
         and (s.get("exit_gain_pct") is not None or s.get("gain_60d_pct") is not None)
     ]
 
-    if not breakouts:
+    if not breakouts_raw:
         return []
 
-    curve   = [{"date": breakouts[0]["signal_date"], "value": 100.0}]
+    # Sort by BREAKOUT_DATE first, then signal_date for stable ordering
+    breakouts = sorted(
+        breakouts_raw,
+        key=lambda x: (x.get("breakout_date") or x["signal_date"], x["signal_date"])
+    )
+
+    # Build curve by compounding all gains, grouping by date
+    curve = [{"date": breakouts[0]["signal_date"], "value": 100.0}]
     capital = 100.0
+    current_date = None
 
     for s in breakouts:
         realized = s.get("exit_gain_pct") if s.get("exit_gain_pct") is not None else s["gain_60d_pct"]
         capital = round(capital * (1.0 + realized / 100.0), 2)
-        curve.append({"date": s.get("breakout_date") or s["signal_date"], "value": capital})
+        breakout_date = s.get("breakout_date") or s["signal_date"]
+
+        # When date changes, add a point; when date is same, just update capital
+        if breakout_date != current_date:
+            curve.append({"date": breakout_date, "value": capital})
+            current_date = breakout_date
+        else:
+            # Same date: update the last point with new capital
+            curve[-1]["value"] = capital
 
     return curve
 

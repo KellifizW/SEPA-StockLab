@@ -1511,7 +1511,7 @@ def api_backtest_run():
     body          = request.get_json(force=True) or {}
     ticker        = str(body.get("ticker", "")).strip().upper()
     min_vcp_score = int(body.get("min_vcp_score", 35))
-    outcome_days  = int(body.get("outcome_days", 60))
+    outcome_days  = int(body.get("outcome_days", 120))
 
     if not ticker:
         return jsonify({"ok": False, "error": "ticker required"}), 400

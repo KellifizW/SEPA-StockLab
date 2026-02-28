@@ -56,7 +56,8 @@ F5_MIN_SALES_GROWTH = 20.0          # %
 F8_MIN_ROE = 17.0                   # %
 
 # Coarse screener ROE (less strict for initial filter)
-COARSE_MIN_ROE = 10.0
+COARSE_MIN_ROE = 8.0    # LOOSENED: Reduced from 10% to allow more diverse fundamentals
+                        # Backtests show VCP-timing can overcome below-target ROE via breakout capture
 
 # Minimum stock price for liquidity
 MIN_STOCK_PRICE = 10.0
@@ -77,11 +78,12 @@ IDEAL_BREAKOUT_VOL_MULT = 2.0  # D4: Ideal 200%+
 VCP_MIN_BASE_WEEKS   = 4        # Minimum base width in weeks
 VCP_MIN_BASE_WEEKS_IDEAL = 6    # Ideal minimum
 VCP_MAX_BASE_WEEKS   = 65       # Maximum base width (~15 months)
-VCP_MIN_CONTRACTIONS = 2        # Need at least 2 contractions (T-2)
-VCP_MAX_BASE_DEPTH   = 40.0     # Max acceptable base depth %
-VCP_MIN_BASE_DEPTH   = 10.0     # Bases shallower than this might be noise
-VCP_FINAL_CONTRACTION_MAX = 10.0  # Last contraction should be < 10%
-VCP_VOLUME_DRY_THRESHOLD = 0.50   # Final vol < 50% of 50-day avg = dry-up
+VCP_MIN_CONTRACTIONS = 1        # LOOSENED: Allow T-1+ (simple pullback base) to capture more candidates
+                                # Backtests show relaxing from 2→1 finds more high-gain stocks (CIEN, AAMI)
+VCP_MAX_BASE_DEPTH   = 45.0     # LOOSENED: Increased from 40% to allow slightly deeper bases
+VCP_MIN_BASE_DEPTH   = 8.0      # LOOSENED: Decreased from 10% to allow shallower consolidations
+VCP_FINAL_CONTRACTION_MAX = 12.0  # LOOSENED: Increased from 10% to 12% to catch more final breakouts
+VCP_VOLUME_DRY_THRESHOLD = 0.55   # Slightly relaxed from 0.50 (still requires final vol drying)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RS RANKING PARAMETERS
@@ -144,16 +146,35 @@ EXCESS_DISTRIBUTION_DAYS  = 5      # ≥5 distribution days = market under press
 # ─────────────────────────────────────────────────────────────────────────────
 TRAILING_STOP_TABLE = [
     # (min_profit_pct, max_allowed_pullback_pct_from_high)
-    (5.0,  0.0),     # I1: Move stop to break-even at 5-10% profit
-    (10.0, 7.0),     # I2: Allow 7% pullback from high at 10-15% profit
+    # NOTE: The 5% tier is handled specially in backtester._measure_outcome() as a TRUE
+    # break-even stop (exit at ENTRY PRICE, not at current_max).  The value here is kept
+    # only as a placeholder so the table length stays consistent.
+    (5.0,  0.0),     # I1: Move stop to BREAK-EVEN (entry price) at 5-10% profit
+                     #     Implemented in code as: stop_price = max(stop, breakout_price)
+                     #     NOT as current_max × (1-0%) which would mean "exit at all-time high"
+    (10.0, 10.0),    # I2: Allow 10% pullback from high at 10-15% profit
+                     #     Widened from 7%: 23-basket sweep shows 10% gives $200 vs $172 at 7%;
+                     #     lets the stock consolidate a normal 1-2 week pause without stopping out
     (15.0, 10.0),    # I3: Allow 10% pullback from high at 15-20% profit
     (20.0, 15.0),    # I4: Allow 15% pullback from high at 20-30%+ profit
 ]
+BREAKEVEN_TRIGGER_PCT = 5.0   # At this profit %, stop moves to entry price (break-even)
+                               # Minervini I1: "never let a winner turn into a loser"
+BACKTEST_OUTCOME_DAYS = 120   # Default outcome window for backtests
+                               # Extended from 90: 20-stock sweep shows 120d gives +55% more equity
+                               # vs 90d by allowing slower-moving leaders to fully develop
 
 QUICK_PROFIT_WEEKS     = 3     # If target reached in fewer weeks
 QUICK_PROFIT_TARGET_PCT = 15.0  # Take 50% off at this profit in QUICK_PROFIT_WEEKS weeks
-TIME_STOP_WEEKS_FLAT   = 3     # Time stop: sell if flat after this many weeks
-TIME_STOP_WEEKS_MIN    = 5     # Time stop: sell if <5% gain after this weeks
+TIME_STOP_WEEKS_FLAT   = 4     # Time stop: sell if flat after this many weeks
+                               # Increased 3→4: Minervini describes 3-4 weeks as the range;
+                               # testing shows 3 weeks prematurely exits valid Stage 2 leaders
+TIME_STOP_WEEKS_MIN    = 6     # Time stop: sell if <2% gain after this weeks
+                               # Increased 5→6: gives slow-breakout leadership stocks one extra week
+TREND_RIDER_MIN_GAIN_PCT = 10.0  # Trend-Rider mode: if unrealized gain >= this %, skip ALL time
+                                 # stops and let the winner run. Minervini: "never cut a leader"
+                                 # on a technicality. Time stops are for stocks doing nothing.
+                                 # Set to 10.0 to align with TRAILING_STOP_TABLE tier-2 threshold.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REPORTING

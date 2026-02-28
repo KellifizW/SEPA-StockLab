@@ -65,9 +65,9 @@
         <div class="col-sm-3">
           <label class="form-label text-muted small mb-1">
             量度週期 Outcome Days&nbsp;
-            <strong id="odDisplay" class="text-info">60</strong>
+            <strong id="odDisplay" class="text-info">120</strong>
           </label>
-          <input id="btOutcomeDays" type="range" class="form-range" min="20" max="120" step="10" value="60"
+          <input id="btOutcomeDays" type="range" class="form-range" min="20" max="120" step="10" value="120"
                  oninput="document.getElementById('odDisplay').textContent=this.value">
           <div class="d-flex justify-content-between" style="font-size:.68rem;color:#6e7681">
             <span>20d</span><span>60d</span><span>120d</span>
@@ -167,7 +167,7 @@
         <span class="fw-semibold small">
           <i class="bi bi-currency-dollar text-success me-1"></i>
           資金增長曲線 Equity Curve
-          <span class="text-muted fw-normal ms-1">(每次突破的 60d 回報複利計算，起始 $100)</span>
+          <span class="text-muted fw-normal ms-1">(每次突破的實現盈虧複利計算，止損/時間止停後，起始 $100)</span>
         </span>
       </div>
       <div class="card-body p-0">
@@ -347,9 +347,9 @@ function renderBacktestResults(data) {
     { icon: "bi-search",          label: "偵測信號",          value: s.total_signals ?? 0,     sub: `${s.no_breakouts ?? 0} 無突破`,     col: "text-info"    },
     { icon: "bi-lightning-charge",label: "突破確認 Breakouts", value: s.breakouts ?? 0,          sub: `共 ${s.total_signals ?? 0} 信號`,   col: "text-warning" },
     { icon: "bi-trophy",          label: "勝率 Win Rate",      value: s.win_rate_pct != null ? s.win_rate_pct + "%" : "N/A",
-                                                                sub: "WIN/SMALL_WIN @60d", col: (s.win_rate_pct || 0) >= 50 ? "text-success" : "text-danger" },
-    { icon: "bi-graph-up",        label: "平均盈利 @60d",      value: s.avg_gain_60d != null ? (s.avg_gain_60d >= 0 ? "+" : "") + s.avg_gain_60d + "%" : "N/A",
-                                                                sub: "from breakout price", col: (s.avg_gain_60d || 0) >= 0 ? "text-success" : "text-danger" },
+                                                                sub: "WIN/SMALL_WIN 已實現", col: (s.win_rate_pct || 0) >= 50 ? "text-success" : "text-danger" },
+    { icon: "bi-graph-up",        label: "平均實現盈利",        value: s.avg_gain_60d != null ? (s.avg_gain_60d >= 0 ? "+" : "") + s.avg_gain_60d + "%" : "N/A",
+                                                                sub: "止損/時間止停後已實現", col: (s.avg_gain_60d || 0) >= 0 ? "text-success" : "text-danger" },
     { icon: "bi-star",            label: "最大升幅 Best",       value: s.best_gain_pct != null ? "+" + s.best_gain_pct + "%" : "N/A",
                                                                 sub: "intraday max",        col: "text-success" },
     { icon: "bi-layers",          label: "等級分佈 Grades",     value: gradeStr || "N/A",
@@ -536,6 +536,7 @@ function buildEquityChart(curveData) {
 
   if (_btEquityChart) { _btEquityChart.remove(); _btEquityChart = null; }
   if (_btEquityResizeObserver) { try { _btEquityResizeObserver.disconnect(); } catch(e) {} _btEquityResizeObserver = null; }
+  div.innerHTML = '';   // always clear stale message or old canvas before re-rendering
 
   if (!curveData || curveData.length < 2) {
     div.innerHTML = `<div class="text-muted text-center small py-5">
