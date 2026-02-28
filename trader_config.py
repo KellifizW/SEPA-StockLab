@@ -117,7 +117,9 @@ STAGE2_BATCH_SLEEP    = 1.5        # Sleep between Stage 2 download batches (sec
 STAGE3_MAX_WORKERS    = 6          # Parallel threads for Stage 3 SEPA scoring
 FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamentals
 FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
-FINVIZ_TIMEOUT_SEC    = 45.0       # Max wait for finvizfinance pagination (sec, patient). Allow partial results.
+FINVIZ_TIMEOUT_SEC    = 600.0      # 10 minutes max (finvizfinance needs ~2 sec per page × 464 pages = 15 min for full scan)
+FINVIZ_MAX_PAGES      = 60         # If using pagination limiting (currently unused; finvizfinance loads all pages)
+FINVIZ_MIN_TARGET_ROWS = 800       # Minimum rows before accepting results
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ACCOUNT DRAWDOWN ALERT LEVELS  (Minervini H1-H5)

@@ -173,7 +173,7 @@ def get_universe(filters_dict: dict, view: str = "Overview",
         import threading
         import traceback
         
-        max_time_sec = getattr(C, "FINVIZ_TIMEOUT_SEC", 45.0)  # 45s default for finviz pagination
+        max_time_sec = getattr(C, "FINVIZ_TIMEOUT_SEC", 600.0)  # 600s (10 min) default for full finviz pagination
         result_container = {
             "df": None, 
             "error": None, 
@@ -185,11 +185,26 @@ def get_universe(filters_dict: dict, view: str = "Overview",
         def _fetch_screener():
             try:
                 import time as time_module
+                import socket
+                
                 start = time_module.time()
                 logger.info("[Finviz] Starting screener_view() call for view=%s…", view)
-                logger.debug("[Finviz] screener_view may take 0-45 seconds, patience required…")
+                logger.info("[Finviz] This may take 2-10 minutes (finvizfinance loads ~464 pages at 2 sec/page)… patience required!")
                 
-                df = screener.screener_view()
+                # ── CRITICAL: Set socket-level timeout to force HTTP requests to fail ──
+                # Without this, finvizfinance can hang infinitely on socket-level connect/receive
+                original_timeout = socket.getdefaulttimeout()
+                try:
+                    # Set socket timeout to 50 seconds (slightly less than thread timeout)
+                    # This forces any hung HTTP requests to raise a socket.timeout exception
+                    socket.setdefaulttimeout(50.0)
+                    logger.debug("[Finviz] Socket timeout set to 50 seconds")
+                    
+                    df = screener.screener_view()
+                finally:
+                    # Restore original socket timeout
+                    socket.setdefaulttimeout(original_timeout)
+                    logger.debug("[Finviz] Socket timeout restored")
                 
                 elapsed = time_module.time() - start
                 logger.info("[Finviz] screener_view() returned in %.1f seconds", elapsed)
@@ -219,12 +234,21 @@ def get_universe(filters_dict: dict, view: str = "Overview",
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
+                # Always restore socket timeout on exception
+                try:
+                    socket.setdefaulttimeout(original_timeout)
+                except:
+                    pass
+                
                 # Detailed error diagnostics
                 logger.error("[Finviz] EXCEPTION after %.1f seconds: [%s] %s",
                            elapsed, error_type, error_msg[:500])
                 
                 # Check for common errors
-                if "429" in error_msg or "Too Many Requests" in error_msg:
+                if error_type == "timeout" or "socket.timeout" in str(type(e)):
+                    logger.error("[Finviz] ⚠⚠⚠ SOCKET TIMEOUT! HTTP request hung at socket level")
+                    logger.error("[Finviz]     (Possible cause: finviz.com slow/blocked, network issue)")
+                elif "429" in error_msg or "Too Many Requests" in error_msg:
                     logger.error("[Finviz] ⚠⚠⚠ RATE LIMITED (HTTP 429)! finvizfinance.com rejected request")
                     logger.error("[Finviz]     (Possible cause: too many requests in short time)")
                 elif "403" in error_msg or "Forbidden" in error_msg:
@@ -244,8 +268,8 @@ def get_universe(filters_dict: dict, view: str = "Overview",
                 result_container["status"] = "error"
         
         # Run in daemon thread with generous timeout
-        logger.info("[Finviz] Spawning thread for screener_view (timeout=%.0fs + 20s patience buffer)",
-                   max_time_sec)
+        logger.info("[Finviz] Spawning thread for screener_view (timeout=%.0fs — about %.1f minutes patience buffer)",
+                   max_time_sec, max_time_sec / 60.0)
         thread = threading.Thread(target=_fetch_screener, daemon=True, name=f"Finviz-{view}")
         thread.daemon = True
         thread.start()

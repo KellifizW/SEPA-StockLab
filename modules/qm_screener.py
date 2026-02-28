@@ -113,7 +113,7 @@ def run_qm_stage1(min_price: float = 5.0,
     
     # ── Attempt 1: Performance view (richest data) ──
     try:
-        _progress("Stage 1", 3, "嘗試 Performance 數據層 (包含漲跌幅)… Fetching Performance view (may take 0-45 seconds)…")
+        _progress("Stage 1", 3, "嘗試 Performance 數據層 (包含漲跌幅)… Fetching Performance view (may take 2-10 minutes)…")
         logger.info("[QM Stage1] → Attempt 1: Performance view with full fundamentals")
         
         start_time = time_module.time()
