@@ -354,7 +354,7 @@ def vcp_page():
 
 @app.route("/guide")
 def guide_page():
-    guide_path = ROOT / "GUIDE.md"
+    guide_path = ROOT / "docs" / "GUIDE.md"
     content = guide_path.read_text(encoding="utf-8") if guide_path.exists() else "Guide not found."
     return render_template("guide.html", content=content)
 
