@@ -181,9 +181,6 @@
       </button>
       <input class="form-control form-control-sm" style="width:170px" id="filterInput"
              placeholder="Search ticker / sector…" oninput="filterTable()">
-      <button class="btn btn-sm btn-outline-secondary" onclick="exportCSV()">
-        <i class="bi bi-download me-1"></i>CSV
-      </button>
     </div>
   </div>
 
@@ -329,6 +326,12 @@
   </div>
 
   <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center py-2">
+      <span class="small text-muted">掃描結果表格 Scan Results Table</span>
+      <button class="btn btn-sm btn-outline-secondary" onclick="exportCSV()" title="下載目前顯示結果為 CSV">
+        <i class="bi bi-download me-1"></i>下載 CSV
+      </button>
+    </div>
     <div class="table-responsive">
       <table class="table table-hover mb-0 align-middle" id="scanTable">
         <thead>
@@ -370,12 +373,14 @@ let _scanData      = [];   // passed quality gate
 let _allScoredData = [];   // ALL scored stocks (including below threshold)
 let _currentJid    = null;
 let _showAll       = false; // toggle state
+const SCAN_CACHE_VERSION = 'scan-cache-v2';
 
 /* --- Page load: restore last scan (delayed to avoid blocking) -------- */
 window.addEventListener('DOMContentLoaded', () => {
+  const cachedVer  = sessionStorage.getItem('sepa_scan_cache_ver');
   const cached     = sessionStorage.getItem('sepa_scan_data');
   const cachedMeta = sessionStorage.getItem('sepa_scan_meta');
-  if (cached) {
+  if (cached && cachedVer === SCAN_CACHE_VERSION) {
     try {
       const parsed = JSON.parse(cached);
       // Support both old format (array) and new format ({rows, all_scored})
@@ -532,6 +537,7 @@ function onScanDone(rows, logFile) {
       populateSectorFilter(_allScoredData.length ? _allScoredData : _scanData);
       // Update session cache with all_scored
       try {
+        sessionStorage.setItem('sepa_scan_cache_ver', SCAN_CACHE_VERSION);
         sessionStorage.setItem('sepa_scan_data', JSON.stringify({
           rows: _scanData, all_scored: _allScoredData
         }));
@@ -547,6 +553,7 @@ function onScanDone(rows, logFile) {
   }, 50);
   
   try {
+    sessionStorage.setItem('sepa_scan_cache_ver', SCAN_CACHE_VERSION);
     sessionStorage.setItem('sepa_scan_data', JSON.stringify({
       rows: _scanData, all_scored: _allScoredData
     }));
@@ -662,13 +669,27 @@ function renderScanTable(data) {
       const rs     = r.rs_rank            != null ? Number(r.rs_rank).toFixed(0)             : '—';
       const vcpGrd = r.vcp_grade && r.vcp_grade !== 'D'
                      ? `<span class="tag-vcp">VCP ${r.vcp_grade}</span>` : '—';
-      const pivot  = r.pivot != null ? `$${Number(r.pivot).toFixed(2)}` : '—';
+      const pivotVal = r.pivot != null ? r.pivot : (r.pivot_price != null ? r.pivot_price : null);
+      const pivot  = pivotVal != null ? `$${Number(pivotVal).toFixed(2)}` : '—';
       const price  = r.close != null ? `$${Number(r.close).toFixed(2)}`
                    : r.price != null ? `$${Number(r.price).toFixed(2)}` : '—';
       const ttOk   = (r.tt_score != null && r.tt_score >= 8) || r.tt_pass === true;
-      const ttHtml = ttOk
+      const ttIcon = ttOk
         ? '<i class="bi bi-check-circle-fill text-success"></i>'
         : '<i class="bi bi-x-circle text-danger"></i>';
+      const ttScoreLabel = r.tt_score != null ? `${Number(r.tt_score).toFixed(0)}/10` : (ttOk ? 'Pass' : 'Fail');
+      const tt9 = r.tt_checks && typeof r.tt_checks === 'object' ? r.tt_checks.TT9 : null;
+      const tt10 = r.tt_checks && typeof r.tt_checks === 'object' ? r.tt_checks.TT10 : null;
+      const ttExtras = [
+        tt9 === true ? 'RS✓' : (tt9 === false ? 'RS✗' : ''),
+        tt10 === true ? 'Sec✓' : (tt10 === false ? 'Sec✗' : '')
+      ].filter(Boolean).join(' ');
+      const ttHtml = `
+        <div class="d-flex flex-column align-items-center" title="Trend Template score and optional TT9/TT10 details">
+          <span>${ttIcon} <span class="small ms-1">${ttScoreLabel}</span></span>
+          ${ttExtras ? `<small class="text-muted" style="font-size:.65rem">${ttExtras}</small>` : ''}
+        </div>
+      `;
 
       const row = document.createElement('tr');
       if (!passed) row.classList.add('row-below-threshold');
@@ -852,7 +873,8 @@ function filterTable() {
     if (price < priceMin || price > priceMax) return false;
 
     // Pivot
-    const pivot = r.pivot != null ? parseFloat(r.pivot) : 0;
+    const pivotVal = r.pivot != null ? r.pivot : (r.pivot_price != null ? r.pivot_price : null);
+    const pivot = pivotVal != null ? parseFloat(pivotVal) : 0;
     if (pivot < pivotMin || pivot > pivotMax) return false;
 
     // VCP Grade

@@ -750,7 +750,12 @@ def run_scan(custom_filters: dict = None,
             scored["vcp_grade"]     = vcp.get("grade", "D")
             scored["vcp_score_raw"] = vcp.get("vcp_score", 0)
             scored["t_count"]       = vcp.get("t_count", 0)
-            scored["pivot"]         = vcp.get("pivot", None)
+            pivot_price = vcp.get("pivot_price", None)
+            if pivot_price is None and df is not None and not df.empty and "High" in df.columns:
+                recent_high = pd.to_numeric(df["High"], errors="coerce").dropna().tail(20)
+                if not recent_high.empty:
+                    pivot_price = float(recent_high.max())
+            scored["pivot"]         = float(round(pivot_price, 2)) if pivot_price is not None else None
             # Strip heavy nested dicts -- prevents _clean() recursion issues
             scored.pop("vcp", None)
             scored.pop("df", None)
