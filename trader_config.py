@@ -201,3 +201,109 @@ SEPA_WEIGHTS = {
     "entry":       0.20,
     "risk_reward": 0.10,
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QULLAMAGGIE BREAKOUT SWING TRADING — Configuration
+# Reference: QullamaggieStockguide.md  (Kristjan Kullamägi methodology)
+# Core philosophy: Buy the strongest stocks at the moment of breakout; pure
+# technical — no fundamental filtering; ADR has independent veto power.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Scanner momentum filters (Section 4) ─────────────────────────────────────
+# Three separate scans merged: which % gains over lookback windows
+QM_MOMENTUM_1M_MIN_PCT   = 25.0    # ≥25% gain in ~22 trading days (1 month)
+QM_MOMENTUM_3M_MIN_PCT   = 50.0    # ≥50% gain in ~67 trading days (3 months)
+QM_MOMENTUM_6M_MIN_PCT   = 150.0   # ≥150% gain in ~126 trading days (6 months)
+
+# ── ADR (Average Daily Range) filters (Section 5.3) ──────────────────────────
+# ADR = avg of (High/Low - 1) over past 14 days
+QM_ADR_PERIOD            = 14      # 14-day ADR calculation window
+QM_MIN_ADR_PCT           = 5.0     # Hard veto: <5% → skip regardless of other scores
+QM_IDEAL_ADR_PCT         = 8.0     # Ideal: ≥8% for maximum explosive potential
+QM_SMALL_ACCT_ADR_PCT    = 8.0     # For accounts < $100K, prefer ≥8%
+# ADR star-rating adjustments (Section 6.1 Dimension B)
+QM_ADR_BONUS_HIGH        = 15.0    # ADR ≥15% → +1 star bonus
+QM_ADR_BONUS_IDEAL       = 8.0     # ADR ≥8% → no adjustment (baseline)
+QM_ADR_PENALTY_MARGINAL  = 5.0     # ADR 5-8% → -0.5 star penalty
+
+# ── Dollar volume / liquidity filter ─────────────────────────────────────────
+QM_MIN_DOLLAR_VOLUME     = 5_000_000   # Min daily $Volume (Close × Vol); $5M preferred
+QM_MIN_DOLLAR_VOLUME_STRICT = 10_000_000  # Strict mode / live trading: $10M
+
+# ── Consolidation / base pattern filters (Section 5.4) ───────────────────────
+QM_NEAR_HIGH_PCT         = 15.0    # Price within 15% of 6-day (rolling) high
+QM_NEAR_LOW_PCT          = 15.0    # Price within 15% of 6-day (rolling) low
+QM_CONSOL_WINDOW_DAYS    = 6       # Rolling window for high/low nearness check
+QM_CONSOL_MIN_DAYS       = 3       # Minimum consolidation length (3-15 ideal)
+QM_CONSOL_MAX_DAYS       = 60      # Maximum: too long → momentum may dissipate
+QM_HIGHER_LOWS_MIN       = 2       # Minimum number of higher lows to confirm pattern
+QM_TIGHTNESS_THRESHOLD   = 0.5     # ATR-normalised range tightness (lower = tighter)
+
+# ── Moving average alignment (Section 5.5) ───────────────────────────────────
+QM_MA_PERIODS            = [10, 20, 50]    # Key SMAs: 10 (fast), 20 (golden), 50 (slow)
+QM_SURFING_MA            = 20              # Primary "surfing" MA for most setups
+QM_SURFING_TOLERANCE_PCT = 3.0             # Price can be within 3% of MA to count as surfing
+QM_MA_RISING_MIN_DAYS    = 5               # MA must have been rising for at least N days
+
+# ── Volumetric breakout entry (Section 5.6) ──────────────────────────────────
+QM_MIN_BREAKOUT_VOL_MULT = 1.5    # Breakout volume must be ≥ 1.5× 20-day avg vol
+QM_IDEAL_BREAKOUT_VOL_MULT = 2.5  # Ideal: ≥2.5× average
+QM_MAX_ENTRY_ABOVE_BO_PCT = 3.0   # Don't chase: max 3% above breakout pivot
+
+# ── Episodic Pivot (EP) setup parameters (Section 12) ────────────────────────
+QM_EP_MIN_GAP_UP_PCT     = 5.0    # Minimum overnight gap-up for EP classification
+QM_EP_MAX_GAP_UP_PCT     = 15.0   # Gaps >15% → usually skip (standard rule)
+QM_EP_MIN_VOL_MULT       = 3.0    # EP must have ≥3× average volume
+
+# ── Stop-loss rules — 3-phase system (Section 8) ─────────────────────────────
+# Phase 1: Day 1 → stop = day's Low-of-Day (LOD)
+QM_DAY1_STOP_BELOW_LOD_PCT = 0.5  # Buffer below LOD: stop = LOD × (1 - 0.5%)
+# Phase 2: Day 2 → move to break-even (entry price)
+QM_DAY2_BREAKEVEN_TRIGGER  = 2    # After N trading days, move to break-even
+# Phase 3: Day 3+ → trail on 10 SMA (soft stop: close below 10SMA = warning)
+QM_TRAIL_MA_PERIOD         = 10   # Trailing stop MA period (10 SMA)
+QM_TRAIL_MA_CLOSE_BELOW_DAYS = 1  # Consecutive closes below trail MA to exit
+
+# ── Profit-taking rules (Section 9) ──────────────────────────────────────────
+QM_PROFIT_TAKE_DAY_MIN     = 3    # Start profit taking from Day 3 onwards
+QM_PROFIT_TAKE_DAY_MAX     = 5    # Core rule: Day 3-5 take first profits
+QM_PROFIT_TAKE_1ST_PCT     = 25.0 # First profit target: sell 25% of position
+QM_PROFIT_TAKE_1ST_GAIN    = 10.0 # Or when unrealised gain reaches 10%+ — take 25-50%
+QM_PROFIT_TAKE_5STAR_1ST   = 25.0 # 5+ star: only sell 25% first (give more room)
+QM_PROFIT_TAKE_5STAR_GAIN  = 20.0 # 5+ star: let it run to 20%+ before selling more
+
+# ── Position sizing by star rating (Section 6.2) ─────────────────────────────
+# Values are (min_pct, max_pct) of total account equity
+QM_POSITION_SIZING = {
+    "5+": (20.0, 25.0),   # 5+ star → 20-25% of account
+    "5":  (15.0, 25.0),   # 5 star  → 15-25% of account
+    "4":  (10.0, 15.0),   # 4-4.5 star → 10-15%
+    "3":  ( 5.0, 10.0),   # 3-3.5 star → ≤10%
+    "0":  ( 0.0,  0.0),   # <3 star → 0% (do not trade)
+}
+QM_MIN_STAR_TO_TRADE       = 3.0  # Do not trade if star rating < 3.0
+
+# ── Star rating dimension weights (Section 6.1) ───────────────────────────────
+# Used for automated scoring; base score = 3 stars, each dimension adjusts it
+QM_STAR_BASE               = 3.0  # Starting baseline score (stars)
+QM_STAR_DIM_A_WEIGHT       = 0.25 # A: Momentum quality weight in final score
+QM_STAR_DIM_B_WEIGHT       = 0.20 # B: ADR level (also has veto power)
+QM_STAR_DIM_C_WEIGHT       = 0.25 # C: Consolidation quality
+QM_STAR_DIM_D_WEIGHT       = 0.15 # D: MA alignment
+QM_STAR_DIM_E_WEIGHT       = 0.10 # E: Stock type (institutional vs retail)
+QM_STAR_DIM_F_WEIGHT       = 0.05 # F: Market timing / macro environment
+
+# ── QM scan output controls ───────────────────────────────────────────────────
+QM_SCAN_TOP_N              = 50   # Max candidates to return from QM scan
+QM_SCAN_MIN_STAR           = 3.0  # Minimum star rating to appear in results
+QM_SCAN_MIN_DOLLAR_VOL     = 5_000_000  # Min $Volume gate for scan output
+
+# ── QM scan performance tuning ────────────────────────────────────────────────
+QM_STAGE2_MAX_WORKERS      = 12   # Parallel threads for Stage 2 historical enrichment
+QM_STAGE2_BATCH_SIZE       = 40   # Tickers per yf.download() batch
+QM_STAGE2_BATCH_SLEEP      = 1.5  # Seconds between batch downloads
+
+# ── Market environment gate for QM ───────────────────────────────────────────
+# QM breakout trades are blocked in confirmed bear markets
+QM_BLOCK_IN_BEAR           = True # Block all QM breakout entries when market = DOWNTREND
+QM_REDUCE_IN_CORRECTION    = True # Reduce position sizing in MARKET_IN_CORRECTION

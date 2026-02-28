@@ -1,0 +1,514 @@
+{% extends "base.html" %}
+{% block title %}QM 個股分析{% endblock %}
+
+{% block extra_head %}
+<style>
+  .star-val { font-size: 2rem; font-weight: 700; }
+  .star-5p  { color: #3fb950; }
+  .star-4   { color: #e3b341; }
+  .star-3   { color: #8b949e; }
+  .star-low { color: #f85149; }
+  .dim-bar-wrap { background: #21262d; border-radius: 4px; height: 8px; overflow: hidden; }
+  .dim-bar { height: 8px; border-radius: 4px; transition: width .6s ease; }
+  .veto-alert { background: #3a0a0a; border: 1px solid #f85149; border-radius: 8px; padding: 12px 16px; }
+  .trade-plan-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .stop-phase { border-left: 3px solid; padding: 10px 14px; margin-bottom: 8px; border-radius: 0 6px 6px 0; }
+  .stop-phase-1 { border-color: #f85149; background: #1a0a0a; }
+  .stop-phase-2 { border-color: #e3b341; background: #1a1000; }
+  .stop-phase-3 { border-color: #3fb950; background: #0a1a0a; }
+  .profit-step { border-left: 3px solid #58a6ff; background: #0a0e1a;
+                 padding: 10px 14px; margin-bottom: 8px; border-radius: 0 6px 6px 0; }
+  .setup-badge-lg { font-size: 15px; padding: 6px 14px; border-radius: 6px; }
+  .badge-htf  { background: #1b6e2e; color: #3fb950; }
+  .badge-ep   { background: #4a3800; color: #e3b341; }
+  .badge-lad  { background: #1a3060; color: #58a6ff; }
+  .badge-surf { background: #003040; color: #00d4ff; }
+  .badge-rpl  { background: #3a0060; color: #d49fff; }
+  .badge-flag { background: #301020; color: #ff8fa3; }
+  .badge-uk   { background: #1c2128; color: #8b949e; }
+  .radar-wrap { position: relative; height: 280px; }
+  #chart-container { height: 380px; background: #0d1117; border-radius: 6px; overflow: hidden; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Search bar -->
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="d-flex gap-2 align-items-center">
+      <h4 class="mb-0">
+        <i class="bi bi-lightning-charge-fill me-2" style="color:#e3b341"></i>
+        QM 個股分析 <span style="color:#8b949e;font-size:13px">Single Stock Deep Analysis</span>
+      </h4>
+      <div class="input-group ms-auto" style="max-width:300px">
+        <input type="text" class="form-control form-control-sm"
+               id="tickerInput" placeholder="輸入股票代號…  e.g. NVDA"
+               value="{{ prefill }}" style="background:#0d1117;color:#c9d1d9;border-color:#30363d"
+               onkeydown="if(event.key==='Enter') analyzeStock()">
+        <button class="btn btn-accent btn-sm" onclick="analyzeStock()">
+          <i class="bi bi-search me-1"></i>分析 Analyze
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Loading spinner -->
+<div id="loadingArea" class="text-center py-5 d-none">
+  <div class="spinner-border text-info spinner-glow mb-3" role="status"></div>
+  <div class="text-secondary">正在分析中，請稍候… Analyzing…</div>
+</div>
+
+<!-- Empty state -->
+<div id="emptyState" class="{{ 'd-none' if prefill else '' }}">
+  <div class="text-center py-5 text-secondary">
+    <i class="bi bi-search" style="font-size:3rem;opacity:0.3"></i>
+    <div class="mt-3">輸入股票代號並點擊「分析」</div>
+    <div style="font-size:12px;margin-top:4px">Enter a ticker symbol and click Analyze</div>
+  </div>
+</div>
+
+<!-- Results area (hidden until analyzed) -->
+<div id="resultArea" class="d-none">
+
+  <!-- Row 1: Star + Setup type + Radar -->
+  <div class="row g-3 mb-3">
+    <!-- Star rating card -->
+    <div class="col-12 col-md-3">
+      <div class="card h-100 text-center">
+        <div class="card-header"><i class="bi bi-star-fill me-1 text-warning"></i>QM 星級評分</div>
+        <div class="card-body d-flex flex-column align-items-center justify-content-center py-4">
+          <div class="star-val" id="starDisplay">—</div>
+          <div id="starStars" style="font-size:1.4rem;margin:8px 0"></div>
+          <div id="vetoDisplay" class="d-none veto-alert w-100 text-center mt-2">
+            <i class="bi bi-x-octagon-fill me-1"></i>VETO 否決
+            <div id="vetoReason" style="font-size:11px;margin-top:4px"></div>
+          </div>
+          <div id="recDisplay" class="mt-3 badge fs-6" style="background:#1c2128;color:#8b949e"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6-dim radar -->
+    <div class="col-12 col-md-5">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-diagram-3 me-1"></i>六維評分 6-Dimension Scores
+          <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
+             title="A=動力質素 Momentum · B=ADR波動幅 · C=整固質量 Consolidation · D=均線關係 MA · E=股票類型 Type · F=市場環境 Market"></i>
+        </div>
+        <div class="card-body d-flex align-items-center justify-content-center">
+          <div class="radar-wrap w-100">
+            <canvas id="radarChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Setup type + quick metrics -->
+    <div class="col-12 col-md-4">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-tag me-1"></i>形態類型 Setup Type</div>
+        <div class="card-body">
+          <div class="text-center mb-3">
+            <span id="setupBadge" class="badge setup-badge-lg">—</span>
+          </div>
+          <p id="setupDescription" class="text-secondary" style="font-size:13px"></p>
+          <hr style="border-color:#30363d">
+          <div class="row g-2 text-center" id="quickMetrics">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 2: Dimension breakdown -->
+  <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-bar-chart-steps me-1"></i>維度評分明細 Dimension Breakdown</div>
+        <div class="card-body">
+          <div class="row g-3" id="dimBreakdown"><!-- Populated by JS --></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 3: Trade Plan + Price Chart -->
+  <div class="row g-3 mb-3">
+    <!-- Trade plan -->
+    <div class="col-12 col-lg-5">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-journal-check me-1"></i>交易方案 Trade Plan
+          <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
+             title="Qullamaggie 3階段停損系統：第1天用日低位作停損，第2天移至成本，第3天起改用10日均線追蹤停損。"></i>
+        </div>
+        <div class="card-body" id="tradePlan">
+          <div class="text-secondary text-center py-3">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TradingView mini chart -->
+    <div class="col-12 col-lg-7">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-graph-up me-1"></i>價格走勢 Price Chart</div>
+        <div class="card-body p-2">
+          <div id="chart-container"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 4: Position sizing guide -->
+  <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <i class="bi bi-calculator me-1"></i>倉位計算 Position Sizing
+          <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
+             title="根據 Qullamaggie 的星級評分所對應的建議倉位比例。此計算基於 trader_config.py 中設定的帳戶規模。"></i>
+        </div>
+        <div class="card-body" id="positionSizing">
+          <div class="text-secondary text-center py-3">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /resultArea -->
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let _radarChart = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el =>
+    new bootstrap.Tooltip(el, { placement: 'top' })
+  );
+  const prefill = document.getElementById('tickerInput').value.trim();
+  if (prefill) analyzeStock();
+});
+
+async function analyzeStock() {
+  const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
+  if (!ticker) { toast('請輸入股票代號 Please enter a ticker', false); return; }
+
+  document.getElementById('emptyState').classList.add('d-none');
+  document.getElementById('resultArea').classList.add('d-none');
+  document.getElementById('loadingArea').classList.remove('d-none');
+
+  try {
+    const resp = await fetch('/api/qm/analyze', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ticker })
+    });
+    const data = await resp.json();
+    document.getElementById('loadingArea').classList.add('d-none');
+    if (!data.ok) {
+      toast('分析失敗：' + (data.error || ''), false);
+      document.getElementById('emptyState').classList.remove('d-none');
+      return;
+    }
+    renderAnalysis(data.ticker, data.result);
+    document.getElementById('resultArea').classList.remove('d-none');
+    // Update URL without reload
+    history.replaceState({}, '', `/qm/analyze?ticker=${ticker}`);
+  } catch(e) {
+    document.getElementById('loadingArea').classList.add('d-none');
+    document.getElementById('emptyState').classList.remove('d-none');
+    toast('網絡錯誤：' + e, false);
+  }
+}
+
+function renderAnalysis(ticker, r) {
+  if (!r) return;
+
+  const rating = r.rating || {};
+  const star = parseFloat(rating.stars ?? r.stars ?? 0);
+  const veto = rating.veto || r.veto;
+  const dims = r.dimensions || {};
+  const setup = r.setup || {};
+  const plan  = r.trade_plan || {};
+  const sizing = r.sizing || {};
+
+  // ── Star display ──────────────────────────────────────────────────────────
+  const starClass = star >= 5 ? 'star-5p' : star >= 4 ? 'star-4' : star >= 3 ? 'star-3' : 'star-low';
+  document.getElementById('starDisplay').className = 'star-val ' + starClass;
+  document.getElementById('starDisplay').textContent = star.toFixed(1) + '★';
+  document.getElementById('starStars').innerHTML = renderStarRow(star);
+
+  const recEl = document.getElementById('recDisplay');
+  const rec = r.recommendation || '';
+  recEl.textContent = rec;
+  recEl.style.background = rec.startsWith('BUY') ? '#0d3016' : rec.startsWith('WATCH') ? '#2e2500' : '#1c2128';
+  recEl.style.color = rec.startsWith('BUY') ? '#3fb950' : rec.startsWith('WATCH') ? '#e3b341' : '#8b949e';
+
+  if (veto) {
+    document.getElementById('vetoDisplay').classList.remove('d-none');
+    document.getElementById('vetoReason').textContent = vetoReason(veto);
+  } else {
+    document.getElementById('vetoDisplay').classList.add('d-none');
+  }
+
+  // ── Radar chart ──────────────────────────────────────────────────────────
+  const dimLabels = ['A · 動力', 'B · ADR', 'C · 整固', 'D · 均線', 'E · 類型', 'F · 市場'];
+  const dimKeys   = ['a_momentum', 'b_adr', 'c_consolidation', 'd_ma', 'e_type', 'f_market'];
+  const dimVals   = dimKeys.map(k => {
+    const d = dims[k] || {};
+    // Normalize score to 0-100 range for display
+    const raw = d.adj ?? d.score ?? 0;
+    return Math.max(0, Math.min(100, (raw + 2) * 20));  // -2~+2 → 0~80
+  });
+
+  if (_radarChart) { _radarChart.destroy(); _radarChart = null; }
+  const ctx = document.getElementById('radarChart').getContext('2d');
+  _radarChart = new Chart(ctx, {
+    type: 'radar',
+    data: {
+      labels: dimLabels,
+      datasets: [{
+        label: ticker,
+        data: dimVals,
+        backgroundColor: 'rgba(0,212,255,0.1)',
+        borderColor: '#00d4ff',
+        pointBackgroundColor: '#00d4ff',
+        pointRadius: 4,
+      }]
+    },
+    options: {
+      scales: {
+        r: {
+          min: 0, max: 100,
+          ticks: { display: false },
+          grid: { color: '#30363d' },
+          pointLabels: { color: '#c9d1d9', font: { size: 11 } },
+          angleLines: { color: '#30363d' },
+        }
+      },
+      plugins: { legend: { display: false } },
+      animation: { duration: 600 },
+    }
+  });
+
+  // ── Setup type ────────────────────────────────────────────────────────────
+  const setupCode = (setup.type_code || setup.primary_type || '').toUpperCase();
+  const setupBadgeMap = {
+    'HTF':    ['badge-htf',  'HTF 高緊旗形'],
+    'EP':     ['badge-ep',   'EP 事件驅動'],
+    'LADDER': ['badge-lad',  'LADDER 階梯'],
+    'SURF_50':['badge-surf', 'SURF_50 衝浪'],
+    'RPL':    ['badge-rpl',  'RPL 拋物修正'],
+    'FLAG':   ['badge-flag', 'FLAG 旗形整固'],
+  };
+  const [bClass, bLabel] = setupBadgeMap[setupCode] || ['badge-uk', setupCode || '未分類'];
+  const badgeEl = document.getElementById('setupBadge');
+  badgeEl.className = 'badge setup-badge-lg ' + bClass;
+  badgeEl.textContent = bLabel;
+  document.getElementById('setupDescription').textContent =
+    setup.description_zh || setup.description || '—';
+
+  // Quick metrics grid
+  const closePrice = r.close_price ?? r.price;
+  const qMets = [
+    { label: 'ADR%', value: r.adr != null ? parseFloat(r.adr).toFixed(1) + '%' : '—',
+      color: r.adr < 5 ? '#f85149' : '#3fb950' },
+    { label: '1M%', value: r.mom_1m != null ? fmtMomText(r.mom_1m) : '—', color: null },
+    { label: '3M%', value: r.mom_3m != null ? fmtMomText(r.mom_3m) : '—', color: null },
+    { label: '6M%', value: r.mom_6m != null ? fmtMomText(r.mom_6m) : '—', color: null },
+  ];
+  document.getElementById('quickMetrics').innerHTML = qMets.map(m =>
+    `<div class="col-6">
+      <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;text-align:center">
+        <div style="font-size:15px;font-weight:700;color:${m.color||'#c9d1d9'}">${m.value}</div>
+        <div style="font-size:10px;color:#8b949e;text-transform:uppercase">${m.label}</div>
+      </div>
+     </div>`
+  ).join('');
+
+  // ── Dimension breakdown bars ──────────────────────────────────────────────
+  const dimInfo = {
+    a_momentum:      { label: 'A · 動力質素 Momentum Quality',     icon: 'bi-rocket', max: 2, min: -2 },
+    b_adr:           { label: 'B · ADR 平均日波動幅',               icon: 'bi-arrows-expand', max: 2, min: -2 },
+    c_consolidation: { label: 'C · 整固質量 Consolidation Quality', icon: 'bi-geo', max: 2, min: -2 },
+    d_ma:            { label: 'D · 均線關係 MA Alignment',          icon: 'bi-bar-chart', max: 2, min: -2 },
+    e_type:          { label: 'E · 股票類型 Stock Type',            icon: 'bi-building', max: 2, min: -2 },
+    f_market:        { label: 'F · 市場環境 Market Timing',         icon: 'bi-globe', max: 2, min: -2 },
+  };
+
+  document.getElementById('dimBreakdown').innerHTML = Object.entries(dimInfo).map(([key, info]) => {
+    const d = dims[key] || {};
+    const adj = parseFloat(d.adj ?? d.score ?? 0);
+    const pct = Math.max(0, Math.min(100, (adj + 2) / 4 * 100));
+    const barColor = adj >= 1 ? '#3fb950' : adj >= 0 ? '#58a6ff' : adj >= -1 ? '#e3b341' : '#f85149';
+    const adjText = adj >= 0 ? '+' + adj.toFixed(1) : adj.toFixed(1);
+    const notes = d.notes || [];
+
+    return `<div class="col-12 col-md-6">
+      <div style="padding:12px;background:#0d1117;border:1px solid #21262d;border-radius:6px">
+        <div class="d-flex justify-content-between mb-1">
+          <span style="font-size:12px"><i class="bi ${info.icon} me-1"></i>${info.label}</span>
+          <span style="font-size:13px;font-weight:700;color:${barColor}">${adjText}</span>
+        </div>
+        <div class="dim-bar-wrap mb-2">
+          <div class="dim-bar" style="width:${pct}%;background:${barColor}"></div>
+        </div>
+        ${notes.length ? `<ul class="mb-0 ps-3" style="font-size:11px;color:#8b949e">${notes.map(n=>`<li>${n}</li>`).join('')}</ul>` : ''}
+        ${d.is_veto ? '<div class="mt-1" style="color:#f85149;font-size:11px"><i class="bi bi-x-octagon me-1"></i>否決觸發 VETO triggered</div>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── Trade plan ────────────────────────────────────────────────────────────
+  const planHtml = plan && Object.keys(plan).length ? `
+    <div class="stop-phase stop-phase-1">
+      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+        <i class="bi bi-1-circle me-1"></i>第1天停損 Day 1 Stop
+        <span class="ms-2" data-bs-toggle="tooltip" title="買入當天：停損設於日低位下方0.5%。若股價收盤跌破日低，立即止損出場，不問回頭。"></span>
+      </div>
+      <div class="fw-bold" style="color:#f85149;font-size:15px">${plan.day1_stop != null ? '$'+parseFloat(plan.day1_stop).toFixed(2) : '—'}</div>
+      <div style="font-size:11px;color:#8b949e">日低位下方 Below LOD</div>
+    </div>
+    <div class="stop-phase stop-phase-2">
+      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+        <i class="bi bi-2-circle me-1"></i>第2天停損 Day 2 Stop
+        <span class="ms-2" data-bs-toggle="tooltip" title="買入後第2天起：停損移至買入成本位，保護不虧損。若股票已有利潤可以保留倉位。"></span>
+      </div>
+      <div class="fw-bold" style="color:#e3b341;font-size:15px">${plan.day2_stop != null ? '$'+parseFloat(plan.day2_stop).toFixed(2) : '—'}</div>
+      <div style="font-size:11px;color:#8b949e">成本位 Break-even</div>
+    </div>
+    <div class="stop-phase stop-phase-3">
+      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+        <i class="bi bi-3-circle me-1"></i>第3天起 Day 3+ Trail
+        <span class="ms-2" data-bs-toggle="tooltip" title="第3天起使用10日均線作追蹤停損。收盤低於10MA則出場（軟止損）；盤中大幅跌破10MA則立即止損（硬止損）。"></span>
+      </div>
+      <div class="fw-bold" style="color:#3fb950;font-size:15px">${plan.day3_stop != null ? '$'+parseFloat(plan.day3_stop).toFixed(2) : '10MA 追蹤'}</div>
+      <div style="font-size:11px;color:#8b949e">10MA 追蹤 Trail 10SMA</div>
+    </div>
+    <hr style="border-color:#30363d">
+    <div class="profit-step">
+      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+        <i class="bi bi-cash-stack me-1"></i>利潤目標 Profit Targets
+        <span class="ms-2" data-bs-toggle="tooltip"
+              title="Step 1：股票漲幅達20-25%時賣出1/3倉位鎖定利潤。Step 2：漲幅達40-50%時再賣出1/3。餘下1/3持有直至10MA跌穿。"></span>
+      </div>
+      <div style="font-size:12px">
+        <span class="text-info">Step 1 (25%)：</span>
+        <span class="fw-bold">${plan.profit_step1 != null ? '$'+parseFloat(plan.profit_step1).toFixed(2) : '—'}</span>
+        → 賣出 1/3
+      </div>
+      <div style="font-size:12px;margin-top:4px">
+        <span class="text-info">Step 2 (50%)：</span>
+        <span class="fw-bold">${plan.profit_step2 != null ? '$'+parseFloat(plan.profit_step2).toFixed(2) : '—'}</span>
+        → 再賣 1/3
+      </div>
+    </div>
+  ` : '<div class="text-secondary text-center py-3">暫無交易方案資料</div>';
+  document.getElementById('tradePlan').innerHTML = planHtml;
+
+  // ── Position sizing ───────────────────────────────────────────────────────
+  const sizeRec = sizing.recommendation || '';
+  const minPct  = sizing.min_pct ?? null;
+  const maxPct  = sizing.max_pct ?? null;
+  const shares  = sizing.shares ?? null;
+  const riskDlr = sizing.risk_dollar ?? null;
+  document.getElementById('positionSizing').innerHTML = `
+    <div class="row g-3">
+      <div class="col-6 col-md-3 text-center">
+        <div class="metric-card">
+          <div class="metric-val" style="font-size:22px">${minPct != null ? minPct + '–' + maxPct + '%' : '—'}</div>
+          <div class="metric-lbl">建議倉位 Suggested Alloc.</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 text-center">
+        <div class="metric-card">
+          <div class="metric-val" style="font-size:22px">${shares != null ? shares : '—'}</div>
+          <div class="metric-lbl">建議股數 Suggested Shares</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 text-center">
+        <div class="metric-card">
+          <div class="metric-val" style="font-size:22px;color:#f85149">${riskDlr != null ? '$'+parseFloat(riskDlr).toFixed(0) : '—'}</div>
+          <div class="metric-lbl">風險金額 Risk ($)</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 text-center">
+        <div class="metric-card">
+          <div class="metric-val" style="font-size:18px;color:${sizeRec==='PASS'?'#f85149':'#3fb950'}">${sizeRec || '—'}</div>
+          <div class="metric-lbl">建議動作 Action</div>
+        </div>
+      </div>
+    </div>
+    <div class="mt-2" style="font-size:12px;color:#8b949e">
+      <i class="bi bi-info-circle me-1"></i>
+      Qullamaggie 倉位指引：5★+=15–25%，5★=15–25%，4★=10–15%，3★=5–10%，&lt;3★=不入場。
+      風險金額 = 每股損失 × 股數，不應超過賬戶規模的 1–1.5%。
+    </div>
+  `;
+
+  // ── Lightweight chart ─────────────────────────────────────────────────────
+  loadChart(ticker);
+}
+
+async function loadChart(ticker) {
+  const container = document.getElementById('chart-container');
+  container.innerHTML = '';
+  try {
+    const chart = LightweightCharts.createChart(container, {
+      width: container.clientWidth,
+      height: 370,
+      layout: { background: { color: '#0d1117' }, textColor: '#c9d1d9' },
+      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: true },
+    });
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: '#3fb950', downColor: '#f85149',
+      borderUpColor: '#3fb950', borderDownColor: '#f85149',
+      wickUpColor: '#3fb950', wickDownColor: '#f85149',
+    });
+
+    const resp = await fetch(`/api/analyze/chart-data?ticker=${ticker}&days=180`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.ok && data.candles) {
+        candleSeries.setData(data.candles);
+        chart.timeScale().fitContent();
+      }
+    }
+  } catch(e) {
+    container.innerHTML = `<div class="text-secondary text-center py-4">
+      <i class="bi bi-graph-up" style="font-size:2rem;opacity:0.3"></i>
+      <div class="mt-2" style="font-size:12px">圖表載入失敗 Chart unavailable</div></div>`;
+  }
+}
+
+function renderStarRow(val) {
+  const full = Math.floor(val);
+  const half = (val - full) >= 0.5;
+  const cls  = val >= 5 ? 'star-5p' : val >= 4 ? 'star-4' : val >= 3 ? 'star-3' : 'star-low';
+  let s = `<span class="${cls}">`;
+  for (let i = 0; i < full; i++) s += '★';
+  if (half) s += '½';
+  s += '</span>';
+  return s;
+}
+
+function fmtMomText(v) {
+  const n = parseFloat(v);
+  return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
+}
+
+function vetoReason(code) {
+  const map = {
+    'ADR':  'ADR < 5%：平均日波動幅不足，Qullamaggie 會直接跳過此股票',
+    'BEAR': '熊市環境：市場狀況不適合做多，暫停入場',
+  };
+  return map[code] || code;
+}
+</script>
+{% endblock %}

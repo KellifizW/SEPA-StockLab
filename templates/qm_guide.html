@@ -1,0 +1,634 @@
+{% extends "base.html" %}
+{% block title %}QM 教學 Qullamaggie Guide{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.5.1/github-markdown-dark.min.css">
+<style>
+  .markdown-body { background: transparent; color: #c9d1d9; }
+  .markdown-body h1 { color: var(--accent); border-bottom-color: #30363d; }
+  .markdown-body h2 { color: var(--accent2); border-bottom-color: #21262d; }
+  .markdown-body h3 { color: #e3b341; }
+  .markdown-body h4 { color: #d2a8ff; }
+  .markdown-body code { background: #1c2128; color: #ff9580; }
+  .markdown-body pre { background: #161b22; border: 1px solid #30363d; }
+  .markdown-body table th { background: #1c2128; color: var(--accent); }
+  .markdown-body table td, .markdown-body table th { border-color: #30363d; }
+  .markdown-body blockquote { border-left-color: #e3b341; background: #1a1200; padding: 8px 16px; }
+  .markdown-body blockquote p { color: #e3b341; }
+  .markdown-body hr { border-color: #30363d; }
+  .markdown-body a { color: var(--accent2); }
+  .toc-panel a { color: #8b949e; text-decoration: none; display: block; padding: 2px 4px; border-radius: 4px; font-size: 13px; }
+  .toc-panel a:hover { color: var(--accent); background: #1c2128; }
+  .toc-panel .toc-h2 { padding-left: 10px; }
+  .toc-panel .toc-h3 { padding-left: 20px; font-size: 11px; }
+  .toc-panel .toc-h4 { padding-left: 30px; font-size: 10px; color: #6e7681; }
+  .author-badge { background: #1a1200; border: 1px solid #e3b341; padding: 10px 16px;
+                  border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Page header -->
+<div class="d-flex align-items-center mb-4 gap-3">
+  <h4 class="mb-0">
+    <i class="bi bi-lightning-charge-fill me-2" style="color:#e3b341"></i>
+    Qullamaggie 突破波段交易教學
+    <span style="color:#8b949e;font-size:13px">Breakout Swing Trading Guide</span>
+  </h4>
+  <a href="/qm/scan" class="btn btn-outline-warning btn-sm ms-auto">
+    <i class="bi bi-lightning-charge me-1"></i>前往掃描 Go to QM Scan
+  </a>
+  <a href="/qm/analyze" class="btn btn-outline-info btn-sm">
+    <i class="bi bi-search me-1"></i>個股分析 Analyze Stock
+  </a>
+</div>
+
+<!-- Guide section toggle (Strategy vs. Software) -->
+<div class="mb-3">
+  <ul class="nav nav-tabs" role="tablist" style="border-bottom-color:#30363d">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="strategy-tab" data-bs-toggle="tab" data-bs-target="#strategy-panel"
+              type="button" role="tab" aria-controls="strategy-panel" aria-selected="true"
+              style="color:#c9d1d9;border-bottom:2px solid transparent;padding:12px 20px">
+        <i class="bi bi-book-half me-2"></i>策略教學 Strategy (培訓)
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="software-tab" data-bs-toggle="tab" data-bs-target="#software-panel"
+              type="button" role="tab" aria-controls="software-panel" aria-selected="false"
+              style="color:#c9d1d9;border-bottom:2px solid transparent;padding:12px 20px">
+        <i class="bi bi-terminal me-2"></i>程式使用 Software Usage (操作指南)
+      </button>
+    </li>
+  </ul>
+</div>
+
+<div class="tab-content">
+
+<!-- Strategy Education Tab -->
+<div id="strategy-panel" class="tab-pane fade show active" role="tabpanel" aria-labelledby="strategy-tab">
+
+<div class="row g-4">
+  <!-- TOC sidebar -->
+  <div class="col-12 col-lg-3">
+    <div class="card sidebar-sticky">
+      <div class="card-header">
+        <i class="bi bi-list-ul me-2"></i>目錄 Contents
+      </div>
+      <!-- Author info -->
+      <div class="px-3 pt-3">
+        <div class="author-badge">
+          <div class="fw-bold" style="color:#e3b341">
+            <i class="bi bi-person-fill me-1"></i>Kristjan Kullamägi
+          </div>
+          <div class="text-secondary mt-1" style="font-size:12px">
+            @Qullamaggie · 突破波段交易大師<br>
+            以 $15,000 本金增長至超過 $2 億
+          </div>
+        </div>
+      </div>
+      <div class="card-body p-2 toc-panel" id="toc"
+           style="max-height:calc(100vh - 300px);overflow-y:auto"></div>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div class="col-12 col-lg-9">
+    <!-- Quick reference cards -->
+    <div class="row g-2 mb-4">
+      <div class="col-6 col-md-3">
+        <div style="background:#1a1200;border:1px solid #e3b341;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:#e3b341">≥150%</div>
+          <div style="font-size:11px;color:#8b949e;margin-top:2px">6個月漲幅 6M Return</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div style="background:#001a10;border:1px solid #3fb950;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:#3fb950">&gt;5%</div>
+          <div style="font-size:11px;color:#8b949e;margin-top:2px">ADR 日波動幅</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div style="background:#001020;border:1px solid #58a6ff;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:#58a6ff">&gt;$5M</div>
+          <div style="font-size:11px;color:#8b949e;margin-top:2px">日均成交額 Avg $Vol</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div style="background:#1a0a00;border:1px solid #d49fff;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:#d49fff">3段式</div>
+          <div style="font-size:11px;color:#8b949e;margin-top:2px">停損系統 Stop System</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Setup types quick reference -->
+    <div class="card mb-4">
+      <div class="card-header"><i class="bi bi-tag me-1"></i>7種突破形態 7 Setup Types</div>
+      <div class="card-body">
+        <div class="row g-2">
+          <div class="col-12 col-md-6">
+            <div style="background:#1b6e2e20;border:1px solid #3fb950;border-radius:6px;padding:10px">
+              <span class="badge" style="background:#1b6e2e;color:#3fb950">HTF</span>
+              <strong class="ms-2" style="color:#3fb950">高緊旗形 High Tight Flag</strong>
+              <div style="font-size:12px;color:#8b949e;margin-top:4px">
+                8週漲幅≥100%後出現緊縮整固。Qullamaggie 最青睞的形態，成功率最高。
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div style="background:#4a380020;border:1px solid #e3b341;border-radius:6px;padding:10px">
+              <span class="badge" style="background:#4a3800;color:#e3b341">EP</span>
+              <strong class="ms-2" style="color:#e3b341">事件驅動突破 Episodic Pivot</strong>
+              <div style="font-size:12px;color:#8b949e;margin-top:4px">
+                重大事件（業績爆炸、FDA批准等）導致的急速突破，通常伴隨巨量。
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div style="background:#1a306020;border:1px solid #58a6ff;border-radius:6px;padding:10px">
+              <span class="badge" style="background:#1a3060;color:#58a6ff">LADDER</span>
+              <strong class="ms-2" style="color:#58a6ff">階梯突破 Staircase Breakout</strong>
+              <div style="font-size:12px;color:#8b949e;margin-top:4px">
+                多個較高低點（Higher Lows）構成的階梯式上升，每次突破前高。
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div style="background:#00304020;border:1px solid #00d4ff;border-radius:6px;padding:10px">
+              <span class="badge" style="background:#003040;color:#00d4ff">SURF_50</span>
+              <strong class="ms-2" style="color:#00d4ff">50MA衝浪 50SMA Surf</strong>
+              <div style="font-size:12px;color:#8b949e;margin-top:4px">
+                股價在50日均線上方緊貼运行，沿均線「衝浪」上升。
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div style="background:#3a006020;border:1px solid #d49fff;border-radius:6px;padding:10px">
+              <span class="badge" style="background:#3a0060;color:#d49fff">RPL</span>
+              <strong class="ms-2" style="color:#d49fff">拋物修正 Reverse Parabolic</strong>
+              <div style="font-size:12px;color:#8b949e;margin-top:4px">
+                拋物線上升後的健康回調，而非頂部崩潰，隨後繼續上升。
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div style="background:#30102020;border:1px solid #ff8fa3;border-radius:6px;padding:10px">
+              <span class="badge" style="background:#301020;color:#ff8fa3">FLAG</span>
+              <strong class="ms-2" style="color:#ff8fa3">旗形整固 Flag/Base</strong>
+              <div style="font-size:12px;color:#8b949e;margin-top:4px">
+                強勢上升後的正常旗形整固，等待突破前高時入場。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Full guide content -->
+    <article class="markdown-body" id="guide-content" style="max-width:900px">
+      <div id="mdRendered"></div>
+    </article>
+  </div>
+</div>
+
+</div>
+<!-- End Strategy Panel -->
+
+<!-- Software Usage Tab -->
+<div id="software-panel" class="tab-pane fade" role="tabpanel" aria-labelledby="software-tab">
+<div class="row g-4">
+  <!-- TOC sidebar -->
+  <div class="col-12 col-lg-3">
+    <div class="card sidebar-sticky">
+      <div class="card-header">
+        <i class="bi bi-list-ul me-2"></i>使用指南 Usage Guide
+      </div>
+      <div class="card-body p-2 toc-panel" id="software-toc"
+           style="max-height:calc(100vh - 300px);overflow-y:auto">
+        <a href="#sw-workflow" class="toc-h2">每日工作流程</a>
+        <a href="#sw-scan-page" class="toc-h2">掃描頁面指南</a>
+        <a href="#sw-analyze-page" class="toc-h2">分析頁面指南</a>
+        <a href="#sw-entering-trade" class="toc-h2">進場決策</a>
+        <a href="#sw-red-flags" class="toc-h2">風險警示</a>
+        <a href="#sw-qa" class="toc-h2">常見問題</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div class="col-12 col-lg-9">
+    <article class="markdown-body" style="max-width:900px">
+      
+      <h1 id="sw-workflow">📅 每日工作流程 Daily Workflow</h1>
+      <p>使用此程式進行 Qullamaggie 波段交易的標準流程：</p>
+
+      <h2>步驟 1：開啟掃描頁面 Step 1: Open QM Scan</h2>
+      <ul>
+        <li>內導航列點擊 <strong>「QM 掃描」</strong> 或訪問 <code>/qm/scan</code></li>
+        <li>這是您每日工作的起點，用來發現新的交易機會</li>
+        <li>建議：<strong>每天市場收盤後運行一次</strong>，以獲得最新的股票設置</li>
+      </ul>
+
+      <h2>步驟 2：設置掃描參數 Step 2: Configure Scan Parameters</h2>
+      <ul>
+        <li><strong>最低星級 (Min Stars)</strong>
+          <ul>
+            <li>推薦值：<strong>≥4★</strong>（星級越高，進場可能性越高）</li>
+            <li>過濾基數：系統會自動過濾 3.5 分以下的股票</li>
+            <li>激進者：可設為 3.5；保守者：設為 4.5-5★</li>
+          </ul>
+        </li>
+        <li><strong>排名限制 (Top N)</strong>
+          <ul>
+            <li>推薦值：<strong>50</strong>（顯示前 50 個星級最高的結果）</li>
+            <li>高於 50 的值會讓結果過多，難於精選</li>
+            <li>低於 30 的值可能遺漏機會，尤其在弱勢市場中</li>
+          </ul>
+        </li>
+      </ul>
+
+      <h2>步驟 3：執行掃描 Step 3: Run Scan</h2>
+      <ul>
+        <li>點擊 <strong>「運行掃描」</strong> 按鈕開始掃描全市場</li>
+        <li>觀看進度指示欄，通常需要 30-120 秒完成（取決於網絡和計算機）</li>
+        <li>等待轉盤停止和「掃描完成」提示出現</li>
+        <li>系統會自動根據 QM 方法計算每支股票的星級評分</li>
+      </ul>
+
+      <h2>步驟 4：檢查結果 Step 4: Review Results</h2>
+      <ul>
+        <li>如果顯示 <strong>「在熊市環境中沒有掃出好結果」</strong> → 等待市場環境改善，暫時不進場</li>
+        <li>結果表格按星級降序排列（5★ 最佳）</li>
+        <li>關注 <strong>綠色行</strong>（5★）及 <strong>黃色行</strong>（4★）的股票</li>
+        <li>灰色行（3★）和紅色行（<3★）通常被跳過</li>
+      </ul>
+
+      <h2>步驟 5：深度分析 Step 5: Deep Dive Analysis</h2>
+      <ul>
+        <li>在結果表中點擊任何 <strong>股票代號</strong>（如 NVDA、TSLA）</li>
+        <li>系統自動導航到 <code>/qm/analyze?ticker=XXXX</code> 進行該股詳細分析</li>
+        <li>檢查該股的：星級計分、設置類型、技術指標、交易計畫</li>
+      </ul>
+
+      <hr>
+
+      <h1 id="sw-scan-page">🔍 掃描頁面指南 QM Scan Page Guide</h1>
+
+      <h2>結果表格列說明 Result Table Columns</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>列名 Column</th>
+            <th>含義 Meaning</th>
+            <th>解讀建議 Interpretation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>股票代號 Ticker</strong></td>
+            <td>股票符號，可點擊</td>
+            <td>點擊進入該股詳細分析頁面</td>
+          </tr>
+          <tr>
+            <td><strong>★ Stars</strong></td>
+            <td>QM 方法綜合評分 (0-5)</td>
+            <td>✓ 5★ = 最優候選 ✓ 4★ = 良好候選 △ 3★ = 邊際 ✗ &lt;3★ = 通常跳過</td>
+          </tr>
+          <tr>
+            <td><strong>設置 Setup</strong></td>
+            <td>7 種突破形態之一</td>
+            <td>見上方「7 種突破形態」卡片，HTF 最青睞</td>
+          </tr>
+          <tr>
+            <td><strong>VET</strong></td>
+            <td>風險過濾徽章</td>
+            <td>❌ 若有 VET 紅徽章 = 過濾器反對，應跳過此股</td>
+          </tr>
+          <tr>
+            <td><strong>ADR %</strong></td>
+            <td>平均日波動範圍百分比</td>
+            <td>✓ &gt;5% = 足夠波動 ✗ &lt;3% = 波動太小，避免</td>
+          </tr>
+          <tr>
+            <td><strong>Momentum %</strong></td>
+            <td>6 個月動能得分</td>
+            <td>✓ &gt;50% = 強勢上升 ✓ &gt;100% = 爆炸式</td>
+          </tr>
+          <tr>
+            <td><strong>收盤 Close</strong></td>
+            <td>最後收盤價</td>
+            <td>用於計算股份大小和風險管理</td>
+          </tr>
+          <tr>
+            <td><strong>日均 Avg $Vol</strong></td>
+            <td>日均交易金額</td>
+            <td>✓ &gt;$5M = 足夠流動 ✗ &lt;$1M = 避免流動性差股票</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>顏色編碼 Color Coding</h2>
+      <ul>
+        <li><strong style="color:#3fb950">🟢 綠色背景</strong> = 5★ 最優候選，優先考慮</li>
+        <li><strong style="color:#e3b341">🟡 黃色背景</strong> = 4★ 良好候選，值得關注</li>
+        <li><strong style="color:#8b949e">⚪ 灰色背景</strong> = 3★ 邊際，除非有特殊原因否則跳過</li>
+        <li><strong style="color:#f85149">🔴 紅色背景</strong> = &lt;3★ 評分不足，不推薦進場</li>
+      </ul>
+
+      <h2>VET 徽章解析 VET Badge Explanation</h2>
+      <p>若股票顯示 <strong style="color:#f85149">❌ VET 紅徽章</strong>，表示觸發以下風險因素之一：</p>
+      <ul>
+        <li><strong>ADR &lt;5%</strong> → 波動太小，無法產生足夠利潤</li>
+        <li><strong>熊市環境</strong> → 市場環境不利，失敗機率高</li>
+        <li><strong>其他 VETO 條件</strong> → 見 Qullamaggie 嚴格的入場規則</li>
+      </ul>
+      <p>⚠️ <strong>重要：Qullamaggie 的規則是嚴格的。若有 VET，除非您有深刻理由，否則應跳過。</strong></p>
+
+      <hr>
+
+      <h1 id="sw-analyze-page">📊 分析頁面指南 QM Analyze Page Guide</h1>
+
+      <h2>星級評分解讀 Star Rating Interpretation</h2>
+      <p>當您點擊掃描結果中的股票代號時，進入詳細分析頁面。星級是綜合評分，反映該股的進場機會：</p>
+      <table>
+        <thead>
+          <tr>
+            <th>星級 Stars</th>
+            <th>進場意向 Entry Recommendation</th>
+            <th>action 行動</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong style="color:#3fb950">5★★★★★</strong></td>
+            <td>最優候選，高概率進場信號</td>
+            <td>✅ 優先考慮進場，檢查你的資本配置</td>
+          </tr>
+          <tr>
+            <td><strong style="color:#e3b341">4★★★★</strong></td>
+            <td>良好候選，中高概率進場信號</td>
+            <td>✅ 值得進場，確認沒有 VET 風險</td>
+          </tr>
+          <tr>
+            <td><strong style="color:#8b949e">3★★★</strong></td>
+            <td>邊際候選，進場前需慎重</td>
+            <td>△ 除非有特殊催化劑，否則通常等待更佳機會</td>
+          </tr>
+          <tr>
+            <td><strong style="color:#f85149">&lt;3★</strong></td>
+            <td>評分不足，不推薦進場</td>
+            <td>❌ 跳過，等待下一個掃描週期的新機會</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>6 維度雷達圖 6-Dimension Radar</h2>
+      <p>分析頁顯示股票在 6 個不同維度的得分：</p>
+      <ul>
+        <li><strong>①趨勢 Trend</strong> → 價格是否在主要均線上方，動能是否向上</li>
+        <li><strong>②設置 Setup Type</strong> → 當前出現的突破形態品質（HTF 最好）</li>
+        <li><strong>③動能 Momentum</strong> → 6 個月漲幅和 RS 相對強度排名</li>
+        <li><strong>④進場時機 Entry Timing</strong> → 現在是否是最佳進場點</li>
+        <li><strong>⑤風險/回報 Risk/Reward</strong> → 止損位與目標價的比例</li>
+        <li><strong>⑥交易量 Volume Profile</strong> → 成交量是否支持突破</li>
+      </ul>
+      <p>🎯 <strong>越接近外圍六邊形，該維度表現越佳。</strong></p>
+
+      <h2>設置類型卡片 Setup Type Card</h2>
+      <p>該卡片顯示當前股票正在形成或已經形成的突破類型：</p>
+      <ul>
+        <li><strong>HTF (高緊旗形)</strong> → Qullamaggie 最青睞，成功率 70%+</li>
+        <li><strong>EP (事件驅動)</strong> → 需要重大催化劑，快速上升但風險大</li>
+        <li><strong>LADDER (階梯)</strong> → 穩定上升，多個確認點</li>
+        <li><strong>SURF_50 (50MA衝浪)</strong> → 緊貼均線上升，低風險</li>
+        <li><strong>RPL (拋物修正)</strong> → 回調後繼續上升，進場時機好</li>
+        <li><strong>FLAG (旗形)</strong> → 經典整固後突破</li>
+      </ul>
+      <p>✅ <strong>設置品質直接影響成功率。改進該維度評分應該是進場決策的關鍵因素。</strong></p>
+
+      <h2>交易計畫 Trade Plan</h2>
+      <p>系統根據股票當前價格、ADR 和動能自動生成 3 日交易計畫：</p>
+      <table>
+        <thead>
+          <tr>
+            <th>日期 Day</th>
+            <th>含義 Meaning</th>
+            <th>解讀 Interpretation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Day 1 止損</strong></td>
+            <td>進場後第 1 日止損位（最嚴格）</td>
+            <td>✓ 緊密止損點，確保虧損有限（通常 ADR 的 80%）</td>
+          </tr>
+          <tr>
+            <td><strong>Day 2/3 止損</strong></td>
+            <td>持倉第 2-3 日的止損位</td>
+            <td>✓ 隨著上漲逐漸拉高止損，根據 Qullamaggie 3 段式止損系統</td>
+          </tr>
+          <tr>
+            <td><strong>目標價</strong></td>
+            <td>預期達到之價位（非保證）</td>
+            <td>✓ 根據動能和漲幅歷史估算的合理目標，但行情可能超預期</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <hr>
+
+      <h1 id="sw-entering-trade">🎯 進場決策 Entry Decision Framework</h1>
+
+      <h2>進場清單 Entry Checklist</h2>
+      <p>在進場前，檢查以下所有條件是否滿足：</p>
+      <div style="background:#1b6e2e20;border:2px solid #3fb950;border-radius:8px;padding:16px;margin:12px 0">
+        <div style="color:#3fb950;font-weight:700;margin-bottom:8px">✅ 必須全部綠燈 ALL GREEN</div>
+        <ul style="margin:0;padding-left:20px">
+          <li><input type="checkbox" disabled checked> 星級 ≥ 4★（或有特殊催化劑時 3.5★）</li>
+          <li><input type="checkbox" disabled checked> 無 VET 紅徽章或風險過濾標記</li>
+          <li><input type="checkbox" disabled checked> ADR ≥ 5%（足夠波動，能產生利潤）</li>
+          <li><input type="checkbox" disabled checked> 市場環境 = 牛市或穩定（非熊市）</li>
+          <li><input type="checkbox" disabled checked> RS 排名 ≥ 70 百分位數（強於大盤）</li>
+          <li><input type="checkbox" disabled checked> 最近 6 個月漲幅 ≥ 150%（動能充足）</li>
+          <li><input type="checkbox" disabled checked> 設置類型品質良好（HTF > LADDER > 其他）</li>
+          <li><input type="checkbox" disabled checked> 你有足夠的資本和心理準備承受此風險</li>
+        </ul>
+      </div>
+
+      <h2>決策樹 Decision Tree</h2>
+      <p><strong>掃描結果 ↓</strong></p>
+      <ol>
+        <li><strong>有 VET 紅徽章？</strong> → YES → ❌ 跳過，除非你對自己的判斷非常有信心</li>
+        <li><strong>星級 &lt; 4★？</strong> → YES → △ 考慮跳過，除非有特殊催化劑或設置非常清晰</li>
+        <li><strong>ADR &lt; 5%？</strong> → YES → ❌ 跳過，波動太小無法產生足夠風險/回報</li>
+        <li><strong>市場環境 = 熊市？</strong> → YES → ⚠️ 謹慎，勝率大幅下降</li>
+        <li><strong>以上全部通過？</strong> → YES → ✅ 準備進場，確認止損和頭寸大小</li>
+      </ol>
+
+      <hr>
+
+      <h1 id="sw-red-flags">⚠️ 風險警示 Red Flags &amp; When to Pass</h1>
+
+      <h2>停損系統 Minervini 3-Segment Stop System</h2>
+      <p>Qullamaggie 使用嚴格的 3 段式止損系統，確保虧損有限：</p>
+      <table>
+        <thead>
+          <tr>
+            <th>階段 Stage</th>
+            <th>時間框架</th>
+            <th>止損邏輯 Stop Logic</th>
+            <th>目的 Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>第 1 段 Day 1</strong></td>
+            <td>進場當日至第 2 日</td>
+            <td>固定於進場價下方 ADR 的 80%</td>
+            <td>快速評估突破有效性，最小化虧損</td>
+          </tr>
+          <tr>
+            <td><strong>第 2 段 Day 2-3</strong></td>
+            <td>第 2-3 日</td>
+            <td>逐漸上移至最新的搖晃低點 (Recent Swing Low)</td>
+            <td>保護利潤，隨著上漲動態調整</td>
+          </tr>
+          <tr>
+            <td><strong>第 3 段 Day 3+</strong></td>
+            <td>第 3 日后持倉</td>
+            <td>跟隨移動平均線或突破的持續基礎</td>
+            <td>讓利潤跑動，直到基本面破壞</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>VETO 觸發條件 VETO Triggers</h2>
+      <p>以下任何一個條件被觸發，該股票應該被 <strong>VETO（過濾）</strong>，不應進場：</p>
+      <div style="background:#3a006020;border:2px solid #d49fff;border-radius:8px;padding:16px;margin:12px 0">
+        <ul style="margin:0;padding-left:20px;color:#d49fff">
+          <li><strong>❌ ADR &lt; 5%</strong> → 波動太小，無法靠波動產生足夠利潤</li>
+          <li><strong>❌ 市場環境 = 熊市</strong> → 環境不利，逆勢操作勝率低</li>
+          <li><strong>❌ RS 排名 &lt; 70%</strong> → 股票相對大盤太弱，不值進場</li>
+          <li><strong>❌ 6M 漲幅 &lt; 150%</strong> → 動能不足，不是 Qullamaggie 青睞的快速上升者</li>
+          <li><strong>❌ 設置位置不佳</strong> → 不在漲幅最大處入場，代表太晚加入</li>
+        </ul>
+      </div>
+
+      <h2>市場環境阻擋 Market Environment Block</h2>
+      <p>當市場環境偵測到 <strong style="color:#f85149">熊市</strong> 時，掃描結果會顯示：</p>
+      <blockquote style="background:#3a001020;border-left:4px solid #f85149">
+        <strong style="color:#f85149">在熊市環境中沒有掃出好結果 (No good results in bear market environment)</strong>
+      </blockquote>
+      <p>⚠️ <strong>重要建議：</strong>在熊市中進場風險非常高。建議等待市場環境改善重新回到牛市後再進場。</p>
+
+      <hr>
+
+      <h1 id="sw-qa">❓ 常見問題 Frequently Asked Questions</h1>
+
+      <h2>「應該以 3.5★ 進場嗎？」Can I enter with 3.5 stars?</h2>
+      <p><strong>通常不建議。</strong>Qullamaggie 的方法對進場要求很高：</p>
+      <ul>
+        <li>✅ 如果設置類型是 <strong>HTF 且無 VET</strong> → 可考慮 3.5★</li>
+        <li>❌ 如果沒有特殊理由 → 等待 4★+ 的候選</li>
+        <li>通常 4★+ 的勝率更高，值得等待更優質的機會</li>
+      </ul>
+
+      <h2>「我可以覆蓋 VETO 嗎？」Can I override VETO?</h2>
+      <p><strong>不建議。</strong>VETO 條件代表：</p>
+      <ul>
+        <li>市場環境不利（熊市）→ 統計上失敗率高</li>
+        <li>波動太小（ADR &lt; 5%） → 無法產生足夠利潤</li>
+        <li>相對強度太弱（RS &lt; 70%） → 不跟隨大盤趨勢</li>
+      </ul>
+      <p>Qullamaggie 強調嚴守紀律。犯規越少，長期勝率越高。</p>
+
+      <h2>「應該多常掃描？」How often should I scan?</h2>
+      <p><strong>建議：每個交易日的市場收盤後運行一次。</strong></p>
+      <ul>
+        <li>✅ 每日掃描 → 抓住新的突破機會，最實時</li>
+        <li>△ 每周掃描（周五） → 可以，但可能遺漏周中的機會</li>
+        <li>❌ 不定期掃描 → 容易遺漏機會繁整個缺口</li>
+      </ul>
+
+      <h2>「為什麼某些股票消失了？」Why did a stock disappear from results?</h2>
+      <p>股票可能因以下原因從掃描結果消失：</p>
+      <ul>
+        <li><strong>突破失敗</strong> → 股票跌破設置，被篩除出去</li>
+        <li><strong>波動降低</strong> → ADR 跌破 5% 閾值</li>
+        <li><strong>市場環境變化</strong> → 市場進入熊市，篩選變嚴格</li>
+        <li><strong>RS 排名下降</strong> → 相對大盤表現轉弱</li>
+      </ul>
+      <p>這是正常的。Qullamaggie 的方法動態地篩選候選，確保只關注最好的設置。</p>
+
+      <h2>「進場後應該如何操？」What should I do after entry?</h2>
+      <ol>
+        <li><strong>Day 1：</strong>嚴格遵守 Day 1 止損，監控突破有效性</li>
+        <li><strong>Day 2-3：</strong>若上漲，逐日上移止損；若振盪，觀察確認</li>
+        <li><strong>Day 3+：</strong> 讓利潤跑動，使用移動平均線或者關鍵支撐作為動態止損</li>
+        <li><strong>何時出場：</strong>
+          <ul>
+            <li>✅ 當移動平均線被破壞時 → 基本面已改變</li>
+            <li>✅ 達到目標價時 → 通常獲利足夠，可考慮部份出場</li>
+            <li>✅ 止損被擊中 → 嚴格遵守止損，保護資金</li>
+          </ul>
+        </li>
+      </ol>
+
+      <h2>「為什麼我的利潤和目標價不一致？」Why is my profit different from target price?</h2>
+      <ul>
+        <li><strong>目標價是基於當時的技術面判斷。</strong></li>
+        <li>市場可能超預期上升（更好）或提前下跌（更差）</li>
+        <li>實際獲利取決於你的進場點、頭寸規模和出場點</li>
+        <li>重要的是保護止損並讓利潤跑動</li>
+      </ul>
+
+    </article>
+  </div>
+</div>
+<!-- End Software Panel -->
+</div>
+<!-- End tab-content -->
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script>
+const raw = {{ content | tojson }};
+document.getElementById('mdRendered').innerHTML = marked.parse(raw);
+
+// ── Auto-generate TOC ─────────────────────────────────────────────────────────
+const headings = document.querySelectorAll('#mdRendered h1, #mdRendered h2, #mdRendered h3, #mdRendered h4');
+const toc = document.getElementById('toc');
+headings.forEach((h, i) => {
+  const id = 'qmh-' + i;
+  h.id = id;
+  const level = parseInt(h.tagName[1]);
+  const a = document.createElement('a');
+  a.href = '#' + id;
+  a.textContent = h.textContent;
+  a.className = level === 1 ? '' : level === 2 ? 'toc-h2' :
+                level === 3 ? 'toc-h3' : 'toc-h4';
+  // Smooth scroll
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  toc.appendChild(a);
+});
+
+// ── Highlight active section on scroll ───────────────────────────────────────
+const tocLinks = toc.querySelectorAll('a');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      tocLinks.forEach(l => l.style.color = '');
+      const match = toc.querySelector(`a[href="#${entry.target.id}"]`);
+      if (match) match.style.color = 'var(--accent)';
+    }
+  });
+}, { rootMargin: '0px 0px -70% 0px', threshold: 0 });
+
+headings.forEach(h => observer.observe(h));
+</script>
+{% endblock %}

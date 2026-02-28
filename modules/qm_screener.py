@@ -1,0 +1,557 @@
+"""
+modules/qm_screener.py  —  Qullamaggie Breakout Swing Trading Scanner
+══════════════════════════════════════════════════════════════════════
+Implements Kristjan Kullamägi's 3-stage breakout screening funnel:
+
+  Stage 1 (Coarse)  — finvizfinance broad filter: price, volume, basic momentum
+  Stage 2 (QM Gate) — ADR veto + dollar volume + 1M/3M/6M momentum confirmation
+  Stage 3 (Quality) — Consolidation pattern, MA alignment, higher lows scoring
+
+Author note: This system is PURE TECHNICAL — no fundamental filtering.
+ADR has independent veto power; stocks with ADR < QM_MIN_ADR_PCT are always rejected.
+Market environment gate: QM breakouts blocked in confirmed bear/downtrend.
+
+All market data goes exclusively through data_pipeline.py.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, date
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import trader_config as C
+
+logger = logging.getLogger(__name__)
+
+# ── ANSI colours for terminal output ──────────────────────────────────────────
+_GREEN  = "\033[92m"
+_RED    = "\033[91m"
+_YELLOW = "\033[93m"
+_BOLD   = "\033[1m"
+_RESET  = "\033[0m"
+_STAR   = "⭐"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Progress tracking  (same pattern as screener.py, for web UI polling)
+# ─────────────────────────────────────────────────────────────────────────────
+_qm_scan_lock   = threading.Lock()
+_qm_progress    = {"stage": "idle", "pct": 0, "msg": "", "ticker": ""}
+_qm_cancel_flag: Optional[threading.Event] = None
+
+
+def _progress(stage: str, pct: int, msg: str = "", ticker: str = "") -> None:
+    """Update the shared QM scan progress dict (polled by app.py)."""
+    with _qm_scan_lock:
+        _qm_progress.update({"stage": stage, "pct": pct, "msg": msg, "ticker": ticker})
+    logger.debug("[QM Progress] %s %d%% — %s %s", stage, pct, ticker, msg)
+
+
+def get_qm_scan_progress() -> dict:
+    """Return current QM scan progress snapshot (thread-safe)."""
+    with _qm_scan_lock:
+        return dict(_qm_progress)
+
+
+def set_qm_scan_cancel(ev: threading.Event) -> None:
+    """Register a cancel event (set by app.py cancel endpoint)."""
+    global _qm_cancel_flag
+    _qm_cancel_flag = ev
+
+
+def _is_cancelled() -> bool:
+    return _qm_cancel_flag is not None and _qm_cancel_flag.is_set()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — Coarse filter via finvizfinance
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_qm_stage1(min_price: float = 5.0,
+                  min_avg_vol: int = 300_000,
+                  verbose: bool = True) -> list[str]:
+    """
+    Stage 1 — Fast coarse filter using finvizfinance.
+    Returns a list of candidate ticker strings.
+
+    Qullamaggie's universe:
+      • Listed stocks only (no OTC)
+      • Price ≥ $5 (liquidity floor)
+      • Avg volume ≥ 300K shares (for position-building)
+      • No explicit fundamental filter — this is a pure tech system
+    """
+    from modules.data_pipeline import get_universe
+
+    _progress("Stage 1", 2, "Running finvizfinance coarse filter…")
+
+    # Finviz performance filter: 1-month change > 10% as rough momentum proxy
+    filters = {
+        "Price":   "Over $5",
+        "Average Volume": "Over 300K",
+        "Country": "USA",
+    }
+
+    try:
+        df = get_universe(filters, view="Performance", verbose=verbose)
+    except Exception as exc:
+        logger.warning("[QM Stage1] finvizfinance failed (%s) — trying Overview fallback", exc)
+        try:
+            from modules.data_pipeline import get_universe as gu
+            df = gu({"Price": "Over $5", "Average Volume": "Over 300K"}, view="Overview")
+        except Exception:
+            df = pd.DataFrame()
+
+    if df.empty:
+        logger.warning("[QM Stage1] Empty result from finvizfinance — using Overview view")
+        try:
+            from modules.data_pipeline import get_universe as gu
+            df = gu({"Price": "Over $5"}, view="Overview")
+        except Exception:
+            return []
+
+    # Normalise ticker column
+    for col in ("Ticker", "ticker", "Symbol"):
+        if col in df.columns:
+            tickers = [str(t).strip().upper() for t in df[col].dropna().tolist()
+                       if str(t).strip() and str(t).strip() != "nan"]
+            break
+    else:
+        if df.index.name in ("Ticker", "Symbol"):
+            tickers = [str(t).strip().upper() for t in df.index.tolist()]
+        else:
+            tickers = []
+
+    _progress("Stage 1", 10, f"Coarse filter: {len(tickers)} candidates", "")
+    logger.info("[QM Stage1] %d raw candidates from finvizfinance", len(tickers))
+    return tickers
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — ADR veto + dollar volume + momentum confirmation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _check_qm_stage2(ticker: str, df: pd.DataFrame) -> dict | None:
+    """
+    Per-ticker Stage 2 QM gate.
+    Returns a dict of metrics if the stock passes; None if vetoed.
+
+    Rules (in order):
+      1. ADR gate — hard veto if ADR < QM_MIN_ADR_PCT (default 5%)
+      2. Dollar volume — skip if avg $Vol < QM_SCAN_MIN_DOLLAR_VOL
+      3. Momentum — must satisfy at least ONE of: 1M≥25% | 3M≥50% | 6M≥150%
+      4. 6-day range proximity — price within ±15% of rolling 6-day high/low
+    """
+    from modules.data_pipeline import (
+        get_adr, get_dollar_volume, get_momentum_returns, get_6day_range_proximity
+    )
+
+    if df.empty or len(df) < 30:
+        return None
+
+    # ── 1. ADR veto ───────────────────────────────────────────────────────
+    adr = get_adr(df)
+    min_adr = getattr(C, "QM_MIN_ADR_PCT", 5.0)
+    if adr < min_adr:
+        logger.debug("[QM S2 VETO] %s ADR=%.1f%% < %.1f%%", ticker, adr, min_adr)
+        return None
+
+    # ── 2. Dollar volume gate ─────────────────────────────────────────────
+    dv = get_dollar_volume(df)
+    min_dv = getattr(C, "QM_SCAN_MIN_DOLLAR_VOL", 5_000_000)
+    if dv < min_dv:
+        logger.debug("[QM S2 VETO] %s $Vol=%.0f < %.0f", ticker, dv, min_dv)
+        return None
+
+    # ── 3. Momentum filter (at least one window must pass) ─────────────
+    mom = get_momentum_returns(df)
+    m1, m3, m6 = mom.get("1m"), mom.get("3m"), mom.get("6m")
+    min1 = getattr(C, "QM_MOMENTUM_1M_MIN_PCT", 25.0)
+    min3 = getattr(C, "QM_MOMENTUM_3M_MIN_PCT", 50.0)
+    min6 = getattr(C, "QM_MOMENTUM_6M_MIN_PCT", 150.0)
+
+    passes_1m = m1 is not None and m1 >= min1
+    passes_3m = m3 is not None and m3 >= min3
+    passes_6m = m6 is not None and m6 >= min6
+
+    if not (passes_1m or passes_3m or passes_6m):
+        logger.debug("[QM S2 VETO] %s momentum 1M=%.1f 3M=%.1f 6M=%.1f",
+                     ticker, m1 or 0, m3 or 0, m6 or 0)
+        return None
+
+    # ── 4. 6-day range proximity (consolidation proximity check) ──────────
+    rng = get_6day_range_proximity(df)
+    near_high = rng.get("near_high", False)
+    near_low  = rng.get("near_low",  False)
+    if not (near_high or near_low):
+        logger.debug("[QM S2 VETO] %s not near 6-day high/low", ticker)
+        return None
+
+    close = float(df["Close"].iloc[-1])
+    return {
+        "ticker":           ticker,
+        "close":            round(close, 2),
+        "adr":              round(adr, 2),
+        "dollar_volume_m":  round(dv / 1_000_000, 2),
+        "mom_1m":           round(m1, 1) if m1 is not None else None,
+        "mom_3m":           round(m3, 1) if m3 is not None else None,
+        "mom_6m":           round(m6, 1) if m6 is not None else None,
+        "passes_1m":        passes_1m,
+        "passes_3m":        passes_3m,
+        "passes_6m":        passes_6m,
+        "near_high":        near_high,
+        "near_low":         near_low,
+        "pct_from_6d_high": rng.get("pct_from_high"),
+        "pct_from_6d_low":  rng.get("pct_from_low"),
+    }
+
+
+def run_qm_stage2(tickers: list[str], verbose: bool = True) -> list[dict]:
+    """
+    Stage 2 — Download OHLCV and apply QM gate to each candidate.
+    Returns list of passing ticker dicts for Stage 3.
+    """
+    from modules.data_pipeline import batch_download_and_enrich
+
+    total = len(tickers)
+    _progress("Stage 2", 12, f"Downloading price history for {total} candidates…")
+    logger.info("[QM Stage2] Processing %d candidates", total)
+
+    batch_size  = getattr(C, "QM_STAGE2_BATCH_SIZE",  40)
+    max_workers = getattr(C, "QM_STAGE2_MAX_WORKERS", 12)
+    sleep_sec   = getattr(C, "QM_STAGE2_BATCH_SLEEP",  1.5)
+
+    def _progress_cb(batch_num: int, total_batches: int, msg: str = ""):
+        pct = 12 + int((batch_num / total_batches) * 35)
+        _progress("Stage 2", pct, msg)
+
+    enriched = batch_download_and_enrich(
+        tickers,
+        period="1y",  # 1 year is sufficient for QM (needs 6M momentum + context)
+        progress_cb=_progress_cb,
+    )
+
+    _progress("Stage 2", 48, f"Applying QM momentum/ADR/dollar-volume filters…")
+    passed = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_check_qm_stage2, tkr, df): tkr
+            for tkr, df in enriched.items()
+        }
+        done = 0
+        for fut in as_completed(futures):
+            if _is_cancelled():
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+            tkr = futures[fut]
+            done += 1
+            try:
+                result = fut.result()
+                if result is not None:
+                    passed.append(result)
+                    logger.info("[QM S2 PASS] %s ADR=%.1f%% $Vol=$%.1fM",
+                                tkr, result["adr"], result["dollar_volume_m"])
+            except Exception as exc:
+                logger.warning("[QM S2 ERROR] %s: %s", tkr, exc)
+
+            pct = 48 + int(done / max(total, 1) * 12)
+            _progress("Stage 2", min(pct, 60), f"Checked {done}/{total}…", tkr)
+
+    _progress("Stage 2", 62, f"{len(passed)} passed ADR/momentum/volume gate")
+    logger.info("[QM Stage2] %d / %d passed", len(passed), total)
+    return passed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 — Consolidation + MA alignment + higher lows quality scoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
+    """
+    Apply full QM quality scoring for Stage 3.
+    Augments the Stage 2 dict with consolidation quality, MA alignment,
+    higher lows, and a preliminary star rating for sorting.
+    """
+    from modules.data_pipeline import (
+        get_ma_alignment, get_higher_lows, get_consolidation_tightness
+    )
+
+    ticker = row["ticker"]
+
+    if df.empty or len(df) < 50:
+        return None
+
+    # ── MA alignment ───────────────────────────────────────────────────────
+    ma = get_ma_alignment(df)
+    surfing_ma   = ma.get("surfing_ma", 0)
+    all_ma_up    = ma.get("all_ma_rising", False)
+    sma_10       = ma.get("sma_10")
+    sma_20       = ma.get("sma_20")
+    sma_50       = ma.get("sma_50")
+
+    # Hard disqualifier: all MAs pointing down
+    s10_rising = ma.get("sma_10_rising", False)
+    s20_rising = ma.get("sma_20_rising", False)
+    s50_rising = ma.get("sma_50_rising", False)
+    if not s20_rising and not s50_rising and not s10_rising:
+        logger.debug("[QM S3 VETO] %s all MAs pointing down", ticker)
+        return None
+
+    # ── Higher Lows ────────────────────────────────────────────────────────
+    hl = get_higher_lows(df)
+    has_hl   = hl.get("has_higher_lows", False)
+    num_lows = hl.get("num_lows", 0)
+
+    # ── Consolidation tightness ────────────────────────────────────────────
+    tightness = get_consolidation_tightness(df)
+    is_tight      = tightness.get("is_tight", False)
+    tight_ratio   = tightness.get("tightness_ratio", 1.0)
+    range_trend   = tightness.get("range_trend", "unknown")
+
+    # ── Volume analysis ────────────────────────────────────────────────────
+    close_price = float(df["Close"].iloc[-1])
+    recent20 = df.tail(20)
+    avg_vol_20   = float(recent20["Volume"].mean()) if len(recent20) >= 20 else 0
+    latest_vol   = float(df["Volume"].iloc[-1])
+    vol_ratio    = (latest_vol / avg_vol_20) if avg_vol_20 > 0 else 0.0
+
+    # ── Preliminary star rating (quick automated estimate for sorting) ─────
+    # Full detailed star rating is computed in qm_analyzer.py
+    star = getattr(C, "QM_STAR_BASE", 3.0)
+
+    # Dimension A: Momentum quality
+    if row.get("passes_1m") and row.get("passes_3m"):
+        star += 0.5   # Multi-timeframe momentum leader
+    elif row.get("passes_6m"):
+        star += 0.5   # 6M monster — very strong
+
+    # Dimension B: ADR adjustment
+    adr = row.get("adr", 0)
+    if adr >= getattr(C, "QM_ADR_BONUS_HIGH", 15.0):
+        star += 1.0
+    elif adr < getattr(C, "QM_ADR_PENALTY_MARGINAL", 8.0):
+        star -= 0.5
+
+    # Dimension C: Consolidation
+    if is_tight and has_hl:
+        star += 1.0
+    elif is_tight or (has_hl and num_lows >= 2):
+        star += 0.5
+    elif range_trend == "expanding":
+        star -= 0.5
+
+    # Dimension D: MA alignment
+    if surfing_ma == 20:
+        star += 1.0   # Golden line — best setup
+    elif surfing_ma == 10:
+        star += 0.5   # Most aggressive surfe
+    elif surfing_ma == 50:
+        star += 0.0   # Fine but slower
+    elif not s20_rising and not s10_rising:
+        star -= 1.0   # MAs diverging down
+
+    # Cap and floor
+    star = round(max(0.0, min(star, 5.5)), 1)
+
+    # Min star gate
+    min_star = getattr(C, "QM_SCAN_MIN_STAR", 3.0)
+    if star < min_star:
+        logger.debug("[QM S3 FILTER] %s star=%.1f below min=%.1f", ticker, star, min_star)
+        return None
+
+    result = {**row,
+        "sma_10":          sma_10,
+        "sma_20":          sma_20,
+        "sma_50":          sma_50,
+        "sma_10_rising":   s10_rising,
+        "sma_20_rising":   s20_rising,
+        "sma_50_rising":   s50_rising,
+        "all_ma_rising":   all_ma_up,
+        "surfing_ma":      surfing_ma,
+        "price_vs_sma_10": ma.get("price_vs_sma_10"),
+        "price_vs_sma_20": ma.get("price_vs_sma_20"),
+        "price_vs_sma_50": ma.get("price_vs_sma_50"),
+        "has_higher_lows": has_hl,
+        "num_higher_lows": num_lows,
+        "is_tight":        is_tight,
+        "tight_ratio":     tight_ratio,
+        "range_trend":     range_trend,
+        "vol_ratio":       round(vol_ratio, 2),
+        "avg_vol_20d":     int(avg_vol_20),
+        "qm_star":         star,
+        "scan_date":       date.today().isoformat(),
+    }
+    return result
+
+
+def run_qm_stage3(stage2_rows: list[dict],
+                  enriched_cache: dict | None = None) -> pd.DataFrame:
+    """
+    Stage 3 — Apply consolidation/MA quality filters and compute preliminary
+    star ratings.  Sorts output by qm_star descending.
+
+    Args:
+        stage2_rows:    output from run_qm_stage2()
+        enriched_cache: (optional) dict[ticker→DataFrame] if already downloaded
+
+    Returns:
+        pd.DataFrame sorted by qm_star descending, capped at QM_SCAN_TOP_N rows.
+    """
+    from modules.data_pipeline import get_historical, get_technicals
+
+    total = len(stage2_rows)
+    _progress("Stage 3", 64, f"Quality scoring {total} Stage-2 candidates…")
+    logger.info("[QM Stage3] Scoring %d candidates", total)
+
+    results = []
+    for i, row in enumerate(stage2_rows):
+        if _is_cancelled():
+            break
+
+        ticker = row["ticker"]
+        pct    = 64 + int((i / max(total, 1)) * 30)
+        _progress("Stage 3", pct, f"Scoring {ticker}…", ticker)
+
+        # Get enriched DataFrame (use cache if available)
+        df = pd.DataFrame()
+        if enriched_cache and ticker in enriched_cache:
+            raw_df = enriched_cache[ticker]
+            df = get_technicals(raw_df) if "SMA_20" not in raw_df.columns else raw_df
+        else:
+            df = get_historical(ticker, period="1y", use_cache=True)
+            if not df.empty:
+                from modules.data_pipeline import get_technicals as _ta
+                df = _ta(df)
+
+        try:
+            scored = _score_qm_stage3(row, df)
+            if scored is not None:
+                results.append(scored)
+        except Exception as exc:
+            logger.warning("[QM S3 ERROR] %s: %s", ticker, exc)
+
+    _progress("Stage 3", 95, f"Sorting {len(results)} results…")
+
+    if not results:
+        return pd.DataFrame()
+
+    df_out = pd.DataFrame(results)
+    df_out = df_out.sort_values("qm_star", ascending=False).reset_index(drop=True)
+
+    top_n = getattr(C, "QM_SCAN_TOP_N", 50)
+    return df_out.head(top_n)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Full 3-stage Qullamaggie breakout scan.
+
+    Parameters
+    ----------
+    verbose   : if True, print progress and results to console
+    min_star  : minimum star rating to include in df_passed (default: from config)
+    top_n     : limit df_passed to top N rows (default: no limit)
+
+    Returns:
+        (df_passed, df_all) where:
+            df_passed — stocks with qm_star ≥ min_star (sorted best→worst, limited to top_n)
+            df_all    — all Stage-3 evaluated rows (may include below-min-star)
+
+    Usage from CLI:
+        from modules.qm_screener import run_qm_scan
+        df, _ = run_qm_scan()
+
+    Usage from app.py background thread:
+        set_qm_scan_cancel(cancel_event)
+        df, df_all = run_qm_scan(min_star=3.0, top_n=50)
+    """
+    scan_start = datetime.now()
+    _progress("Initialising", 0, "Starting Qullamaggie Breakout Scan…")
+    logger.info("═" * 65)
+    logger.info("  QULLAMAGGIE BREAKOUT SCAN — %s", scan_start.strftime("%Y-%m-%d %H:%M"))
+    logger.info("═" * 65)
+
+    # ── Market environment gate ───────────────────────────────────────────
+    if getattr(C, "QM_BLOCK_IN_BEAR", True):
+        try:
+            from modules.market_env import assess as mkt_assess
+            mkt = mkt_assess(verbose=False)
+            regime = mkt.get("regime", "")
+            if regime in ("DOWNTREND", "MARKET_IN_CORRECTION"):
+                logger.warning("[QM Scan] Market regime: %s — QM breakout entries blocked", regime)
+                _progress("Blocked", 100, f"Bear market block ({regime})")
+                return pd.DataFrame(), pd.DataFrame()
+        except Exception as exc:
+            logger.warning("[QM Scan] Could not check market environment: %s", exc)
+
+    # ── Stage 1 ───────────────────────────────────────────────────────────
+    candidates = run_qm_stage1(verbose=verbose)
+    if _is_cancelled():
+        return pd.DataFrame(), pd.DataFrame()
+    if not candidates:
+        _progress("Error", 100, "Stage 1 returned no candidates")
+        return pd.DataFrame(), pd.DataFrame()
+    logger.info("[QM Scan] Stage1: %d candidates", len(candidates))
+
+    # ── Stage 2 ───────────────────────────────────────────────────────────
+    s2_rows = run_qm_stage2(candidates, verbose=verbose)
+    if _is_cancelled():
+        return pd.DataFrame(), pd.DataFrame()
+    if not s2_rows:
+        _progress("Done", 100, "No candidates passed ADR/momentum gate")
+        return pd.DataFrame(), pd.DataFrame()
+    logger.info("[QM Scan] Stage2: %d candidates", len(s2_rows))
+
+    # ── Stage 3 ───────────────────────────────────────────────────────────
+    df_all = run_qm_stage3(s2_rows)
+
+    if df_all.empty:
+        _progress("Done", 100, "No candidates passed quality scoring")
+        return pd.DataFrame(), df_all
+
+    # Separate passed vs all — use provided min_star or fall back to config
+    min_star_val = min_star if min_star is not None else getattr(C, "QM_SCAN_MIN_STAR", 3.0)
+    top_n_val    = top_n if top_n is not None else getattr(C, "QM_SCAN_TOP_N", 50)
+    
+    df_passed = df_all[df_all["qm_star"] >= min_star_val].copy()
+    df_passed = df_passed.sort_values("qm_star", ascending=False)
+    if top_n_val and len(df_passed) > top_n_val:
+        df_passed = df_passed.head(top_n_val)
+
+    elapsed = (datetime.now() - scan_start).total_seconds()
+    logger.info("[QM Scan] FINAL: %d passed | %d scored total | %.0fs elapsed",
+                len(df_passed), len(df_all), elapsed)
+
+    if verbose:
+        print()
+        print(f"{_BOLD}{'═'*65}{_RESET}")
+        print(f"{_BOLD}  QM SCAN RESULTS  — {date.today().isoformat()}{_RESET}")
+        print(f"{'═'*65}")
+        print(f"  Stage 1: {len(candidates):>4} candidates")
+        print(f"  Stage 2: {len(s2_rows):>4} passed ADR/momentum/dollar-vol gate")
+        print(f"  Stage 3: {len(df_passed):>4} with star rating ≥ {min_star_val}{_STAR}")
+        print(f"  Elapsed: {elapsed:.0f}s")
+        print()
+
+        if not df_passed.empty:
+            cols_show = ["ticker", "qm_star", "close", "adr", "dollar_volume_m",
+                         "mom_1m", "mom_3m", "surfing_ma", "has_higher_lows", "is_tight"]
+            cols_show = [c for c in cols_show if c in df_passed.columns]
+            print(df_passed[cols_show].to_string(index=False))
+
+    _progress("Done", 100, f"{len(df_passed)} stocks found with ≥{min_star_val}{_STAR}")
+    return df_passed, df_all

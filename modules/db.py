@@ -188,6 +188,43 @@ def _ensure_schema(conn):
         )
     """)
 
+    # ── Qullamaggie (QM) tables ───────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS qm_scan_history (
+            scan_date       DATE NOT NULL,
+            ticker          VARCHAR NOT NULL,
+            close_price     DOUBLE,
+            adr             DOUBLE,
+            dollar_volume_m DOUBLE,
+            mom_1m          DOUBLE,
+            mom_3m          DOUBLE,
+            mom_6m          DOUBLE,
+            qm_star         DOUBLE,
+            setup_type      VARCHAR,
+            surfing_ma      INTEGER,
+            has_higher_lows INTEGER,
+            is_tight        INTEGER,
+            recommendation  VARCHAR,
+            PRIMARY KEY (scan_date, ticker)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS qm_watchlist_store (
+            ticker          VARCHAR PRIMARY KEY,
+            grade           VARCHAR,
+            qm_star         DOUBLE,
+            setup_type      VARCHAR,
+            added_date      DATE,
+            adr             DOUBLE,
+            note            VARCHAR
+        )
+    """)
+    # Index to speed up per-ticker lookups over time
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_qm_scan_ticker
+        ON qm_scan_history (ticker, scan_date)
+    """)
+
 
 def _init_schema_once():
     """Create DuckDB schema exactly once per process (double-checked locking, thread-safe)."""
@@ -374,6 +411,194 @@ def append_market_env(env: dict, env_date: date = None) -> bool:
             return True
         except Exception as exc:
             logger.error("[DB] append_market_env failed: %s", exc)
+            return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Qullamaggie (QM) persistence APIs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def append_qm_scan_history(rows: list, scan_date: date = None) -> int:
+    """
+    Persist QM scan result rows to qm_scan_history table.
+
+    Parameters
+    ----------
+    rows      : list of dicts (from qm_screener.run_qm_scan())
+    scan_date : defaults to today
+
+    Returns number of rows upserted.
+    """
+    if not rows:
+        return 0
+
+    today = scan_date or date.today()
+    records = []
+    for r in rows:
+        try:
+            records.append({
+                "scan_date":       today,
+                "ticker":          str(r.get("ticker", "")).upper(),
+                "close_price":     _to_float(r.get("close") or r.get("close_price")),
+                "adr":             _to_float(r.get("adr")),
+                "dollar_volume_m": _to_float(r.get("dollar_volume_m")),
+                "mom_1m":          _to_float(r.get("mom_1m")),
+                "mom_3m":          _to_float(r.get("mom_3m")),
+                "mom_6m":          _to_float(r.get("mom_6m")),
+                "qm_star":         _to_float(r.get("qm_star") or r.get("stars")),
+                "setup_type":      str(r.get("setup_type") or ""),
+                "surfing_ma":      _to_int(r.get("surfing_ma")),
+                "has_higher_lows": _to_int(r.get("has_higher_lows")),
+                "is_tight":        _to_int(r.get("is_tight")),
+                "recommendation":  str(r.get("recommendation") or ""),
+            })
+        except Exception as exc:
+            logger.warning("append_qm_scan_history: skipping row %s — %s", r.get("ticker"), exc)
+
+    if not records:
+        return 0
+
+    df = pd.DataFrame(records)
+    inserted = 0
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            conn.execute(
+                "DELETE FROM qm_scan_history WHERE scan_date = ?", [today]
+            )
+            conn.execute("INSERT INTO qm_scan_history SELECT * FROM df")
+            inserted = len(records)
+            conn.close()
+            logger.info("[DB] qm_scan_history: upserted %d rows for %s", inserted, today)
+        except Exception as exc:
+            logger.error("[DB] append_qm_scan_history failed: %s", exc)
+
+    return inserted
+
+
+def query_qm_scan_trend(ticker: str, days: int = 90) -> pd.DataFrame:
+    """
+    Return qm_scan_history for a ticker over the last N days.
+    Used for star-rating trend charts in qm_analyze.html.
+    """
+    _init_schema_once()
+    try:
+        conn = _get_conn()
+        df = conn.execute("""
+            SELECT scan_date, qm_star, setup_type, close_price,
+                   adr, mom_1m, mom_3m, mom_6m, recommendation
+            FROM qm_scan_history
+            WHERE ticker = ?
+              AND scan_date >= CURRENT_DATE - INTERVAL (?) DAY
+            ORDER BY scan_date
+        """, [ticker.upper(), days]).df()
+        conn.close()
+        return df
+    except Exception as exc:
+        logger.error("[DB] query_qm_scan_trend failed: %s", exc)
+        return pd.DataFrame()
+
+
+def query_qm_persistent_signals(min_appearances: int = 3, days: int = 30) -> pd.DataFrame:
+    """
+    Return QM tickers that appeared in scan results ≥ N times in last D days.
+    Helps identify stocks consistently meeting Qullamaggie criteria.
+    """
+    _init_schema_once()
+    try:
+        conn = _get_conn()
+        df = conn.execute("""
+            SELECT ticker,
+                   COUNT(*)        AS appearances,
+                   AVG(qm_star)    AS avg_star,
+                   MAX(qm_star)    AS max_star,
+                   MAX(scan_date)  AS last_seen,
+                   MAX(setup_type) AS last_setup
+            FROM qm_scan_history
+            WHERE scan_date >= CURRENT_DATE - INTERVAL (?) DAY
+            GROUP BY ticker
+            HAVING COUNT(*) >= ?
+            ORDER BY avg_star DESC
+        """, [days, min_appearances]).df()
+        conn.close()
+        return df
+    except Exception as exc:
+        logger.error("[DB] query_qm_persistent_signals failed: %s", exc)
+        return pd.DataFrame()
+
+
+def qm_wl_load() -> dict:
+    """
+    Load QM watchlist from DuckDB.
+    Returns dict: {grade: {ticker: {qm_star, setup_type, adr, added_date, note}}}
+    Grades: 'A', 'B', 'C'
+    """
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            df = conn.execute("""
+                SELECT ticker, grade, qm_star, setup_type, adr, added_date, note
+                FROM qm_watchlist_store
+                ORDER BY grade, ticker
+            """).df()
+            conn.close()
+
+            if df.empty:
+                return {"A": {}, "B": {}, "C": {}}
+
+            result = {"A": {}, "B": {}, "C": {}}
+            for _, row in df.iterrows():
+                ticker = str(row["ticker"])
+                grade = str(row["grade"]) if row["grade"] else "C"
+                if grade not in result:
+                    grade = "C"
+                result[grade][ticker] = {
+                    "qm_star":    _to_float(row["qm_star"]),
+                    "setup_type": str(row["setup_type"]) if row["setup_type"] else "",
+                    "adr":        _to_float(row["adr"]),
+                    "added_date": str(row["added_date"]) if row["added_date"] else None,
+                    "note":       str(row["note"]) if row["note"] else "",
+                }
+            logger.info("[DB] qm_wl_load: loaded %d tickers", len(df))
+            return result
+        except Exception as exc:
+            logger.warning("[DB] qm_wl_load failed (%s), returning empty watchlist", exc)
+            return {"A": {}, "B": {}, "C": {}}
+
+
+def qm_wl_save(data: dict) -> bool:
+    """Save QM watchlist to DuckDB."""
+    if data is None:
+        return False
+
+    records = []
+    for grade in ["A", "B", "C"]:
+        for ticker, info in data.get(grade, {}).items():
+            records.append({
+                "ticker":     ticker.upper(),
+                "grade":      grade,
+                "qm_star":    _to_float(info.get("qm_star")),
+                "setup_type": str(info.get("setup_type", "")),
+                "added_date": info.get("added_date"),
+                "adr":        _to_float(info.get("adr")),
+                "note":       str(info.get("note", "")),
+            })
+
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            conn.execute("DELETE FROM qm_watchlist_store")
+            if records:
+                df = pd.DataFrame(records)
+                conn.execute("INSERT INTO qm_watchlist_store SELECT * FROM df")
+            conn.close()
+            logger.info("[DB] qm_wl_save: saved %d tickers", len(records))
+            return True
+        except Exception as exc:
+            logger.error("[DB] qm_wl_save failed: %s", exc)
             return False
 
 

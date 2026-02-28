@@ -151,6 +151,46 @@ def _load_last_scan() -> dict:
     return {}
 
 
+# ── QM last scan persistence ──────────────────────────────────────────────────
+_QM_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "qm_last_scan.json"
+
+
+def _save_qm_last_scan(rows: list, all_rows: list = None):
+    try:
+        data = {"saved_at": datetime.now().isoformat(),
+                "count": len(rows), "rows": rows,
+                "all_scored_count": len(all_rows) if all_rows else len(rows),
+                "all_scored": all_rows or []}
+        _QM_LAST_SCAN_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+    except Exception as exc:
+        logging.warning(f"Could not save qm_last_scan: {exc}")
+
+    # ── DuckDB 歷史記錄（非破壞性追加）────────────────────────────────────
+    if getattr(C, "DB_ENABLED", True):
+        try:
+            from modules.db import append_qm_scan_history
+            all_to_save = (all_rows or []) + rows
+            seen: set = set()
+            deduped = []
+            for r in all_to_save:
+                if r.get("ticker") not in seen:
+                    seen.add(r.get("ticker"))
+                    deduped.append(r)
+            append_qm_scan_history(deduped)
+        except Exception as exc:
+            logging.warning(f"DB qm_scan_history write skipped: {exc}")
+
+
+def _load_qm_last_scan() -> dict:
+    try:
+        if _QM_LAST_SCAN_FILE.exists():
+            return json.loads(_QM_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
 def _new_job() -> str:
     jid = str(uuid.uuid4())[:8]
     ev = threading.Event()
@@ -176,6 +216,7 @@ def _finish_job(jid: str, result=None, error: str = None, log_file: str = ""):
 
 
 _market_job_ids: set = set()  # Track which job IDs are market assessments
+_qm_job_ids: set = set()      # Track which job IDs are QM scans
 
 
 def _get_job(jid: str) -> dict:
@@ -187,6 +228,12 @@ def _get_job(jid: str) -> dict:
             try:
                 from modules.market_env import get_market_progress
                 job["progress"] = get_market_progress()
+            except Exception:
+                pass
+        elif jid in _qm_job_ids:
+            try:
+                from modules.qm_screener import get_qm_scan_progress
+                job["progress"] = get_qm_scan_progress()
             except Exception:
                 pass
         else:
@@ -357,6 +404,26 @@ def guide_page():
     guide_path = ROOT / "docs" / "GUIDE.md"
     content = guide_path.read_text(encoding="utf-8") if guide_path.exists() else "Guide not found."
     return render_template("guide.html", content=content)
+
+
+# ─── Qullamaggie (QM) page routes ────────────────────────────────────────────
+
+@app.route("/qm/scan")
+def qm_scan_page():
+    return render_template("qm_scan.html")
+
+
+@app.route("/qm/analyze")
+def qm_analyze_page():
+    ticker = request.args.get("ticker", "")
+    return render_template("qm_analyze.html", prefill=ticker)
+
+
+@app.route("/qm/guide")
+def qm_guide_page():
+    guide_path = ROOT / "docs" / "QullamaggieStockguide.md"
+    content = guide_path.read_text(encoding="utf-8") if guide_path.exists() else "QM Guide not found."
+    return render_template("qm_guide.html", content=content)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -543,6 +610,151 @@ def api_scan_cache_info():
 @app.route("/api/scan/status/<jid>")
 def api_scan_status(jid):
     return jsonify(_get_job(jid))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API – QM Scan
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/qm/scan/run", methods=["POST"])
+def api_qm_scan_run():
+    data     = request.get_json(silent=True) or {}
+    min_star = float(data.get("min_star", getattr(C, "QM_MIN_STAR_DISPLAY", 3.0)))
+    top_n    = int(data.get("top_n", getattr(C, "QM_SCAN_TOP_N", 50)))
+    jid      = _new_job()
+    cancel_ev = _get_cancel(jid)
+    _qm_job_ids.add(jid)
+
+    # Per-scan log file
+    scan_log_file = _LOG_DIR / f"qm_scan_{jid}_{datetime.now().isoformat(timespec='seconds').replace(':', '-')}.log"
+    scan_handler = logging.FileHandler(scan_log_file, encoding="utf-8")
+    scan_handler.setLevel(logging.DEBUG)
+    scan_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    _QM_SCAN_LOGGERS = ["modules.qm_screener", "modules.qm_analyzer", "modules.data_pipeline"]
+    for logger_name in _QM_SCAN_LOGGERS:
+        logging.getLogger(logger_name).addHandler(scan_handler)
+    _scan_file_handlers[jid] = scan_handler
+    _scan_log_paths[jid] = scan_log_file
+
+    def _run():
+        try:
+            from modules.qm_screener import run_qm_scan, set_qm_scan_cancel
+            set_qm_scan_cancel(cancel_ev)
+            result = run_qm_scan(min_star=min_star, top_n=top_n)
+            if isinstance(result, tuple):
+                df_passed, df_all = result
+            else:
+                df_passed = result
+                df_all = result
+
+            def _to_rows(df):
+                if df is not None and hasattr(df, "to_dict") and not df.empty:
+                    return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
+                elif df is not None and not hasattr(df, "to_dict"):
+                    return _clean(list(df))
+                return []
+
+            rows = _to_rows(df_passed)
+            all_rows = _to_rows(df_all)
+            _save_qm_last_scan(rows, all_rows=all_rows)
+            log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
+            _finish_job(jid, result=rows, log_file=log_rel)
+        except Exception as exc:
+            logging.exception("QM scan thread error")
+            log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
+            _finish_job(jid, error=str(exc), log_file=log_rel)
+        finally:
+            _qm_job_ids.discard(jid)
+            if jid in _scan_file_handlers:
+                handler = _scan_file_handlers.pop(jid)
+                for logger_name in _QM_SCAN_LOGGERS:
+                    logging.getLogger(logger_name).removeHandler(handler)
+                handler.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"job_id": jid})
+
+
+@app.route("/api/qm/scan/cancel/<jid>", methods=["POST"])
+def api_qm_scan_cancel(jid):
+    ev = _cancel_events.get(jid)
+    if ev:
+        ev.set()
+        with _jobs_lock:
+            if jid in _jobs and _jobs[jid]["status"] == "pending":
+                _jobs[jid]["progress"] = {"stage": "Cancelling…",
+                                           "pct": 100, "msg": ""}
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Job not found"}), 404
+
+
+@app.route("/api/qm/scan/last", methods=["GET"])
+def api_qm_scan_last():
+    """Return last QM scan results (passed-only by default, all if ?include_all=1)."""
+    data = _load_qm_last_scan()
+    include_all = request.args.get("include_all", "0") == "1"
+    if not include_all:
+        data.pop("all_scored", None)
+        data.pop("all_scored_count", None)
+    return jsonify(data)
+
+
+@app.route("/api/qm/scan/status/<jid>")
+def api_qm_scan_status(jid):
+    return jsonify(_get_job(jid))
+
+
+@app.route("/api/qm/scan/progress")
+def api_qm_scan_progress():
+    """Live progress polling endpoint for active QM scan."""
+    try:
+        from modules.qm_screener import get_qm_scan_progress
+        return jsonify(get_qm_scan_progress())
+    except Exception as exc:
+        return jsonify({"stage": "Error", "pct": 0, "msg": str(exc)})
+
+
+@app.route("/api/qm/analyze", methods=["POST"])
+def api_qm_analyze():
+    """
+    Synchronous QM deep analysis for a single ticker.
+    Returns: star rating, 6-dimension scores, setup type, trade plan.
+    """
+    data   = request.get_json(silent=True) or {}
+    ticker = str(data.get("ticker", "")).upper().strip()
+    if not ticker:
+        return jsonify({"ok": False, "error": "ticker required"}), 400
+
+    # Per-analyze log file
+    analyze_log_file = _LOG_DIR / f"qm_analyze_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    analyze_handler  = logging.FileHandler(analyze_log_file, encoding="utf-8")
+    analyze_handler.setLevel(logging.DEBUG)
+    analyze_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s  %(message)s")
+    )
+    _QM_ANALYZE_LOGGERS = [
+        "modules.qm_analyzer", "modules.qm_setup_detector",
+        "modules.data_pipeline", "modules.market_env",
+    ]
+    for logger_name in _QM_ANALYZE_LOGGERS:
+        logging.getLogger(logger_name).addHandler(analyze_handler)
+
+    try:
+        from modules.qm_analyzer import analyze_qm
+        result = analyze_qm(ticker, print_report=False)
+        clean_result = _clean(result) if result else {}
+        log_rel = str(analyze_log_file.relative_to(ROOT)) if analyze_log_file.exists() else ""
+        return jsonify({"ok": True, "ticker": ticker,
+                        "result": clean_result, "log_file": log_rel})
+    except Exception as exc:
+        logging.exception("QM analyze error: %s", ticker)
+        return jsonify({"ok": False, "error": str(exc), "ticker": ticker})
+    finally:
+        for logger_name in _QM_ANALYZE_LOGGERS:
+            logging.getLogger(logger_name).removeHandler(analyze_handler)
+        analyze_handler.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

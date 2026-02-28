@@ -876,3 +876,343 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
 
     logger.info("[Batch] Enriched %d/%d tickers total", len(result), len(tickers))
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E. Qullamaggie-specific computed metrics (pure-pandas, no new API calls)
+#    All functions operate on the DataFrame returned by get_historical() or
+#    get_enriched().  They never call yfinance / finvizfinance directly.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_adr(df: pd.DataFrame, period: int = None) -> float:
+    """
+    Average Daily Range (ADR%) as used by Qullamaggie.
+    ADR = average of (High / Low - 1) * 100  over the last N days.
+
+    Qullamaggie's ThinkorSwim formula uses a 14-day window.
+    ADR is the primary volatility gate: stocks with ADR < 5% are skipped.
+
+    Args:
+        df:     OHLCV DataFrame (from get_historical / get_enriched)
+        period: number of daily bars to average (default: QM_ADR_PERIOD = 14)
+
+    Returns:
+        ADR as a percentage float, or 0.0 on insufficient data.
+    """
+    if period is None:
+        period = getattr(C, "QM_ADR_PERIOD", 14)
+    if df.empty or len(df) < period:
+        return 0.0
+    recent = df.tail(period)
+    daily_ranges = (recent["High"] / recent["Low"] - 1.0) * 100.0
+    return float(daily_ranges.mean())
+
+
+def get_dollar_volume(df: pd.DataFrame, period: int = 20) -> float:
+    """
+    Average daily dollar volume = average of (Close × Volume) over the last N days.
+    Qullamaggie uses $5M+ as a liquidity gate; live trading prefers $10M+.
+
+    Args:
+        df:     OHLCV DataFrame
+        period: rolling window for the average (default 20 days)
+
+    Returns:
+        Average daily dollar volume as a float, or 0.0 on insufficient data.
+    """
+    if df.empty or len(df) < period:
+        return 0.0
+    recent = df.tail(period)
+    dollar_vols = recent["Close"] * recent["Volume"]
+    return float(dollar_vols.mean())
+
+
+def get_momentum_returns(df: pd.DataFrame) -> dict:
+    """
+    Compute trailing momentum returns for scanner filters.
+    Returns the % price change over 1-month (~22 bars), 3-month (~67 bars),
+    and 6-month (~126 bars) lookback windows using actual trading days.
+
+    Qullamaggie's scanner criteria:
+        1M ≥ 25%  |  3M ≥ 50%  |  6M ≥ 150%
+
+    Args:
+        df: OHLCV DataFrame (needs at least 126 rows for full 6M)
+
+    Returns:
+        dict with keys '1m', '3m', '6m' — each value is % return (float)
+        Missing periods return None if insufficient data.
+    """
+    if df.empty:
+        return {"1m": None, "3m": None, "6m": None}
+
+    last_close = float(df["Close"].iloc[-1])
+    n = len(df)
+
+    def _ret(lookback: int):
+        if n <= lookback:
+            return None
+        past_close = float(df["Close"].iloc[-(lookback + 1)])
+        if past_close <= 0:
+            return None
+        return (last_close / past_close - 1.0) * 100.0
+
+    return {
+        "1m":  _ret(22),
+        "3m":  _ret(67),
+        "6m":  _ret(126),
+    }
+
+
+def get_6day_range_proximity(df: pd.DataFrame) -> dict:
+    """
+    Check whether the current price is within the 6-day high/low range.
+    Qullamaggie's consolidation scanner: price within ±15% of 6-day high/low.
+
+    Args:
+        df: OHLCV DataFrame
+
+    Returns:
+        dict with keys:
+            'high_6d'       : float — rolling 6-day high
+            'low_6d'        : float — rolling 6-day low
+            'pct_from_high' : float — % distance below 6-day high (positive = below)
+            'pct_from_low'  : float — % distance above 6-day low  (positive = above)
+            'near_high'     : bool  — within QM_NEAR_HIGH_PCT of 6-day high
+            'near_low'      : bool  — within QM_NEAR_LOW_PCT  of 6-day low
+    """
+    window = getattr(C, "QM_CONSOL_WINDOW_DAYS", 6)
+    near_high_pct = getattr(C, "QM_NEAR_HIGH_PCT", 15.0)
+    near_low_pct  = getattr(C, "QM_NEAR_LOW_PCT",  15.0)
+
+    if df.empty or len(df) < window:
+        return {
+            "high_6d": None, "low_6d": None,
+            "pct_from_high": None, "pct_from_low": None,
+            "near_high": False, "near_low": False,
+        }
+
+    recent      = df.tail(window)
+    high_6d     = float(recent["High"].max())
+    low_6d      = float(recent["Low"].min())
+    last_close  = float(df["Close"].iloc[-1])
+
+    pct_from_high = (high_6d - last_close) / high_6d * 100.0 if high_6d > 0 else None
+    pct_from_low  = (last_close - low_6d)  / low_6d  * 100.0 if low_6d  > 0 else None
+
+    return {
+        "high_6d":       high_6d,
+        "low_6d":        low_6d,
+        "pct_from_high": pct_from_high,
+        "pct_from_low":  pct_from_low,
+        "near_high":     (pct_from_high is not None and pct_from_high <= near_high_pct),
+        "near_low":      (pct_from_low  is not None and pct_from_low  <= near_low_pct),
+    }
+
+
+def get_ma_alignment(df: pd.DataFrame, ma_periods: list = None) -> dict:
+    """
+    Calculate SMA values and check MA alignment / surfing conditions.
+    Used in Qullamaggie Dimension D (MA alignment star scoring).
+
+    Args:
+        df:         OHLCV DataFrame (should have pandas_ta ATR / SMA columns if
+                    get_enriched was already called; otherwise computes raw SMAs)
+        ma_periods: list of SMA periods to evaluate  (default: [10, 20, 50])
+
+    Returns:
+        dict with:
+            'sma_{n}'           : current SMA value for each period n
+            'sma_{n}_rising'    : bool — SMA has trended up over last 5 bars
+            'price_vs_sma_{n}'  : % of current price relative to SMA (+ = above)
+            'surfing_20'        : bool — price within QM_SURFING_TOLERANCE_PCT of 20SMA
+            'surfing_50'        : bool — price within QM_SURFING_TOLERANCE_PCT of 50SMA
+            'all_ma_rising'     : bool — all specified SMAs are rising
+            'surfing_ma'        : int  — which MA is being surfed (10/20/50) or 0
+    """
+    if ma_periods is None:
+        ma_periods = getattr(C, "QM_MA_PERIODS", [10, 20, 50])
+    tolerance   = getattr(C, "QM_SURFING_TOLERANCE_PCT", 3.0)
+    rising_days = getattr(C, "QM_MA_RISING_MIN_DAYS", 5)
+
+    result: dict = {}
+    if df.empty or len(df) < max(ma_periods) + rising_days:
+        for n in ma_periods:
+            result[f"sma_{n}"]          = None
+            result[f"sma_{n}_rising"]   = False
+            result[f"price_vs_sma_{n}"] = None
+        result["surfing_20"]  = False
+        result["surfing_50"]  = False
+        result["all_ma_rising"] = False
+        result["surfing_ma"]  = 0
+        return result
+
+    last_close = float(df["Close"].iloc[-1])
+    all_rising = True
+
+    for n in ma_periods:
+        sma_col = f"SMA_{n}"
+        if sma_col in df.columns:
+            sma_series = df[sma_col]
+        else:
+            sma_series = df["Close"].rolling(n).mean()
+
+        sma_val = float(sma_series.iloc[-1]) if not sma_series.empty else None
+        if sma_val is None or pd.isna(sma_val):
+            result[f"sma_{n}"]          = None
+            result[f"sma_{n}_rising"]   = False
+            result[f"price_vs_sma_{n}"] = None
+            all_rising = False
+            continue
+
+        # Check if SMA is rising (current > N-days ago)
+        if len(sma_series.dropna()) >= rising_days + 1:
+            sma_past = float(sma_series.dropna().iloc[-(rising_days + 1)])
+            rising   = sma_val > sma_past
+        else:
+            rising = False
+        if not rising:
+            all_rising = False
+
+        pct_vs_sma = (last_close / sma_val - 1.0) * 100.0 if sma_val > 0 else None
+
+        result[f"sma_{n}"]          = round(sma_val, 4)
+        result[f"sma_{n}_rising"]   = rising
+        result[f"price_vs_sma_{n}"] = round(pct_vs_sma, 2) if pct_vs_sma is not None else None
+
+    # Surfing checks: price within tolerance% of the MA AND MA is rising
+    def _surfing(n: int) -> bool:
+        pct = result.get(f"price_vs_sma_{n}")
+        if pct is None:
+            return False
+        return abs(pct) <= tolerance and result.get(f"sma_{n}_rising", False)
+
+    surf_10  = _surfing(10)
+    surf_20  = _surfing(20)
+    surf_50  = _surfing(50)
+    result["surfing_20"]    = surf_20
+    result["surfing_50"]    = surf_50
+    result["all_ma_rising"] = all_rising
+
+    # Identify the primary surfing MA (10 > 20 > 50 in priority)
+    if surf_10:
+        result["surfing_ma"] = 10
+    elif surf_20:
+        result["surfing_ma"] = 20
+    elif surf_50:
+        result["surfing_ma"] = 50
+    else:
+        result["surfing_ma"] = 0
+
+    return result
+
+
+def get_higher_lows(df: pd.DataFrame, min_lows: int = None,
+                    lookback: int = 40) -> dict:
+    """
+    Detect whether a stock is building Higher Lows (HL) — Qullamaggie's most
+    important consolidation quality indicator (Section 5.4, Criterion ① of ③④).
+
+    Method: identify local swing lows (Low < previous N bars AND next N bars),
+    then check if the sequence is ascending.
+
+    Args:
+        df:        OHLCV DataFrame
+        min_lows:  minimum number of higher lows required   (default: QM_HIGHER_LOWS_MIN)
+        lookback:  how many recent bars to search for lows  (default: 40)
+
+    Returns:
+        dict with:
+            'has_higher_lows' : bool
+            'num_lows'        : int — number of swing lows found
+            'lows'            : list of (date_str, price) tuples
+            'is_ascending'    : bool — all consecutive pairs are ascending
+    """
+    if min_lows is None:
+        min_lows = getattr(C, "QM_HIGHER_LOWS_MIN", 2)
+
+    empty = {"has_higher_lows": False, "num_lows": 0, "lows": [], "is_ascending": False}
+    if df.empty or len(df) < lookback:
+        return empty
+
+    recent = df.tail(lookback).copy()
+    lows   = []
+    swing_n = 3  # bars on each side to confirm local minimum
+
+    for i in range(swing_n, len(recent) - swing_n):
+        bar_low = float(recent["Low"].iloc[i])
+        left    = recent["Low"].iloc[i - swing_n: i]
+        right   = recent["Low"].iloc[i + 1: i + swing_n + 1]
+        if bar_low <= float(left.min()) and bar_low <= float(right.min()):
+            lows.append((str(recent.index[i])[:10], bar_low))
+
+    if len(lows) < min_lows:
+        return {"has_higher_lows": False, "num_lows": len(lows), "lows": lows, "is_ascending": False}
+
+    # Check ascending sequence across consecutive pairs
+    ascending = all(lows[i][1] < lows[i + 1][1] for i in range(len(lows) - 1))
+    return {
+        "has_higher_lows": ascending and len(lows) >= min_lows,
+        "num_lows":        len(lows),
+        "lows":            lows,
+        "is_ascending":    ascending,
+    }
+
+
+def get_consolidation_tightness(df: pd.DataFrame, lookback: int = 20) -> dict:
+    """
+    Measure how 'tight' the recent consolidation is.
+    A tight consolidation (Pennant/Flag) is a key Qullamaggie quality signal
+    — K-lines progressively shrinking = supply/demand approaching equilibrium.
+
+    Tightness is measured as:
+        avg_daily_range_recent / adr_baseline  (lower = tighter)
+
+    Args:
+        df:       OHLCV DataFrame
+        lookback: bars to measure recent tightness over (default 20)
+
+    Returns:
+        dict with:
+            'tightness_ratio'   : float — <1 means tighter than ADR baseline
+            'is_tight'          : bool  — ratio < QM_TIGHTNESS_THRESHOLD → very tight
+            'avg_body_pct'      : float — avg candle body as % of price
+            'range_trend'       : str   — 'contracting' / 'expanding' / 'stable'
+    """
+    if df.empty or len(df) < lookback + 14:
+        return {"tightness_ratio": None, "is_tight": False,
+                "avg_body_pct": None, "range_trend": "unknown"}
+
+    threshold = getattr(C, "QM_TIGHTNESS_THRESHOLD", 0.5)
+
+    # ADR baseline from last 14 days (Qullamaggie's formula)
+    adr_baseline = get_adr(df, period=14)
+    if adr_baseline <= 0:
+        adr_baseline = 1.0
+
+    recent = df.tail(lookback)
+    daily_ranges = (recent["High"] / recent["Low"] - 1.0) * 100.0
+    avg_range    = float(daily_ranges.mean())
+    tightness    = avg_range / adr_baseline
+
+    # Body size (measure of indecision / balance between buyers/sellers)
+    bodies        = abs(recent["Close"] - recent["Open"]) / recent["Open"] * 100.0
+    avg_body      = float(bodies.mean())
+
+    # Range trend: compare first half vs second half of lookback
+    half = lookback // 2
+    first_half  = float((df["High"].iloc[-lookback:-half] / df["Low"].iloc[-lookback:-half] - 1.0).mean()) * 100
+    second_half = float((df["High"].iloc[-half:]          / df["Low"].iloc[-half:]          - 1.0).mean()) * 100
+    if second_half < first_half * 0.85:
+        range_trend = "contracting"
+    elif second_half > first_half * 1.15:
+        range_trend = "expanding"
+    else:
+        range_trend = "stable"
+
+    return {
+        "tightness_ratio": round(tightness, 3),
+        "is_tight":        tightness < threshold,
+        "avg_body_pct":    round(avg_body, 3),
+        "range_trend":     range_trend,
+    }
