@@ -234,6 +234,86 @@ When adding new parameters, follow this convention:
 
 ---
 
+## File Creation Guidelines
+
+**CRITICAL: ALL new files MUST be created in their designated directory. NEVER create in root.**
+
+When asked to create a new file, determine its type first and place it in the correct location:
+
+### File Type → Directory Mapping
+
+| File Type | Directory | Examples |
+|-----------|-----------|----------|
+| **Source Code (Core)** | Root | `app.py`, `minervini.py`, `trader_config.py`, `run_app.py`, `start_web.py` |
+| **Test Files** | `tests/` | `test_*.py`, `quick_test.py`, integration tests |
+| **Utility Scripts** | `scripts/` | `verify_*.py`, `fix_*.py`, analysis scripts, migration scripts |
+| **Documentation** | `docs/` | `.md` files, guides, reports, summaries |
+| **Web Templates** | `templates/` | `*.html` Jinja2 templates |
+| **Business Logic** | `modules/` | `data_pipeline.py`, `screener.py`, `backtester.py`, etc. |
+| **Configuration** | Root | `trader_config.py`, `requirements.txt` |
+| **CI/CD & Dev Config** | `.github/` | `copilot-instructions.md`, prompts, agents, hooks |
+| **Runtime Data** | `data/` | `.duckdb`, `.json`, `.csv`, `.parquet` files (never commit) |
+| **Reports & Analysis** | `reports/` | CSV exports, analysis results (generated, not committed) |
+
+### Decision Tree for New Files
+
+```
+Is it a test (test_*.py) or demo/temporary script?
+├─ YES → tests/test_*.py
+└─ NO
+
+Is it a utility/analysis/verification script?
+├─ YES → scripts/{name}.py
+└─ NO
+
+Is it documentation (.md)?
+├─ YES → docs/{name}.md
+└─ NO
+
+Is it a module for /modules directory?
+├─ YES → modules/{name}.py
+└─ NO
+
+Is it a Flask route or core application logic?
+├─ YES → Root (app.py, minervini.py, run_app.py, start_web.py)
+└─ NO
+
+Is it configuration or project settings?
+├─ YES → Root (trader_config.py, requirements.txt)
+└─ NO
+
+Is it an HTML template?
+├─ YES → templates/{name}.html
+└─ NO
+
+Otherwise: Ask user for clarification before creating
+```
+
+### Workflow Before Creating Files
+
+When you are asked to create a file:
+1. **STOP** and identify the file type
+2. **CLASSIFY** it using the table above
+3. **CONFIRM** the correct directory in your response
+4. **CREATE** with the full path: `/directory/filename.ext`
+
+### Examples
+
+✅ **CORRECT**
+- `tests/test_my_feature.py` ← Test file
+- `scripts/analyze_vcp.py` ← Analysis script
+- `docs/IMPLEMENTATION_PLAN.md` ← Documentation
+- `modules/new_indicator.py` ← Business logic module
+- `app.py` ← Core Flask application (root)
+
+❌ **WRONG**
+- `test_my_feature.py` ← MUST be in tests/
+- `analyze_vcp.py` ← MUST be in scripts/
+- `IMPLEMENTATION_PLAN.md` ← MUST be in docs/
+- `root/new_indicator.py` ← MUST be in modules/ as `new_indicator.py`
+
+---
+
 ## Critical Rules — DO NOT Violate
 
 ### Data Integrity

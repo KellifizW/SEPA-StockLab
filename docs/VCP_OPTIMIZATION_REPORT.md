@@ -145,8 +145,8 @@ COARSE_MIN_ROE:            10% → 8%
 - trader_config.py                           (已更新 VCP 參數 + COARSE_MIN_ROE)
 
 驗證腳本：
-- test_cien_new_params.py                    (CIEN 新參數驗證)
-- quick_feature_analysis.py                  (高贏家特徵分析)
+- tests/test_cien_new_params.py              (CIEN 新參數驗證)
+- scripts/quick_feature_analysis.py          (高贏家特徵分析)
 
 ---
 

@@ -3,6 +3,20 @@
     "TEST": {
       "sepa_score": 75.0,
       "added_date": "2026-02-27"
+    },
+    "GCT": {
+      "added_date": "2026-02-28",
+      "last_updated": "2026-02-28",
+      "rs_rank": 92.2,
+      "tt_score": 10,
+      "tt_passes": true,
+      "vcp_grade": "D",
+      "vcp_score": 27,
+      "t_count": 3,
+      "pivot": 48.0,
+      "price": 44.34,
+      "sector": "Technology",
+      "note": ""
     }
   },
   "B": {},

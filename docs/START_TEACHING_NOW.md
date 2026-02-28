@@ -189,8 +189,8 @@ A：不會。教學內容完全獨立於掃描邏輯。VCP 參數優化是另外
 - **主文檔：** `docs/GUIDE.md` (新增第 329-667 行)
 - **Web 路由：** `app.py` 的 `/guide` 端點
 - **渲染模板：** `templates/guide.html`
-- **驗證腳本：** `verify_guide_update.py` (可重複運行)
-- **更新摘要：** `GUIDE_UPDATE_SUMMARY.md`
+- **驗證腳本：** `scripts/verify_guide_update.py` (可重複運行)
+- **更新摘要：** `docs/GUIDE_UPDATE_SUMMARY.md`
 
 ---
 
@@ -221,10 +221,10 @@ A：不會。教學內容完全獨立於掃描邏輯。VCP 參數優化是另外
 | 資源 | 位置 | 用途 |
 |------|------|------|
 | **完整指南** | `/guide` | 瀏覽完整文檔 |
-| **快速驗證** | `verify_guide_update.py` | 驗證集成狀態 |
-| **更新摘要** | `GUIDE_UPDATE_SUMMARY.md` | 查閱更新內容 |
+| **快速驗證** | `scripts/verify_guide_update.py` | 驗證集成狀態 |
+| **更新摘要** | `docs/GUIDE_UPDATE_SUMMARY.md` | 查閱更新內容 |
 | **配置** | `trader_config.py` | 調整掃描參數 |
-| **VCP 優化** | `VCP_OPTIMIZATION_REPORT.md` | 了解參數優化邏輯 |
+| **VCP 優化** | `docs/VCP_OPTIMIZATION_REPORT.md` | 了解參數優化邏輯 |
 
 ---
 

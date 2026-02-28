@@ -1,4 +1,4 @@
-import sys; sys.path.insert(0, '.')
+import sys; sys.path.insert(0, '..')
 from modules import backtester
 
 print('=== Testing CIEN with NEW VCP params (min_vcp_score=20, 120d) ===')

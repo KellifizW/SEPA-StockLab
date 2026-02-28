@@ -265,4 +265,3 @@ GUIDE.md 結構：
 **完成日期：2026-02-28**  
 **維護者：GitHub Copilot**  
 **版本：GUIDE v2.1**
-

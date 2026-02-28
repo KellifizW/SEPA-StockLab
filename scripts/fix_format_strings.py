@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Fix format string errors in backtester.py"""
 
-with open('modules/backtester.py', 'r', encoding='utf-8') as f:
+with open('../modules/backtester.py', 'r', encoding='utf-8') as f:
     content = f.read()
 
 # Replace the problematic section
@@ -69,7 +69,7 @@ new_block = '''        breakout_date  = sig.get("breakout_date") or "─"
 
 if old_block in content:
     content = content.replace(old_block, new_block)
-    with open('modules/backtester.py', 'w', encoding='utf-8') as f:
+    with open('../modules/backtester.py', 'w', encoding='utf-8') as f:
         f.write(content)
     print("✅ backtester.py fixed - format strings safe")
 else:

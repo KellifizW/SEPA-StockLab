@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 BASE = "http://localhost:5000"
-LOG_DIR = Path("logs")
+LOG_DIR = Path("../logs")
 
 print("[*] Starting backtest for META...")
 resp = requests.post(

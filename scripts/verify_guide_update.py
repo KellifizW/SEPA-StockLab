@@ -7,7 +7,7 @@ Verify GUIDE.md teaching update is correctly integrated
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 def verify_guide_content():
     """檢查 GUIDE.md 是否包含所有新增內容"""

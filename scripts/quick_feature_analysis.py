@@ -1,6 +1,6 @@
 import pandas as pd
 
-df = pd.read_csv('reports/vcp_profit_space_analysis.csv')
+df = pd.read_csv('../reports/vcp_profit_space_analysis.csv')
 
 # Extract winners (with breakouts and positive returns)
 winners = df[df['equity_end'] > 130].copy()
