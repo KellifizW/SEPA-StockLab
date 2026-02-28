@@ -1327,9 +1327,10 @@ def api_chart_enriched(ticker: str):
     """
     OHLCV + technical indicators for TradingView Lightweight Charts.
 
-    Returns Unix-second timestamps (as required by LWC) plus:
+        Returns Unix-second timestamps (as required by LWC) plus:
       candles (OHLC), volume (coloured histogram), sma50/150/200,
-      rsi (RSI-14), bbl/bbm/bbu (Bollinger Bands).
+            rsi (RSI-14), bbl/bbm/bbu (Bollinger Bands), atr14,
+            bb_width_pct, vol_ratio_50d, vcp_signal_events.
     All NaN values are filtered out before serialisation.
     """
     import math as _math
@@ -1365,6 +1366,42 @@ def api_chart_enriched(ticker: str):
         candles, volume = [], []
         sma50, sma150, sma200 = [], [], []
         rsi_pts, bbl_pts, bbm_pts, bbu_pts = [], [], [], []
+        atr_pts, bbw_pts, vol_ratio_pts = [], [], []
+
+        # Historical signal tracking (for learning / validation overlays)
+        atr_raw = pd.to_numeric(df.get("ATR_14"), errors="coerce") if "ATR_14" in df.columns else None
+        if atr_raw is None:
+            atr_raw = pd.to_numeric(df.get("ATRr_14"), errors="coerce") if "ATRr_14" in df.columns else None
+        bbu_raw = pd.to_numeric(df.get("BBU_20_2.0"), errors="coerce") if "BBU_20_2.0" in df.columns else None
+        bbl_raw = pd.to_numeric(df.get("BBL_20_2.0"), errors="coerce") if "BBL_20_2.0" in df.columns else None
+        bbm_raw = pd.to_numeric(df.get("BBM_20_2.0"), errors="coerce") if "BBM_20_2.0" in df.columns else None
+        vol_raw = pd.to_numeric(df.get("Volume"), errors="coerce") if "Volume" in df.columns else None
+
+        if atr_raw is not None:
+            atr_fast = atr_raw.rolling(5, min_periods=5).mean()
+            atr_prev = atr_fast.shift(5)
+            atr_contracting_series = (atr_prev > 0) & ((atr_fast / atr_prev) < 0.85)
+        else:
+            atr_contracting_series = None
+
+        if bbu_raw is not None and bbl_raw is not None and bbm_raw is not None:
+            bb_width_pct_raw = ((bbu_raw - bbl_raw) / bbm_raw.replace(0, float("nan")) * 100.0)
+            bb_fast = bb_width_pct_raw.rolling(5, min_periods=5).mean()
+            bb_q25 = bb_width_pct_raw.rolling(40, min_periods=20).quantile(0.25)
+            bb_contracting_series = bb_fast <= (bb_q25 * 1.1)
+        else:
+            bb_width_pct_raw = None
+            bb_contracting_series = None
+
+        if vol_raw is not None:
+            vol_avg50 = vol_raw.rolling(50, min_periods=20).mean()
+            vol_ratio_raw = vol_raw / vol_avg50.replace(0, float("nan"))
+            vol_dry_series = vol_ratio_raw <= float(getattr(C, "VCP_VOLUME_DRY_THRESHOLD", 0.5))
+        else:
+            vol_ratio_raw = None
+            vol_dry_series = None
+
+        vcp_signal_events = []
 
         for idx, row in df.iterrows():
             try:
@@ -1405,12 +1442,52 @@ def api_chart_enriched(ticker: str):
                 if val is not None:
                     series.append({"time": ts, "value": val})
 
+            atr_v = _sf(row.get("ATR_14") if "ATR_14" in row else row.get("ATRr_14"), 4)
+            if atr_v is not None:
+                atr_pts.append({"time": ts, "value": atr_v})
+
+            bbw_v = None
+            if bb_width_pct_raw is not None:
+                try:
+                    bbw_v = _sf(bb_width_pct_raw.loc[idx], 3)
+                except Exception:
+                    bbw_v = None
+            if bbw_v is not None:
+                bbw_pts.append({"time": ts, "value": bbw_v})
+
+            vr_v = None
+            if vol_ratio_raw is not None:
+                try:
+                    vr_v = _sf(vol_ratio_raw.loc[idx], 3)
+                except Exception:
+                    vr_v = None
+            if vr_v is not None:
+                vol_ratio_pts.append({"time": ts, "value": vr_v})
+
+            atr_sig = bool(atr_contracting_series.loc[idx]) if atr_contracting_series is not None and idx in atr_contracting_series.index and not pd.isna(atr_contracting_series.loc[idx]) else False
+            bb_sig = bool(bb_contracting_series.loc[idx]) if bb_contracting_series is not None and idx in bb_contracting_series.index and not pd.isna(bb_contracting_series.loc[idx]) else False
+            vol_sig = bool(vol_dry_series.loc[idx]) if vol_dry_series is not None and idx in vol_dry_series.index and not pd.isna(vol_dry_series.loc[idx]) else False
+            sig_count = int(atr_sig) + int(bb_sig) + int(vol_sig)
+
+            if sig_count >= 2:
+                vcp_signal_events.append({
+                    "time": ts,
+                    "atr_contracting": atr_sig,
+                    "bb_contracting": bb_sig,
+                    "vol_dry": vol_sig,
+                    "signal_count": sig_count,
+                })
+
         return jsonify({
             "ok": True, "ticker": ticker_upper,
             "candles": candles, "volume": volume,
             "sma50": sma50, "sma150": sma150, "sma200": sma200,
             "rsi": rsi_pts,
             "bbl": bbl_pts, "bbm": bbm_pts, "bbu": bbu_pts,
+            "atr14": atr_pts,
+            "bb_width_pct": bbw_pts,
+            "vol_ratio_50d": vol_ratio_pts,
+            "vcp_signal_events": vcp_signal_events,
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})

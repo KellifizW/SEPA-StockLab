@@ -149,6 +149,12 @@
               <button class="btn btn-outline-secondary active" data-days="365" onclick="setChartRange(365,this)">1Y</button>
               <button class="btn btn-outline-secondary" data-days="504" onclick="setChartRange(504,this)">2Y</button>
             </div>
+            <div class="btn-group btn-group-sm" id="subModeBtns">
+              <button class="btn btn-outline-info active" onclick="setAnalyzeSubMode('rsi',this)">RSI</button>
+              <button class="btn btn-outline-info" onclick="setAnalyzeSubMode('atr',this)">ATR</button>
+              <button class="btn btn-outline-info" onclick="setAnalyzeSubMode('bbw',this)">BB Width</button>
+              <button class="btn btn-outline-info" onclick="setAnalyzeSubMode('vr',this)">Vol Ratio</button>
+            </div>
           </div>
         </div>
         <div class="card-body p-0" style="width:100%;overflow:hidden">
@@ -161,7 +167,7 @@
             <!-- Main chart: Candlestick + SMA + BB + Volume -->
             <div id="lwcMainChart" style="height:370px;width:100%;overflow:hidden"></div>
             <!-- RSI sub-header -->
-            <div style="background:#0d1117;padding:3px 14px;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:14px">
+            <div id="subHeader" style="background:#0d1117;padding:3px 14px;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:14px">
               <span class="small" style="color:#8b949e">RSI (14)</span>
               <span class="small fw-bold" id="rsiCurrentVal" style="color:#c9d1d9">—</span>
               <span class="small" id="rsiOBOS" style="margin-left:4px"></span>
@@ -311,6 +317,11 @@ function renderResult(d, ticker) {
       BB contracting: ${vcp.bb_contracting ? '✓' : '✗'} &nbsp;
       Vol dry-up: ${vcp.vol_dry ? '✓' : '✗'}
     </div>
+    <div class="mt-2 text-muted" style="font-size:0.78rem">
+      • ATR 收縮 ATR Contracting：波動幅度收斂，表示賣壓減弱。<br>
+      • 布林帶收縮 BB Contracting：波動壓縮，常見於突破前能量累積。<br>
+      • 量能乾涸 Volume Dry-up：接近 pivot 時供給減少，後續放量突破更有效。
+    </div>
     ${(vcp.notes||[]).length ? `<div class="mt-2 text-muted small">${vcp.notes.map(n=>`• ${n}`).join('<br>')}</div>` : ''}`;
 
   // Fundamentals
@@ -410,6 +421,7 @@ function renderResult(d, ticker) {
     entry:  pos.entry        ? Number(pos.entry)        : null,
     stop:   pos.stop         ? Number(pos.stop)         : null,
     target: pos.target       ? Number(pos.target)       : null,
+    vcp: vcp,
   });
 }
 
@@ -525,6 +537,16 @@ function prefillPosition(ticker, entry, shares, stop, target) {
 let _lwcMain = null;   // main chart instance
 let _lwcRsi  = null;   // RSI sub-chart instance
 let _lwcData = null;   // cached enriched data
+let _subMode = 'rsi';
+let _lastChartTicker = '';
+let _lastPriceLines = {};
+
+function setAnalyzeSubMode(mode, btn) {
+  _subMode = mode;
+  document.querySelectorAll('#subModeBtns button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (_lastChartTicker) loadPriceHistory(_lastChartTicker, _lastPriceLines || {});
+}
 
 function _lwcDestroy() {
   if (_lwcMain) { try { _lwcMain.remove(); } catch(e) {} _lwcMain = null; }
@@ -543,6 +565,8 @@ function setChartRange(days, btn) {
 }
 
 async function loadPriceHistory(ticker, priceLines = {}) {
+  _lastChartTicker = ticker;
+  _lastPriceLines = priceLines || {};
   const loadEl  = document.getElementById('priceLoading');
   const wrapEl  = document.getElementById('priceChartWrap');
   const emptyEl = document.getElementById('priceEmpty');
@@ -584,6 +608,41 @@ async function loadPriceHistory(ticker, priceLines = {}) {
       wickUpColor:     '#3fb950', wickDownColor:     '#f85149',
     });
     candleSeries.setData(res.candles);
+
+    // VCP signal markers: current checklist + historical 2/3 or 3/3 events
+    const markers = [];
+    if (priceLines && priceLines.vcp && res.candles.length) {
+      const vcp = priceLines.vcp;
+      const lastTime = res.candles[res.candles.length - 1].time;
+      [
+        {ok: Boolean(vcp.atr_contracting), tOk: 'ATR✓', tNo: 'ATR✗'},
+        {ok: Boolean(vcp.bb_contracting),  tOk: 'BB✓',  tNo: 'BB✗'},
+        {ok: Boolean(vcp.vol_dry),         tOk: 'VOL✓', tNo: 'VOL✗'},
+      ].forEach(sig => {
+        markers.push({
+          time: lastTime,
+          position: sig.ok ? 'aboveBar' : 'belowBar',
+          color: sig.ok ? '#3fb950' : '#f85149',
+          shape: sig.ok ? 'circle' : 'square',
+          text: sig.ok ? sig.tOk : sig.tNo,
+        });
+      });
+    }
+    if (res.vcp_signal_events && res.vcp_signal_events.length) {
+      res.vcp_signal_events.forEach(ev => {
+        const strong = Number(ev.signal_count || 0) >= 3;
+        markers.push({
+          time: ev.time,
+          position: strong ? 'belowBar' : 'aboveBar',
+          color: strong ? '#00d4ff' : '#e3b341',
+          shape: strong ? 'arrowUp' : 'circle',
+          text: strong ? 'VCP 3/3' : 'VCP 2/3',
+        });
+      });
+    }
+    if (markers.length && typeof candleSeries.setMarkers === 'function') {
+      candleSeries.setMarkers(markers);
+    }
 
     // Volume histogram — lower 18% of main chart
     const volSeries = _lwcMain.addHistogramSeries({
@@ -631,33 +690,46 @@ async function loadPriceHistory(ticker, priceLines = {}) {
       rightPriceScale: { borderColor: '#30363d', scaleMargins: { top: 0.1, bottom: 0.1 } },
     });
 
-    const rsiSeries = _lwcRsi.addLineSeries({
-      color: '#c9d1d9', lineWidth: 1.5,
+    const subHeader = document.getElementById('subHeader');
+    const subLabel = subHeader ? subHeader.querySelector('span.small') : null;
+    const subCfg = {
+      rsi: { key: 'rsi', title: 'RSI (14)', color: '#c9d1d9', digits: 1, isRsi: true },
+      atr: { key: 'atr14', title: 'ATR (14)', color: '#58a6ff', digits: 3, isRsi: false },
+      bbw: { key: 'bb_width_pct', title: 'BB Width %', color: '#e3b341', digits: 2, isRsi: false },
+      vr: { key: 'vol_ratio_50d', title: 'Vol Ratio vs 50D', color: '#3fb950', digits: 2, isRsi: false },
+    }[_subMode] || { key: 'rsi', title: 'RSI (14)', color: '#c9d1d9', digits: 1, isRsi: true };
+    if (subLabel) subLabel.textContent = subCfg.title;
+
+    const subSeries = _lwcRsi.addLineSeries({
+      color: subCfg.color, lineWidth: 1.5,
       priceLineVisible: false, lastValueVisible: true,
     });
-    if (res.rsi && res.rsi.length) rsiSeries.setData(res.rsi);
+    const subData = (res[subCfg.key] || []).filter(p => p && typeof p.value === 'number');
+    if (subData.length) subSeries.setData(subData);
 
-    // RSI reference lines: 70 / 50 / 30
-    rsiSeries.createPriceLine({ price: 70, color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: '70' });
-    rsiSeries.createPriceLine({ price: 50, color: '#333333', lineWidth: 1, lineStyle: 0, axisLabelVisible: false });
-    rsiSeries.createPriceLine({ price: 30, color: '#3fb950', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: '30' });
+    if (subCfg.isRsi) {
+      subSeries.createPriceLine({ price: 70, color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '70' });
+      subSeries.createPriceLine({ price: 50, color: '#333333', lineWidth: 1, lineStyle: 0, axisLabelVisible: false });
+      subSeries.createPriceLine({ price: 30, color: '#3fb950', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '30' });
+    }
 
-    // RSI value readout on crosshair
+    // Sub-series value readout on crosshair
     _lwcMain.subscribeCrosshairMove(param => {
       const el   = document.getElementById('rsiCurrentVal');
       const obEl = document.getElementById('rsiOBOS');
-      if (!el || !res.rsi || !res.rsi.length) return;
-      let rsiVal = null;
+      if (!el || !subData.length) return;
+      let val = null;
       if (param && param.time) {
-        const pt = res.rsi.find(r => r.time === param.time);
-        if (pt) rsiVal = pt.value;
+        const pt = subData.find(r => r.time === param.time);
+        if (pt) val = pt.value;
       }
-      if (rsiVal === null) rsiVal = res.rsi[res.rsi.length - 1].value;
-      const color = rsiVal >= 70 ? '#f85149' : rsiVal <= 30 ? '#3fb950' : '#c9d1d9';
-      el.textContent  = rsiVal.toFixed(1);
+      if (val === null) val = subData[subData.length - 1].value;
+      let color = subCfg.color;
+      if (subCfg.isRsi) color = val >= 70 ? '#f85149' : val <= 30 ? '#3fb950' : '#c9d1d9';
+      el.textContent  = Number(val).toFixed(subCfg.digits);
       el.style.color  = color;
       if (obEl) {
-        obEl.textContent = rsiVal >= 70 ? '超買 Overbought' : rsiVal <= 30 ? '超賣 Oversold' : '';
+        obEl.textContent = subCfg.isRsi ? (val >= 70 ? '超買 Overbought' : val <= 30 ? '超賣 Oversold' : '') : '';
         obEl.style.color = color;
       }
     });
@@ -694,6 +766,27 @@ async function loadPriceHistory(ticker, priceLines = {}) {
     }
     if (pl.stop)   candleSeries.createPriceLine({ price: pl.stop,   color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: `Stop $${pl.stop.toFixed(2)}` });
     if (pl.target) candleSeries.createPriceLine({ price: pl.target, color: '#3fb950', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,  title: `Target $${pl.target.toFixed(2)}` });
+
+    // Signal overlay badges under chart
+    let signalEl = document.getElementById('analyzeSignalOverlay');
+    if (!signalEl) {
+      signalEl = document.createElement('div');
+      signalEl.id = 'analyzeSignalOverlay';
+      signalEl.className = 'px-3 py-2 small';
+      signalEl.style.background = '#0d1117';
+      signalEl.style.borderTop = '1px solid #21262d';
+      wrapEl.appendChild(signalEl);
+    }
+    const v = pl.vcp || {};
+    const fmtSignal = (name, pass) => `<span class="badge ${pass ? 'text-bg-success' : 'text-bg-danger'} me-1">${name}: ${pass ? 'YES' : 'NO'}</span>`;
+    const eventCount = (res.vcp_signal_events || []).length;
+    signalEl.innerHTML = `
+      <span class="text-muted me-2">Signal Overlay</span>
+      ${fmtSignal('ATR Contracting', Boolean(v.atr_contracting))}
+      ${fmtSignal('BB Contracting', Boolean(v.bb_contracting))}
+      ${fmtSignal('Volume Dry-up', Boolean(v.vol_dry))}
+      <span class="badge text-bg-info ms-1">歷史事件 Events: ${eventCount}</span>
+    `;
 
     // Default view: 1Y
     setChartRange(365, document.querySelector('#chartRangeBtns button[data-days="365"]'));

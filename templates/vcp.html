@@ -133,6 +133,11 @@
               <button class="btn btn-outline-secondary" data-days="180" onclick="setVcpRange(180,this)">6M</button>
               <button class="btn btn-outline-secondary active" data-days="365" onclick="setVcpRange(365,this)">1Y</button>
             </div>
+            <div class="btn-group btn-group-sm" id="vcpSubModeBtns">
+              <button class="btn btn-outline-info active" onclick="setVcpSubMode('atr',this)">ATR</button>
+              <button class="btn btn-outline-info" onclick="setVcpSubMode('bbw',this)">BB Width</button>
+              <button class="btn btn-outline-info" onclick="setVcpSubMode('vr',this)">Vol Ratio</button>
+            </div>
           </div>
         </div>
         <div class="card-body p-0" style="width:100%;overflow:hidden">
@@ -147,6 +152,11 @@
             <div style="background:#0d1117;padding:2px 14px;display:flex;align-items:center;gap:10px">
               <span class="small" style="color:#8b949e">Volume</span>
             </div>
+            <div id="vcpSubHeader" style="background:#0d1117;padding:3px 14px;border-top:1px solid #21262d;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:10px">
+              <span class="small" style="color:#8b949e">ATR (14)</span>
+              <span class="small fw-bold" id="vcpSubCurrentVal" style="color:#c9d1d9">—</span>
+            </div>
+            <div id="lwcVcpSubChart" style="height:110px;width:100%;overflow:hidden"></div>
           </div>
           <div id="vcpChartEmpty" style="display:none" class="text-center py-4 text-muted">
             <i class="bi bi-inbox fs-2 d-block mb-2"></i>No chart data available.
@@ -264,6 +274,23 @@ function renderVcp(ticker, d) {
 // ── VCP Chart state ───────────────────────────────────────────────────────────
 let _vcpChart = null;
 let _vcpData  = null;
+let _vcpSubChart = null;
+let _vcpSubMode = 'atr';
+
+function _destroyVcpCharts() {
+  if (_vcpChart) { try { _vcpChart.remove(); } catch(e) {} _vcpChart = null; }
+  if (_vcpSubChart) { try { _vcpSubChart.remove(); } catch(e) {} _vcpSubChart = null; }
+}
+
+function setVcpSubMode(mode, btn) {
+  _vcpSubMode = mode;
+  document.querySelectorAll('#vcpSubModeBtns button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (_vcpData && _vcpData.candles && _vcpData.candles.length) {
+    const pivot = _currentVcpResult && _currentVcpResult.pivot_price ? Number(_currentVcpResult.pivot_price) : null;
+    loadVcpChart(_currentTicker, pivot, _currentVcpResult);
+  }
+}
 
 function setVcpRange(days, btn) {
   document.querySelectorAll('#vcpRangeBtns button').forEach(b => b.classList.remove('active'));
@@ -283,7 +310,7 @@ async function loadVcpChart(ticker, pivotPrice, vcpData) {
   loadEl.style.display  = 'block';
   wrapEl.style.display  = 'none';
   emptyEl.style.display = 'none';
-  if (_vcpChart) { try { _vcpChart.remove(); } catch(e) {} _vcpChart = null; }
+  _destroyVcpCharts();
 
   try {
     const res = await fetch(`/api/chart/enriched/${ticker}?days=504`).then(x => x.json());
@@ -377,15 +404,78 @@ async function loadVcpChart(ticker, pivotPrice, vcpData) {
         });
       });
 
+      // Historical signal events (2/3 or 3/3) for learning + model validation
+      if (res.vcp_signal_events && res.vcp_signal_events.length) {
+        res.vcp_signal_events.forEach(ev => {
+          const strong = Number(ev.signal_count || 0) >= 3;
+          markers.push({
+            time: ev.time,
+            position: strong ? 'belowBar' : 'aboveBar',
+            color: strong ? '#00d4ff' : '#e3b341',
+            shape: strong ? 'arrowUp' : 'circle',
+            text: strong ? 'VCP 3/3' : 'VCP 2/3',
+          });
+        });
+      }
+
       if (typeof candleSeries.setMarkers === 'function') {
         candleSeries.setMarkers(markers);
       }
+    }
+
+    // Sub-chart (toggle): ATR / BB Width / Volume Ratio
+    const subDiv = document.getElementById('lwcVcpSubChart');
+    const subHead = document.getElementById('vcpSubHeader');
+    const subValEl = document.getElementById('vcpSubCurrentVal');
+    const subConfig = {
+      atr: { key: 'atr14', title: 'ATR (14)', color: '#58a6ff', digits: 3 },
+      bbw: { key: 'bb_width_pct', title: 'BB Width %', color: '#e3b341', digits: 2 },
+      vr: { key: 'vol_ratio_50d', title: 'Vol Ratio vs 50D', color: '#3fb950', digits: 2 },
+    }[_vcpSubMode] || { key: 'atr14', title: 'ATR (14)', color: '#58a6ff', digits: 3 };
+
+    const subData = (res[subConfig.key] || []).filter(p => p && typeof p.value === 'number');
+    if (subHead) subHead.querySelector('span.small').textContent = subConfig.title;
+
+    _vcpSubChart = LWC.createChart(subDiv, {
+      ...baseOpts,
+      height: 110,
+      width: containerWidth,
+      timeScale: { ...baseOpts.timeScale, visible: false },
+      rightPriceScale: { borderColor: '#30363d', scaleMargins: { top: 0.1, bottom: 0.1 } },
+    });
+    const subSeries = _vcpSubChart.addLineSeries({
+      color: subConfig.color, lineWidth: 1.8,
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    if (subData.length) {
+      subSeries.setData(subData);
+      const lastV = subData[subData.length - 1].value;
+      if (subValEl) {
+        subValEl.textContent = Number(lastV).toFixed(subConfig.digits);
+        subValEl.style.color = subConfig.color;
+      }
+    } else if (subValEl) {
+      subValEl.textContent = '—';
+      subValEl.style.color = '#8b949e';
+    }
+
+    if (_vcpChart && _vcpSubChart) {
+      let syncing = false;
+      _vcpChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+        if (syncing || !_vcpSubChart || !range) return;
+        syncing = true; _vcpSubChart.timeScale().setVisibleLogicalRange(range); syncing = false;
+      });
+      _vcpSubChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+        if (syncing || !_vcpChart || !range) return;
+        syncing = true; _vcpChart.timeScale().setVisibleLogicalRange(range); syncing = false;
+      });
     }
 
     // Responsive resize — observe parent card-body
     new ResizeObserver(() => {
       const w = wrapDiv.parentElement.clientWidth || window.innerWidth - 40;
       if (_vcpChart) _vcpChart.applyOptions({ width: w });
+      if (_vcpSubChart) _vcpSubChart.applyOptions({ width: w });
     }).observe(wrapDiv.parentElement);
 
     // Default 1Y view
@@ -412,6 +502,7 @@ async function loadVcpChart(ticker, pivotPrice, vcpData) {
       ${fmtSignal('ATR Contracting', Boolean(vcpData && vcpData.atr_contracting))}
       ${fmtSignal('BB Contracting', Boolean(vcpData && vcpData.bb_contracting))}
       ${fmtSignal('Volume Dry-up', Boolean(vcpData && vcpData.vol_dry))}
+      <span class="badge text-bg-info ms-1">歷史事件 Events: ${(res.vcp_signal_events||[]).length}</span>
     `;
   } catch(e) {
     console.error('loadVcpChart error:', e);
