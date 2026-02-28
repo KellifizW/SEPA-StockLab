@@ -709,6 +709,10 @@ def analyze_qm(ticker: str,
         "trade_plan":        trade_plan,
         "ma":                {k: v for k, v in ma.items()},
         "momentum":          mom,
+        # Flatten momentum fields for template convenience
+        "mom_1m":            mom.get("1m"),
+        "mom_3m":            mom.get("3m"),
+        "mom_6m":            mom.get("6m"),
     }
 
     if print_report:

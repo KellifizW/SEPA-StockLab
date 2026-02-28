@@ -331,21 +331,25 @@ function renderAnalysis(ticker, r) {
 
   // ── Dimension breakdown bars ──────────────────────────────────────────────
   const dimInfo = {
-    a_momentum:      { label: 'A · 動力質素 Momentum Quality',     icon: 'bi-rocket', max: 2, min: -2 },
-    b_adr:           { label: 'B · ADR 平均日波動幅',               icon: 'bi-arrows-expand', max: 2, min: -2 },
-    c_consolidation: { label: 'C · 整固質量 Consolidation Quality', icon: 'bi-geo', max: 2, min: -2 },
-    d_ma:            { label: 'D · 均線關係 MA Alignment',          icon: 'bi-bar-chart', max: 2, min: -2 },
-    e_type:          { label: 'E · 股票類型 Stock Type',            icon: 'bi-building', max: 2, min: -2 },
-    f_market:        { label: 'F · 市場環境 Market Timing',         icon: 'bi-globe', max: 2, min: -2 },
+    'A': { label: 'A · 動力質素 Momentum Quality',     icon: 'bi-rocket' },
+    'B': { label: 'B · ADR 平均日波動幅',               icon: 'bi-arrows-expand' },
+    'C': { label: 'C · 整固質量 Consolidation Quality', icon: 'bi-geo' },
+    'D': { label: 'D · 均線關係 MA Alignment',          icon: 'bi-bar-chart' },
+    'E': { label: 'E · 股票類型 Stock Type',            icon: 'bi-building' },
+    'F': { label: 'F · 市場環境 Market Timing',         icon: 'bi-globe' },
   };
 
   document.getElementById('dimBreakdown').innerHTML = Object.entries(dimInfo).map(([key, info]) => {
     const d = dims[key] || {};
-    const adj = parseFloat(d.adj ?? d.score ?? 0);
+    const adj = parseFloat(d.score ?? 0);  // dim_scores[key].score
     const pct = Math.max(0, Math.min(100, (adj + 2) / 4 * 100));
     const barColor = adj >= 1 ? '#3fb950' : adj >= 0 ? '#58a6ff' : adj >= -1 ? '#e3b341' : '#f85149';
     const adjText = adj >= 0 ? '+' + adj.toFixed(1) : adj.toFixed(1);
-    const notes = d.notes || [];
+    // Extract notes from detail
+    const detail = d.detail || {};
+    const notes = detail.notes || [];
+    const tooltip = detail.tooltip || '';
+    const isVeto = detail.is_veto || false;
 
     return `<div class="col-12 col-md-6">
       <div style="padding:12px;background:#0d1117;border:1px solid #21262d;border-radius:6px">
@@ -356,8 +360,11 @@ function renderAnalysis(ticker, r) {
         <div class="dim-bar-wrap mb-2">
           <div class="dim-bar" style="width:${pct}%;background:${barColor}"></div>
         </div>
-        ${notes.length ? `<ul class="mb-0 ps-3" style="font-size:11px;color:#8b949e">${notes.map(n=>`<li>${n}</li>`).join('')}</ul>` : ''}
-        ${d.is_veto ? '<div class="mt-1" style="color:#f85149;font-size:11px"><i class="bi bi-x-octagon me-1"></i>否決觸發 VETO triggered</div>' : ''}
+        <div style="font-size:11px;color:#8b949e;line-height:1.4;margin-bottom:6px">
+          ${detail.note ? `<div>${detail.note}</div>` : ''}
+          ${tooltip ? `<div style="opacity:0.7;margin-top:4px">${tooltip.split('\\n').slice(0,2).join('<br>')}</div>` : ''}
+        </div>
+        ${isVeto ? '<div style="color:#f85149;font-size:11px"><i class="bi bi-x-octagon me-1"></i>否決觸發 VETO triggered</div>' : ''}
       </div>
     </div>`;
   }).join('');
@@ -476,18 +483,26 @@ async function loadChart(ticker) {
       wickUpColor: '#3fb950', wickDownColor: '#f85149',
     });
 
-    const resp = await fetch(`/api/analyze/chart-data?ticker=${ticker}&days=180`);
+    // Fetch chart data from /api/chart/enriched (SEPA enriched OHLCV endpoint)
+    const resp = await fetch(`/api/chart/enriched/${ticker}?days=504`);
+    
     if (resp.ok) {
       const data = await resp.json();
-      if (data.ok && data.candles) {
+      if (data.ok && data.candles && data.candles.length > 0) {
         candleSeries.setData(data.candles);
         chart.timeScale().fitContent();
+        return;  // Success
+      } else {
+        throw new Error(data.error || 'No chart data');
       }
+    } else {
+      throw new Error('Failed to fetch chart data');
     }
   } catch(e) {
     container.innerHTML = `<div class="text-secondary text-center py-4">
       <i class="bi bi-graph-up" style="font-size:2rem;opacity:0.3"></i>
-      <div class="mt-2" style="font-size:12px">圖表載入失敗 Chart unavailable</div></div>`;
+      <div class="mt-2" style="font-size:12px">圖表載入失敗 / Chart unavailable</div>
+      <div class="mt-1" style="font-size:10px;opacity:0.7">${e.message}</div></div>`;
   }
 }
 
