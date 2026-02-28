@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 
 def get_day1_stop(entry_price: float,
                   day_low: float,
-                  buffer_pct: float = None) -> dict:
+                  buffer_pct: float = None,
+                  atr: float = None) -> dict:
     """
     Calculate the Day 1 initial stop loss for a Qullamaggie breakout entry.
     Day 1 stop = today's Low-of-Day (LOD) minus a small buffer.
@@ -60,7 +61,29 @@ def get_day1_stop(entry_price: float,
     risk_pct   = (entry_price - stop_price) / entry_price * 100.0 if entry_price > 0 else 0
     risk_ps    = entry_price - stop_price
 
-    return {
+    # ── Supplement 1 + 31: ATR stop-distance validation ───────────────────
+    # Rule: "The stop shouldn't be higher than the average true range."
+    # Ideal: stop distance ≈ 0.5 × ATR ("usually around half of ATR")
+    atr_check = {}
+    if atr is not None and atr > 0:
+        stop_dist = entry_price - stop_price
+        atr_ratio = stop_dist / atr
+        is_within = atr_ratio <= getattr(C, "QM_ATR_STOP_MAX_MULT", 1.0)
+        is_ideal  = atr_ratio <= getattr(C, "QM_ATR_STOP_IDEAL_MULT", 0.5)
+        atr_check = {
+            "atr":                round(atr, 4),
+            "stop_distance":      round(stop_dist, 4),
+            "stop_vs_atr_ratio":  round(atr_ratio, 2),
+            "is_within_atr":      is_within,
+            "is_ideal_stop":      is_ideal,
+            "warning_zh":         (
+                "" if is_ideal
+                else ("止損距離超過ATR上限 — 進場太晚" if not is_within
+                      else "止損距離超過0.5×ATR — 略高於理想值")
+            ),
+        }
+
+    result = {
         "stop_price":            round(stop_price, 2),
         "risk_pct":              round(risk_pct, 2),
         "risk_per_share":        round(risk_ps, 2),
@@ -73,6 +96,197 @@ def get_day1_stop(entry_price: float,
             "若股價跌穿此位 → 全部賣出，不猶豫\n"
             "'You should always be using a stop loss, especially\n"
             " as a beginner and especially with these volatile stocks.'"
+        ),
+    }
+    if atr_check:
+        result["atr_check"] = atr_check
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ATR Entry Gate  (Supplement 1 + 31)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_atr_entry_gate(current_price: float,
+                         day_open: float,
+                         day_low: float,
+                         atr: float) -> dict:
+    """
+    Check whether the current intraday price still allows a valid ATR entry.
+
+    Qullamaggie supplement rules (S1 + S31):
+      "I usually don't buy the stock if it's up more on the day than its ATR."
+      "Preferably you want to get in when the stock is only up a third or half
+       or two-thirds of its average true range."
+      "Low of the day is 172. ATR is 16. So your entry was no higher than 188
+       should have been your entry, because the stop shouldn't be higher than ATR."
+
+    Key outputs:
+      max_entry_price  = day_low + ATR  (absolute ceiling — LOD + 1 ATR)
+      ideal_entry_max  = day_open + ATR × 0.67  (gain up to 2/3 ATR)
+      early_entry_max  = day_open + ATR × 0.33  (gain ≤ 1/3 ATR = very good)
+
+    Args:
+        current_price: current market price (or intended entry price)
+        day_open:      today's open price
+        day_low:       today's intraday low (LOD)
+        atr:           14-day ATR in dollars (from get_atr())
+
+    Returns:
+        dict with 'status', 'max_entry_price', 'ideal_entry_max',
+        'gain_vs_atr_ratio', 'warning_zh', 'warning_en'
+    """
+    if atr <= 0 or day_open <= 0:
+        return {
+            "status":          "UNKNOWN",
+            "max_entry_price": None,
+            "ideal_entry_max": None,
+            "early_entry_max": None,
+            "intraday_gain":   None,
+            "gain_vs_atr_ratio": None,
+            "warning_zh":      "無法計算 ATR 進場閘門（數據不足）",
+            "warning_en":      "Cannot compute ATR entry gate (insufficient data)",
+        }
+
+    max_entry_mult  = getattr(C, "QM_ATR_ENTRY_MAX_MULT", 1.0)
+    ideal_max_mult  = getattr(C, "QM_ATR_ENTRY_IDEAL_MAX_MULT", 0.67)
+    early_mult      = getattr(C, "QM_ATR_ENTRY_EARLY_MULT", 0.33)
+
+    intraday_gain   = current_price - day_open
+    gain_ratio      = intraday_gain / atr if atr > 0 else 0.0
+
+    # LOD-based ceiling: entry price must allow stop distance ≤ ATR
+    max_entry_lod   = round(day_low + atr * max_entry_mult, 2)
+    ideal_entry_max = round(day_open + atr * ideal_max_mult, 2)
+    early_entry_max = round(day_open + atr * early_mult, 2)
+
+    # Use the more restrictive of the two ceilings
+    effective_max = min(max_entry_lod, day_open + atr * max_entry_mult)
+
+    if current_price > max_entry_lod:
+        status = "TOO_LATE"
+        warning_zh = (f"進場太晚！股價 ${current_price:.2f} 已超過ATR上限 ${max_entry_lod:.2f} "
+                      f"(日低 ${day_low:.2f} + ATR ${atr:.2f}) — 止損距離超限")
+        warning_en = (f"Price ${current_price:.2f} exceeds ATR ceiling ${max_entry_lod:.2f} "
+                      f"(LOD ${day_low:.2f} + ATR ${atr:.2f}) — stop > ATR, skip")
+    elif gain_ratio > ideal_max_mult:
+        status = "ACCEPTABLE"
+        warning_zh = (f"進場偏晚 — 日內漲幅 {gain_ratio:.1%} × ATR（理想 ≤ {ideal_max_mult:.0%}）"
+                      f"\n最高可接受進場價 ${max_entry_lod:.2f}")
+        warning_en = (f"Entry late — intraday gain is {gain_ratio:.1%} of ATR "
+                      f"(ideal ≤ {ideal_max_mult:.0%}) | max acceptable: ${max_entry_lod:.2f}")
+    elif gain_ratio > early_mult:
+        status = "IDEAL"
+        warning_zh = f"理想進場 — 日內漲幅 {gain_ratio:.1%} × ATR（在 1/3–2/3 ATR 黃金區間）"
+        warning_en = f"Ideal entry — intraday gain is {gain_ratio:.1%} of ATR (1/3-2/3 ATR window)"
+    else:
+        status = "EARLY"
+        warning_zh = f"極佳進場 — 日內漲幅僅 {gain_ratio:.1%} × ATR（≤ 1/3 ATR，非常早）"
+        warning_en = f"Early entry — intraday gain is only {gain_ratio:.1%} of ATR (very good)"
+
+    return {
+        "status":            status,
+        "max_entry_price":   max_entry_lod,
+        "ideal_entry_max":   ideal_entry_max,
+        "early_entry_max":   early_entry_max,
+        "intraday_gain":     round(intraday_gain, 4),
+        "gain_vs_atr_ratio": round(gain_ratio, 3),
+        "atr":               round(atr, 4),
+        "day_low":           round(day_low, 2),
+        "day_open":          round(day_open, 2),
+        "warning_zh":        warning_zh,
+        "warning_en":        warning_en,
+        "tooltip":           (
+            "ATR 進場閘門 (Supplement 1 + 31)\n"
+            f"ATR = ${atr:.2f} (14日日內振幅均值)\n"
+            f"最高進場上限 = 日低 + ATR = ${max_entry_lod:.2f}\n"
+            f"理想進場上限 = 開盤 + 2/3 ATR = ${ideal_entry_max:.2f}\n"
+            "超過ATR上限 → 止損距離超過ATR → 不進場\n"
+            "\"I usually don't buy the stock if it's up more on"
+            " the day than its average true range.\""
+        ),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Extended Stock Detection  (Supplement 4 + 33)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_extended_stock(df: pd.DataFrame, sma_period: int = 10) -> dict:
+    """
+    Detect if a stock is over-extended from its moving average.
+
+    Qullamaggie supplement rules (S4 + S33):
+      "When this thing was like 60% above the 10-day moving average,
+       I didn't even want to trail it on the 10 day. I just sold it."
+      Selling when extremely extended = protecting unrealised profits before
+      they evaporate.  'Extended stocks do get more extended, but the risk
+      of giving back too much is high.'
+
+    Statuses:
+      NORMAL   — price within 40% of sma_period MA
+      EXTENDED — price >40% above → consider trimming (don't blindly trail)
+      EXTREME  — price >60% above → Qullamaggie would likely sell outright
+
+    Args:
+        df:          OHLCV DataFrame (with SMA columns if available)
+        sma_period:  MA to compare against (default 10 for QM system)
+
+    Returns:
+        dict with 'status', 'pct_above_sma', 'action', 'warning_zh'
+    """
+    extended_pct = getattr(C, "QM_EXTENDED_SMA10_PCT", 40.0)
+    extreme_pct  = getattr(C, "QM_EXTENDED_SMA10_EXTREME", 60.0)
+
+    if df.empty:
+        return {"status": "UNKNOWN", "pct_above_sma": None,
+                "action": "HOLD_TRAIL", "warning_zh": ""}
+
+    close = float(df["Close"].iloc[-1])
+    col   = f"SMA_{sma_period}"
+    if col in df.columns:
+        sma_val = float(df[col].iloc[-1])
+    else:
+        if len(df) >= sma_period:
+            sma_val = float(df["Close"].rolling(sma_period).mean().iloc[-1])
+        else:
+            return {"status": "UNKNOWN", "pct_above_sma": None,
+                    "action": "HOLD_TRAIL", "warning_zh": ""}
+
+    if sma_val <= 0:
+        return {"status": "UNKNOWN", "pct_above_sma": None,
+                "action": "HOLD_TRAIL", "warning_zh": ""}
+
+    pct_above = (close / sma_val - 1.0) * 100.0
+
+    if pct_above >= extreme_pct:
+        status    = "EXTREME"
+        action    = "SELL_IMMEDIATELY"
+        warning   = (f"⚠️ 極度延伸：股價高於{sma_period}SMA達 {pct_above:.0f}%（>{extreme_pct:.0f}%）"
+                     f"\nQullamaggie原話：'我直接賣出，不等10SMA止損' — 考慮立即賣出")
+    elif pct_above >= extended_pct:
+        status    = "EXTENDED"
+        action    = "CONSIDER_REDUCING"
+        warning   = (f"⚠️ 過度延伸：股價高於{sma_period}SMA達 {pct_above:.0f}%（>{extended_pct:.0f}%）"
+                     f"\n若繼續持有，回調空間大 — 考慮提前減倉，不等10SMA信號")
+    else:
+        status    = "NORMAL"
+        action    = "HOLD_TRAIL"
+        warning   = ""
+
+    return {
+        "status":        status,
+        "pct_above_sma": round(pct_above, 1),
+        "sma_value":     round(sma_val, 2),
+        "close":         round(close, 2),
+        "action":        action,
+        "warning_zh":    warning,
+        "tooltip":       (
+            f"延伸狀態 (Extended Check — Supplement 4+33)\n"
+            f"股價距 {sma_period}SMA: {pct_above:+.1f}%\n"
+            f">40% = 過度延伸，考慮減倉；>60% = 極端，Qullamaggie直接賣出\n"
+            "'Extended stocks do get more extended, but giving back too much"
+            " is a real risk when this far from the MA.'"
         ),
     }
 
@@ -374,7 +588,9 @@ def check_qm_position(
     gain_pct = (close / entry_price - 1.0) * 100.0 if entry_price > 0 else 0
 
     # ── Compute stops by phase ─────────────────────────────────────────────
-    day1_info  = get_day1_stop(entry_price, float(df["Low"].iloc[-1]))
+    from modules.data_pipeline import get_atr as _get_atr
+    atr_val   = _get_atr(df)
+    day1_info  = get_day1_stop(entry_price, float(df["Low"].iloc[-1]), atr=atr_val)
     day2_info  = get_day2_stop(entry_price, close)
     day3_info  = get_day3_trail_stop(df, entry_price, current_stop)
     profit     = get_profit_action(entry_price, close, entry_date, shares, star_rating)
@@ -423,6 +639,20 @@ def check_qm_position(
             "msg_en": f"Up {gain_pct:.1f}% — consider locking partial profits",
         })
 
+    # ── Supplement 4 + 33: Extended stock check ────────────────────────────
+    extended = check_extended_stock(df)
+    if extended.get("status") in ("EXTENDED", "EXTREME"):
+        severity = "critical" if extended["status"] == "EXTREME" else "warning"
+        signals.append({
+            "type":     "EXTENDED",
+            "severity": severity,
+            "msg_zh":   extended["warning_zh"],
+            "msg_en":   f"Stock {extended['status']} ({extended.get('pct_above_sma',0):.0f}% above 10SMA) — {extended['action']}",
+        })
+        # If extreme and we haven't already stopped, override primary action
+        if extended["status"] == "EXTREME" and not stop_triggered:
+            primary_action = "SELL_IMMEDIATELY"
+
     return {
         "ticker":           ticker,
         "current_phase":    phase,
@@ -436,6 +666,7 @@ def check_qm_position(
         "day2_stop":        day2_info,
         "day3_trail":       day3_info,
         "profit_action":    profit,
+        "extended":         extended,
         "signals":          signals,
         "scan_date":        date.today().isoformat(),
     }

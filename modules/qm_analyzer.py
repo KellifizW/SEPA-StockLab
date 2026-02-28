@@ -47,7 +47,8 @@ _RESET  = "\033[0m"
 # Dimension A — Momentum Quality
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _score_dim_a(df: pd.DataFrame, rs_rank: Optional[float] = None) -> dict:
+def _score_dim_a(df: pd.DataFrame, rs_rank: Optional[float] = None,
+                 sector_rank: Optional[float] = None) -> dict:
     """
     Score Dimension A: Momentum Quality (0 to +2 star adjustment).
 
@@ -57,6 +58,11 @@ def _score_dim_a(df: pd.DataFrame, rs_rank: Optional[float] = None) -> dict:
       • Institutional footprint (natural flow: Higher Lows + consistent buying)
       • Multi-timeframe momentum confirmation            → +0.5 to +1
       • Retail-pump with no natural flow                 → -1
+
+    Supplement 3: "In a leading sector a 3.5-star setup counts like 5-star"
+      sector_rank ≥ 90 (top ~2 sectors) → +1.0 star (sector leader bonus)
+      sector_rank ≥ 70                  → +0.5 star (strong sector)
+      sector_rank < 30                  → -0.25 star (weak sector drag)
     """
     from modules.data_pipeline import get_momentum_returns
 
@@ -104,10 +110,28 @@ def _score_dim_a(df: pd.DataFrame, rs_rank: Optional[float] = None) -> dict:
     elif m6 >= 150:
         adj += 0.25
 
+    # ── Supplement 3: Sector momentum amplifier ──────────────────────────
+    # "In a leading sector a 3.5-star setup counts like a 5-star setup"
+    if sector_rank is not None:
+        leader_bonus = getattr(C, "QM_SECTOR_LEADER_BONUS", 1.0)
+        strong_bonus = getattr(C, "QM_SECTOR_STRONG_BONUS", 0.5)
+        weak_penalty = getattr(C, "QM_SECTOR_WEAK_PENALTY", -0.25)
+        if sector_rank >= 90:
+            adj += leader_bonus
+            detail["sector_bonus"] = f"+{leader_bonus:.1f} (最強板塊領要者 — 前10%百分位)"
+        elif sector_rank >= 70:
+            adj += strong_bonus
+            detail["sector_bonus"] = f"+{strong_bonus:.1f} (強勢板塊 — 前30%百分位)"
+        elif sector_rank < 30:
+            adj += weak_penalty
+            detail["sector_bonus"] = f"{weak_penalty:.2f} (弱勢板塊 — 後70%百分位)"
+        detail["sector_rank"] = round(sector_rank, 1)
+
     detail["adjustment"] = round(adj, 2)
     detail["tooltip"] = (
         "動量品質 (Momentum Quality)\n"
         "通過的時間框架越多、RSI排名越高 → 越強\n"
+        "板塊加成：最強板塊+1星，強勢板塊+0.5星（補充規則 S3）\n"
         f"1M={m1:.0f}% 3M={m3:.0f}% 6M={m6:.0f}%"
     )
     return {"score": round(adj, 2), "detail": detail}
@@ -305,13 +329,34 @@ def _score_dim_d(df: pd.DataFrame) -> dict:
     if pct_20 is not None and s20_up and -tolerance <= pct_20 <= 1.0:
         adj += 0.5   # Just reclaimed 20SMA — ideal position
 
+    # ── Supplement 27: MA slope 45° rule ────────────────────────────────
+    # "The 10, 20, 50-day MAs need to go straight up — at least 45 degrees"
+    # "It needs to be at least 45°. The faster the better."
+    from modules.data_pipeline import get_ma_slope
+    primary_ma = surf if surf in (10, 20, 50) else 20
+    slope_info = get_ma_slope(df, period=primary_ma)
+    slope_adj  = 0.0
+    if slope_info["direction"] == "rising_fast":
+        slope_adj = getattr(C, "QM_MA_SLOPE_FAST_BONUS", 0.5)
+    elif slope_info["direction"] == "rising":
+        slope_adj = getattr(C, "QM_MA_SLOPE_PASS_BONUS", 0.25)
+    elif slope_info["direction"] == "flat":
+        slope_adj = getattr(C, "QM_MA_SLOPE_SLOW_PENALTY", -0.25)
+    else:  # declining
+        slope_adj = getattr(C, "QM_MA_SLOPE_DOWN_PENALTY", -0.75)
+    adj += slope_adj
+
     adj = max(-2.0, min(adj, 2.0))
     detail["adjustment"] = round(adj, 2)
+    detail["slope"] = slope_info
+    detail["slope_bonus"] = round(slope_adj, 2)
     detail["tooltip"] = (
-        "均線對齊 (MA Alignment)\n"
+        "均線對齊 (MA Alignment) + 45°斜率規則 (Supplement 27)\n"
         "20SMA是最重要的均線—Qullamaggie: '神奇的黃線'\n"
         "衝浪20SMA+均線全部向上 = 最佳設置\n"
-        "股價距離20SMA超過10-15% → 失敗率上升，應等待20SMA追上來"
+        f"當前{primary_ma}SMA斜率: {slope_info['direction']} "
+        f"({slope_info['slope_pct_per_bar']:.3f}%/bar≈{slope_info['angle_approx_deg']:.0f}°)\n"
+        "均線角度需≥45°(越陡越好);angle<45°=不是動量領導者"
     )
     return {"score": round(adj, 2), "detail": detail}
 
@@ -431,12 +476,50 @@ def _score_dim_f() -> dict:
         detail["note"] = "無法取得市場數據，假設中性"
         detail["regime"] = "UNKNOWN"
 
+    # ── Supplement 5: NASDAQ 10/20SMA environment layer ─────────────────
+    # "NASDAQ is the relevant index. You don't need to look at anything other."
+    # "10-day sloping higher + 20-day sloping higher → full power mode"
+    try:
+        from modules.data_pipeline import get_historical, get_technicals, get_ma_slope
+        nasdaq_proxy = getattr(C, "QM_NASDAQ_PROXY", "QQQ")
+        qqq_df = get_historical(nasdaq_proxy, period="3mo", use_cache=True)
+        if not qqq_df.empty:
+            qqq_df = get_technicals(qqq_df)
+            slope_10    = get_ma_slope(qqq_df, period=10)
+            slope_20    = get_ma_slope(qqq_df, period=20)
+            sma10_val   = slope_10.get("ma_value", 0)
+            sma20_val   = slope_20.get("ma_value", 0)
+            s10_up      = slope_10.get("direction") in ("rising", "rising_fast")
+            s20_up      = slope_20.get("direction") in ("rising", "rising_fast")
+            s10_above   = sma10_val > sma20_val if sma10_val > 0 and sma20_val > 0 else False
+
+            bull_bonus   = getattr(C, "QM_NASDAQ_BULL_BONUS", 0.5)
+            bear_penalty = getattr(C, "QM_NASDAQ_BEAR_PENALTY", -0.5)
+
+            if s10_above and s10_up and s20_up:
+                adj += bull_bonus
+                detail["nasdaq_regime"] = (
+                    f"NASDAQ全力模式 (QQQ 10>20SMA,兩線向上) +{bull_bonus:.1f}★"
+                )
+            elif not s10_above or (not s10_up and not s20_up):
+                adj += bear_penalty
+                detail["nasdaq_regime"] = (
+                    f"NASDAQ不利環境 (10SMA在20SMA下或均線下行) {bear_penalty:.1f}★"
+                )
+            else:
+                detail["nasdaq_regime"] = "NASDAQ混合環境（至少一標SMA向上）"
+        else:
+            detail["nasdaq_regime"] = "QQQ數據不可用"
+    except Exception as exc:
+        logger.debug("[QM DimF NASDAQ] %s", exc)
+        detail["nasdaq_regime"] = "QQQ數據不可用"
+
     adj = max(-2.0, min(adj, 2.0))
     detail["adjustment"] = round(adj, 2)
     detail["tooltip"] = (
         "時機環境 (Market Timing)\n"
         "牛市回調後的恢復期 = 最佳突破時機（+1~+2）\n"
-        "確認牛市 = 標準操作（±0）\n"
+        "NASDAQ全力模式: QQQ 10SMA>20SMA + 兩線向上 = +0.5★ (S5)\n"
         "市場調整 = 縮小倉位（-1）\n"
         "熊市 = 封鎖所有突破操作（-2、否決）"
     )
@@ -496,14 +579,39 @@ def compute_star_rating(
 
     # Scale total_adj: each dimension ranges ~[-2, +2]; scale to ~[-2.5, +2.5 stars]
     raw_stars = base + total_adj * 2.5
-    capped    = round(max(0.0, min(raw_stars, 5.5)) * 2) / 2  # round to nearest 0.5
+    star_max  = getattr(C, "QM_STAR_MAX", 6.0)
+    capped    = round(max(0.0, min(raw_stars, star_max)) * 2) / 2  # round to nearest 0.5
+
+    # ── Supplement 28: 6-star qualification ─────────────────────────────
+    # "This is a 6-star setup on a 5-star scale. You don't get many of these."
+    six_star   = False
+    six_thresh = getattr(C, "QM_SIX_STAR_THRESHOLD", 5.75)
+    if raw_stars >= six_thresh and capped >= 5.5:
+        c_detail = dim_scores.get("C", {}).get("detail", {})
+        d_detail = dim_scores.get("D", {}).get("detail", {})
+        slope    = d_detail.get("slope", {})
+        regime   = dim_scores.get("F", {}).get("detail", {}).get("regime", "")
+        six_star = (
+            c_detail.get("has_higher_lows") and c_detail.get("num_lows", 0) >= 3
+            and (c_detail.get("tightness_ratio") or 1.0) < 0.2
+            and slope.get("passes_45deg", False)
+            and regime in ("CONFIRMED_UPTREND", "BULL_CONFIRMED")
+        )
+        if six_star:
+            capped = 6.0
 
     # Position sizing lookup
     sizing = getattr(C, "QM_POSITION_SIZING", {
         "5+": (20.0, 25.0), "5": (15.0, 25.0),
         "4": (10.0, 15.0),  "3": (5.0, 10.0), "0": (0.0, 0.0),
     })
-    if capped >= 5.5:
+    six_min = getattr(C, "QM_POSITION_SIZING_6STAR_MIN", 25.0)
+    six_max = getattr(C, "QM_POSITION_SIZING_6STAR_MAX", 30.0)
+    if capped >= 6.0:
+        lo, hi = six_min, six_max
+        rec    = "STRONG BUY"
+        rec_zh = "六星全力買入"
+    elif capped >= 5.5:
         lo, hi = sizing.get("5+", (20, 25))
         rec    = "STRONG BUY"
         rec_zh = "強力買入"
@@ -527,6 +635,7 @@ def compute_star_rating(
     return {
         "stars":             round(raw_stars, 2),
         "capped_stars":      capped,
+        "six_star":          six_star,
         "recommendation":    rec,
         "recommendation_zh": rec_zh,
         "position_pct_min":  lo,
@@ -544,6 +653,8 @@ def _build_trade_plan(stars: float, row: dict) -> dict:
     sma_10    = row.get("sma_10")
     sma_20    = row.get("sma_20")
     account   = getattr(C, "ACCOUNT_SIZE", 100_000)
+    atr       = row.get("atr", 0) or 0
+    day_open  = row.get("open", close) or close
     
     # LOD (low of day) is preferred entry/stop, fallback to 10SMA
     lod         = row.get("lod")
@@ -556,7 +667,11 @@ def _build_trade_plan(stars: float, row: dict) -> dict:
         "5+": (20.0, 25.0), "5": (15.0, 25.0),
         "4": (10.0, 15.0),  "3": (5.0, 10.0), "0": (0.0, 0.0),
     })
-    if stars >= 5.5:
+    six_min = getattr(C, "QM_POSITION_SIZING_6STAR_MIN", 25.0)
+    six_max = getattr(C, "QM_POSITION_SIZING_6STAR_MAX", 30.0)
+    if stars >= 6.0:
+        allocation_pct_lo, allocation_pct_hi = six_min, six_max
+    elif stars >= 5.5:
         allocation_pct_lo, allocation_pct_hi = sizing.get("5+", (20, 25))
     elif stars >= 5.0:
         allocation_pct_lo, allocation_pct_hi = sizing.get("5", (15, 25))
@@ -599,6 +714,14 @@ def _build_trade_plan(stars: float, row: dict) -> dict:
     
     ma_period      = getattr(C, 'QM_TRAIL_MA_PERIOD', 10)
 
+    # ── Supplement 1: ATR entry gate ──────────────────────────────────────
+    atr_gate = {}
+    if atr and atr > 0 and day_open > 0 and lod and lod > 0:
+        from modules.qm_position_rules import check_atr_entry_gate
+        atr_gate = check_atr_entry_gate(
+            current_price=close, day_open=day_open, day_low=lod, atr=atr
+        )
+
     return {
         "action":               "BUY" if stars >= 3.0 else "PASS",
         "position_lo_pct":      allocation_pct_lo,
@@ -613,6 +736,8 @@ def _build_trade_plan(stars: float, row: dict) -> dict:
         "day3plus_stop":        day3_stop_px,
         "day3plus_stop_label":  f"{ma_period}MA 追蹤 Trail",
         "sma_10_trail":         day3_stop_px,
+        "atr":                  round(atr, 2) if atr else None,
+        "atr_entry_gate":       atr_gate,
         "profit_take_day":      f"Day 3-5 或獲利達{profit_pct_1:.0f}%",
         "profit_take_qty":      f"先出 {take_pct:.0f}% 持倉",
         "profit_target_px":     profit_target,
@@ -642,7 +767,7 @@ def analyze_qm(ticker: str,
             'recommendation_zh', 'dim_scores' (A-F detail dicts),
             'setup_type', 'trade_plan', 'scan_date'
     """
-    from modules.data_pipeline import get_enriched, get_dollar_volume
+    from modules.data_pipeline import get_enriched, get_dollar_volume, get_atr
 
     if df is None or df.empty:
         df = get_enriched(ticker, period="1y")
@@ -654,13 +779,14 @@ def analyze_qm(ticker: str,
 
     close = float(df["Close"].iloc[-1]) if not df.empty else 0.0
     dv    = get_dollar_volume(df)
+    atr_val = get_atr(df)
 
     # ── Detect setup type ──────────────────────────────────────────────────
     from modules.qm_setup_detector import detect_setup_type
     setup = detect_setup_type(df, ticker=ticker)
 
     # ── Score all 6 dimensions ─────────────────────────────────────────────
-    dim_a = _score_dim_a(df, rs_rank=rs_rank)
+    dim_a = _score_dim_a(df, rs_rank=rs_rank, sector_rank=None)
     dim_b = _score_dim_b(df)
     dim_c = _score_dim_c(df)
     dim_d = _score_dim_d(df)
@@ -688,6 +814,9 @@ def analyze_qm(ticker: str,
         "sma_10": ma.get("sma_10"),
         "sma_20": ma.get("sma_20"),
         "low": float(df["Low"].iloc[-1]) if not df.empty else None,
+        "lod": float(df["Low"].iloc[-1]) if not df.empty else None,
+        "open": float(df["Open"].iloc[-1]) if not df.empty else close,
+        "atr": atr_val,
     }
     trade_plan = _build_trade_plan(stars, row_for_plan)
 
@@ -704,6 +833,8 @@ def analyze_qm(ticker: str,
         "position_pct_min":  rating["position_pct_min"],
         "position_pct_max":  rating["position_pct_max"],
         "veto":              rating.get("veto"),
+        "six_star":          rating.get("six_star", False),
+        "atr":               round(atr_val, 2) if atr_val else None,
         "dim_scores":        dim_scores,
         "setup_type":        setup,
         "trade_plan":        trade_plan,

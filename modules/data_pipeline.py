@@ -1216,3 +1216,175 @@ def get_consolidation_tightness(df: pd.DataFrame, lookback: int = 20) -> dict:
         "avg_body_pct":    round(avg_body, 3),
         "range_trend":     range_trend,
     }
+
+
+def get_atr(df: pd.DataFrame, period: int = None) -> float:
+    """
+    Average True Range (ATR) — intraday range ONLY, excludes overnight gaps.
+
+    Qullamaggie supplement rule (S1 + S31):
+      ATR = average of (High − Low) per bar over the last N days.
+      This differs from ADR which uses (High/Low − 1) and INCLUDES gaps.
+
+    Quote: "ATR is not including the overnight gaps.  ADR is including the
+            overnight gaps. So the ATR is just the intraday range."
+
+    Key rules using ATR:
+      • Entry gate: don't buy if intraday gain > 1× ATR (too late)
+      • Ideal entry: intraday gain ≤ 2/3 ATR
+      • Stop distance (entry − LOD) should not exceed ATR
+      • Ideal stop ≈ 0.5 × ATR
+
+    Args:
+        df:     OHLCV DataFrame
+        period: rolling window (default: QM_ATR_PERIOD = 14)
+
+    Returns:
+        ATR as a dollar float (not %, unlike ADR), or 0.0 on insufficient data.
+    """
+    if period is None:
+        period = getattr(C, "QM_ATR_PERIOD", 14)
+    if df.empty or len(df) < period:
+        return 0.0
+    recent = df.tail(period)
+    intraday_ranges = recent["High"] - recent["Low"]
+    return float(intraday_ranges.mean())
+
+
+def get_next_earnings_date(ticker: str) -> "date | None":
+    """
+    Fetch the next scheduled earnings date for a ticker via yfinance.
+
+    Qullamaggie supplement rule (S2):
+      "Never buy stocks within 3 days of earnings — even a 4.5-star setup
+       shouldn't be bought the day before earnings."
+
+    Returns:
+        datetime.date of next earnings, or None if unavailable / API error.
+        Caller should treat None as "unknown" — do not block, but flag warning.
+    """
+    from datetime import date as _date
+    try:
+        tkobj = yf.Ticker(ticker)
+        cal   = tkobj.calendar
+        if cal is None or cal.empty:
+            return None
+        # yfinance calendar may be a DataFrame or dict depending on version
+        if isinstance(cal, pd.DataFrame):
+            # Rows are fields, columns may be dates; look for EarningsDate or first column
+            if "Earnings Date" in cal.index:
+                val = cal.loc["Earnings Date"].iloc[0]
+            elif cal.shape[0] > 0:
+                val = cal.iloc[0, 0]
+            else:
+                return None
+        elif isinstance(cal, dict):
+            val = cal.get("Earnings Date", [None])
+            if isinstance(val, (list, tuple)) and val:
+                val = val[0]
+            else:
+                return None
+        else:
+            return None
+
+        if pd.isna(val):
+            return None
+        if isinstance(val, (pd.Timestamp, datetime)):
+            return val.date() if hasattr(val, "date") else _date.today()
+        return None
+    except Exception as exc:
+        logger.debug("[get_next_earnings_date] %s: %s", ticker, exc)
+        return None
+
+
+def get_ma_slope(df: pd.DataFrame, period: int = 20,
+                 lookback: int = None) -> dict:
+    """
+    Calculate moving average slope and approximate angle.
+
+    Qullamaggie supplement rule (S27):
+      "The 10, 20, 50-day MAs need to be in a high angle — like they go
+       straight up, like they go up in a 45-degree angle. It needs to be
+       at least 45°. The faster the better."
+
+    Slope is computed as the average % change per bar of the MA over the
+    lookback window, then mapped to an approximate angle via arctan.
+
+    Args:
+        df:       OHLCV DataFrame (needs 'SMA_{period}' col or will compute)
+        period:   MA period to evaluate (e.g. 10, 20, 50)
+        lookback: number of bars for slope calculation (default: QM_MA_SLOPE_LOOKBACK)
+
+    Returns:
+        dict with:
+            'slope_pct_per_bar' : float  — avg % change per bar in MA
+            'angle_approx_deg'  : float  — arctan approximation of angle
+            'direction'         : str    — 'rising_fast' / 'rising' / 'flat' / 'declining'
+            'passes_45deg'      : bool   — slope meets minimum 45° equivalent
+            'is_steep'          : bool   — slope exceeds ideal (faster than 45°)
+            'ma_value'          : float  — current MA value (last bar)
+    """
+    if lookback is None:
+        lookback = getattr(C, "QM_MA_SLOPE_LOOKBACK", 20)
+    min_slope = getattr(C, "QM_MA_MIN_SLOPE_PCT", 0.25)
+    ideal_slope = getattr(C, "QM_MA_SLOPE_IDEAL_PCT", 0.45)
+
+    col = f"SMA_{period}"
+    if col in df.columns:
+        ma_series = df[col].dropna()
+    else:
+        if df.empty or len(df) < period:
+            return _empty_slope(period)
+        ma_series = df["Close"].rolling(period).mean().dropna()
+
+    if len(ma_series) < lookback + 1:
+        return _empty_slope(period)
+
+    recent_ma = ma_series.iloc[-lookback:]
+    start_val = float(recent_ma.iloc[0])
+    if start_val <= 0:
+        return _empty_slope(period)
+
+    # Average % change per bar
+    pct_changes = recent_ma.pct_change().dropna() * 100.0
+    slope_pct   = float(pct_changes.mean())
+
+    # Approximate angle: arctan(slope_pct / 100) converted to degrees
+    import math
+    angle_deg = math.degrees(math.atan(abs(slope_pct) / 100.0 * 50))
+    # Scale factor 50 chosen so that 0.25%/bar ≈ 45° in display terms
+    # (this is a visual approximation, not geometric)
+
+    if slope_pct >= ideal_slope:
+        direction = "rising_fast"
+    elif slope_pct >= min_slope:
+        direction = "rising"
+    elif slope_pct >= 0.0:
+        direction = "flat"
+    else:
+        direction = "declining"
+
+    ma_val = float(ma_series.iloc[-1]) if not ma_series.empty else 0.0
+
+    return {
+        "slope_pct_per_bar": round(slope_pct, 4),
+        "angle_approx_deg":  round(angle_deg, 1),
+        "direction":         direction,
+        "passes_45deg":      slope_pct >= min_slope,
+        "is_steep":          slope_pct >= ideal_slope,
+        "ma_value":          round(ma_val, 2),
+        "ma_period":         period,
+    }
+
+
+def _empty_slope(period: int) -> dict:
+    """Return an empty slope dict for insufficient data."""
+    return {
+        "slope_pct_per_bar": 0.0,
+        "angle_approx_deg":  0.0,
+        "direction":         "unknown",
+        "passes_45deg":      False,
+        "is_steep":          False,
+        "ma_value":          0.0,
+        "ma_period":         period,
+    }

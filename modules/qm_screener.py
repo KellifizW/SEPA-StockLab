@@ -372,8 +372,30 @@ def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
     elif not s20_rising and not s10_rising:
         star -= 1.0   # MAs diverging down
 
+    # ── Supplement 2: Earnings proximity blackout ─────────────────────────
+    # "Five star setup but I'm not trading it because of earnings." — Qullamaggie
+    earnings_warning   = False
+    days_to_earnings   = None
+    try:
+        from modules.data_pipeline import get_next_earnings_date
+        from datetime import date as _date
+        next_earn = get_next_earnings_date(ticker)
+        if next_earn:
+            days_to_earnings = (next_earn - _date.today()).days
+            blackout = getattr(C, "QM_EARNINGS_BLACKOUT_DAYS", 3)
+            if 0 <= days_to_earnings <= blackout:
+                star -= 1.0
+                earnings_warning = True
+                logger.info(
+                    "[QM S3] %s earnings in %d days — star -1.0 (blackout)",
+                    ticker, days_to_earnings
+                )
+    except Exception:
+        pass
+
     # Cap and floor
-    star = round(max(0.0, min(star, 5.5)), 1)
+    star_max = getattr(C, "QM_STAR_MAX", 6.0)
+    star = round(max(0.0, min(star, star_max)), 1)
 
     # Min star gate
     min_star = getattr(C, "QM_SCAN_MIN_STAR", 3.0)
@@ -403,6 +425,8 @@ def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         "vol_ratio":       round(vol_ratio, 2),
         "avg_vol_20d":     int(avg_vol_20),
         "qm_star":         star,
+        "earnings_warning": earnings_warning,
+        "days_to_earnings": days_to_earnings,
         "scan_date":       date.today().isoformat(),
     }
     return result
@@ -470,7 +494,8 @@ def run_qm_stage3(stage2_rows: list[dict],
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None,
+                strict_rs: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Full 3-stage Qullamaggie breakout scan.
 
@@ -479,6 +504,8 @@ def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None)
     verbose   : if True, print progress and results to console
     min_star  : minimum star rating to include in df_passed (default: from config)
     top_n     : limit df_passed to top N rows (default: no limit)
+    strict_rs : if True, enforce RS rank ≥ QM_RS_STRICT_MIN_RANK (default 90)
+                — Supplement 35: 「I only trade the top RS stocks.」
 
     Returns:
         (df_passed, df_all) where:
@@ -543,6 +570,17 @@ def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None)
     
     df_passed = df_all[df_all["qm_star"] >= min_star_val].copy()
     df_passed = df_passed.sort_values("qm_star", ascending=False)
+
+    # ── Supplement 35: RS strict filter ───────────────────────────────────
+    if strict_rs and "rs_rank" in df_passed.columns:
+        rs_min = getattr(C, "QM_RS_STRICT_MIN_RANK", 90.0)
+        before = len(df_passed)
+        df_passed = df_passed[df_passed["rs_rank"] >= rs_min]
+        logger.info(
+            "[QM Scan] strict_rs filter: RS≥%.0f kept %d/%d",
+            rs_min, len(df_passed), before
+        )
+
     if top_n_val and len(df_passed) > top_n_val:
         df_passed = df_passed.head(top_n_val)
 

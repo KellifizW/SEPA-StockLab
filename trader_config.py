@@ -307,3 +307,73 @@ QM_STAGE2_BATCH_SLEEP      = 1.5  # Seconds between batch downloads
 # QM breakout trades are blocked in confirmed bear markets
 QM_BLOCK_IN_BEAR           = True # Block all QM breakout entries when market = DOWNTREND
 QM_REDUCE_IN_CORRECTION    = True # Reduce position sizing in MARKET_IN_CORRECTION
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QULLAMAGGIE SUPPLEMENT RULES — From live teaching transcripts
+# Reference: QullamaggieStockguideMorePart1.md + QullamaggieStockguideMorePart2.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Supplement 1 + 31: ATR-based entry gate and stop distance validation ─────
+# ATR (Average True Range) = intraday range only (High - Low), excludes gaps
+# This is DIFFERENT from ADR which includes overnight gaps
+# Rule: "I usually don't buy the stock if it's up more on the day than its ATR"
+# Rule: "The stop shouldn't be higher than the average true range"
+# Ideal stop = "usually around half of average true range"
+QM_ATR_PERIOD              = 14    # ATR calculation window (intraday H-L only)
+QM_ATR_ENTRY_MAX_MULT      = 1.0   # Hard max: if intraday gain > 1.0 × ATR → too late
+QM_ATR_ENTRY_IDEAL_MAX_MULT= 0.67  # Ideal entry: intraday gain ≤ 2/3 ATR
+QM_ATR_ENTRY_EARLY_MULT    = 0.33  # Early entry: gain ≤ 1/3 ATR (very good)
+QM_ATR_STOP_MAX_MULT       = 1.0   # Hard max: stop distance (entry − LOD) must not exceed ATR
+QM_ATR_STOP_IDEAL_MULT     = 0.5   # Ideal stop distance = ~half ATR from LOD to entry
+
+# ── Supplement 2: Earnings proximity blackout ─────────────────────────────────
+# Rule: "Never buy stocks within 3 days of earnings"
+# Even a 4.5-star setup should be passed if earnings are within 3 days
+QM_EARNINGS_BLACKOUT_DAYS  = 3     # Skip entry if days_to_earnings ≤ 3; lower star by 1
+
+# ── Supplement 3: Sector momentum amplifier ──────────────────────────────────
+# Rule: "In a leading sector a 3.5-star setup counts like a 5-star setup"
+# Sector rank = percentile of sector's momentum vs all sectors
+QM_SECTOR_LEADER_BONUS     = 1.0   # +1.0 star: sector rank ≥ 90th percentile (top ~2)
+QM_SECTOR_STRONG_BONUS     = 0.5   # +0.5 star: sector rank ≥ 70th percentile (top 3)
+QM_SECTOR_WEAK_PENALTY     = -0.25 # −0.25 star: sector rank < 30th percentile
+
+# ── Supplement 4 + 33: Extended stock thresholds ─────────────────────────────
+# Rule: "When price is ~60% above 10-day MA, I just sold it — didn't even trail"
+# Rule: "It's my biggest weakness — letting things ride out"
+# Extended means price is too far from 10SMA to safely trail
+QM_EXTENDED_SMA10_PCT      = 40.0  # >40% above 10SMA → "EXTENDED" → consider trimming
+QM_EXTENDED_SMA10_EXTREME  = 60.0  # >60% above 10SMA → "EXTREME" → sell immediately
+QM_EXTENDED_SMA20_PCT      = 25.0  # >25% above 20SMA → flag as extended on slower stocks
+
+# ── Supplement 5: NASDAQ 10/20SMA environment filter ─────────────────────────
+# Rule: "NASDAQ is the relevant index — you don't need to look at anything else"
+# Rule: "10-day sloping higher + 20-day sloping higher → full power mode"
+QM_NASDAQ_PROXY            = "QQQ" # ETF proxy for NASDAQ composite
+QM_NASDAQ_BULL_BONUS       = 0.5   # +0.5 Dim F: QQQ 10SMA > 20SMA AND both rising
+QM_NASDAQ_BEAR_PENALTY     = -0.5  # −0.5 Dim F: QQQ 10SMA < 20SMA OR MA declining
+
+# ── Supplement 27: MA slope (45° minimum angle rule) ─────────────────────────
+# Rule: "The 10, 20, 50-day MAs need to go straight up — at least 45 degrees"
+# Rule: "It needs to be at least 45°. But the faster the better."
+# Slope measured as % change per bar over lookback window, mapped to angle approx
+QM_MA_MIN_SLOPE_PCT        = 0.25  # Min slope: MA must rise ≥ 0.25% per bar (≈45° proxy)
+QM_MA_SLOPE_IDEAL_PCT      = 0.45  # Ideal slope: ≥ 0.45% per bar (steeper = better)
+QM_MA_SLOPE_LOOKBACK       = 20    # Bars over which to measure MA slope
+QM_MA_SLOPE_FAST_BONUS     = 0.5   # +0.5 Dim D: slope > ideal (very steep / fast)
+QM_MA_SLOPE_PASS_BONUS     = 0.25  # +0.25 Dim D: slope ≥ minimum (45° equivalent)
+QM_MA_SLOPE_SLOW_PENALTY   = -0.25 # −0.25 Dim D: slope between 0 and minimum
+QM_MA_SLOPE_DOWN_PENALTY   = -0.75 # −0.75 Dim D: MA pointing down
+
+# ── Supplement 28: 6-star setup (beyond 5-star scale) ────────────────────────
+# Rule: "This is a six-star setup on a five-star scale — you don't get many"
+# A 6-star requires simultaneously perfect: bounce off 20SMA, extreme tightness,
+# 45°+ slope, ≥3 higher lows, and confirmed bull market environment
+QM_STAR_MAX                = 6.0   # Allow 6-star rating for perfect setups
+QM_SIX_STAR_THRESHOLD      = 5.75  # Raw score floor for 6-star designation
+QM_POSITION_SIZING_6STAR_MIN = 25.0  # 6-star minimum position: 25% of account
+QM_POSITION_SIZING_6STAR_MAX = 30.0  # 6-star maximum position: 30% of account
+
+# ── Supplement 35: RS rank hard filter (strict screener mode) ────────────────
+# Rule: "It needs to be like 90 plus, 95% plus" (for percentage rank filter)
+QM_RS_STRICT_MIN_RANK      = 90.0  # Strict mode: RS rank must be ≥ 90th percentile
