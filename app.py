@@ -770,11 +770,14 @@ def api_qm_scan_run():
 @app.route("/api/combined/scan/run", methods=["POST"])
 def api_combined_scan_run():
     """Run unified combined SEPA + QM scan with shared data pipeline."""
-    data       = request.get_json(silent=True) or {}
-    refresh_rs = data.get("refresh_rs", False)
+    data          = request.get_json(silent=True) or {}
+    refresh_rs    = data.get("refresh_rs", False)
     stage1_source = data.get("stage1_source") or None
-    jid        = _new_job()
-    cancel_ev  = _get_cancel(jid)
+    min_star      = float(data["min_star"]) if "min_star" in data else None
+    top_n         = int(data["top_n"]) if "top_n" in data else None
+    strict_rs     = bool(data.get("strict_rs", False))
+    jid           = _new_job()
+    cancel_ev     = _get_cancel(jid)
 
     # Create a unique log file for this combined scan
     combined_log_file = _LOG_DIR / f"combined_scan_{jid}_{datetime.now().isoformat(timespec='seconds').replace(':', '-')}.log"
@@ -798,18 +801,32 @@ def api_combined_scan_run():
             sepa_result, qm_result = run_combined_scan(
                 refresh_rs=refresh_rs,
                 stage1_source=stage1_source,
-                verbose=False
+                verbose=False,
+                min_star=min_star,
+                top_n=top_n,
+                strict_rs=strict_rs,
             )
 
             def _to_rows(df):
-                if df is not None and hasattr(df, "to_dict") and not df.empty:
-                    return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
-                return []
+                if df is None or not hasattr(df, "to_dict") or df.empty:
+                    return []
+                # Drop any column whose values are themselves DataFrames or
+                # other non-scalar objects that cause `df.notna()` to crash
+                # with "truth value of a DataFrame is ambiguous".
+                scalar_cols = [
+                    c for c in df.columns
+                    if not df[c].apply(lambda x: isinstance(x, pd.DataFrame)).any()
+                ]
+                df = df[scalar_cols]
+                return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
 
-            sepa_rows = _to_rows(sepa_result.get("passed"))
-            qm_rows = _to_rows(qm_result.get("passed"))
-            market_env = sepa_result.get("market_env", {})
-            timing = sepa_result.get("timing", {})
+            sepa_rows      = _to_rows(sepa_result.get("passed"))
+            sepa_all_rows  = _to_rows(sepa_result.get("all"))
+            qm_rows        = _to_rows(qm_result.get("passed"))
+            qm_all_rows    = _to_rows(qm_result.get("all_scored") or qm_result.get("all"))
+            market_env     = sepa_result.get("market_env", {})
+            timing         = sepa_result.get("timing", {})
+            qm_was_blocked = qm_result.get("blocked", False)
 
             # ── Save results to scan_results/ ───────────────────────────────
             from datetime import datetime as _dt_now
@@ -820,18 +837,26 @@ def api_combined_scan_run():
                 scan_ts=_scan_ts
             )
 
-            # ── Persist combined summary for dashboard ───────────────────
+            # ── Persist combined summary for combined dashboard ──────────
             _save_combined_last(sepa_rows, qm_rows, market_env, timing,
                                 sepa_csv_path, qm_csv_path)
+
+            # ── Mirror results to individual scan endpoints ──────────────
+            # This makes /api/scan/last and /api/qm/scan/last reflect the
+            # latest combined run, so individual scan pages stay up-to-date.
+            _save_last_scan(sepa_rows, all_rows=sepa_all_rows)
+            if not qm_was_blocked:
+                _save_qm_last_scan(qm_rows, all_rows=qm_all_rows)
 
             result = {
                 "sepa": {
                     "passed": sepa_rows,
-                    "count": len(sepa_rows)
+                    "count": len(sepa_rows),
                 },
                 "qm": {
                     "passed": qm_rows,
-                    "count": len(qm_rows)
+                    "count": len(qm_rows),
+                    "blocked": qm_was_blocked,
                 },
                 "market": market_env,
                 "timing": timing,

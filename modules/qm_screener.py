@@ -81,7 +81,7 @@ def run_qm_stage1(min_price: float = 5.0,
                   min_avg_vol: int = 300_000,
                   verbose: bool = True,
                   timeout_sec: float = 30.0,
-                  stage1_source: str = None) -> list[str]:
+                  stage1_source: str | None = None) -> list[str]:
     """
     Stage 1 — Coarse filter.  Returns a list of candidate ticker strings.
 

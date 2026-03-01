@@ -92,9 +92,9 @@ COARSE_FILTERS = {
 MIN_STAGE1_CANDIDATES = 50
 
 
-def run_stage1(custom_filters: dict = None,
+def run_stage1(custom_filters: dict | None = None,
                verbose: bool = True,
-               stage1_source: str = None) -> list:
+               stage1_source: str | None = None) -> list:
     """
     Stage 1: Coarse screener.  Returns list of ticker strings.
 
