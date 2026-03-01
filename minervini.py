@@ -33,6 +33,13 @@ Qullamaggie (QM) commands:
   python minervini.py qm-analyze NVDA
   python minervini.py qm-analyze NVDA --plan
   python minervini.py qm-analyze NVDA SMCI TSLA --plan
+
+Martin Luk (ML) commands:
+  python minervini.py ml-scan
+  python minervini.py ml-scan --min-star 3 --top-n 30
+  python minervini.py ml-analyze NVDA
+  python minervini.py ml-analyze NVDA --plan
+  python minervini.py ml-analyze NVDA AAPL --plan
 """
 
 import sys
@@ -417,6 +424,106 @@ def cmd_qm_analyze(args):
                 traceback.print_exc()
 
 
+def cmd_ml_scan(args):
+    """Run Martin Luk 3-stage pullback swing scan."""
+    from modules.ml_screener import run_ml_scan
+
+    min_star = args.min_star
+    top_n    = args.top_n
+
+    print(f"\n{'═'*65}")
+    print(f"{_BOLD}  MARTIN LUK 回調波段掃描  Pullback Swing Scan{_RESET}")
+    print(f"{'═'*65}")
+    print(f"  條件: ADR≥4%, $Vol≥$5M, EMA stacking, 3M≥30%")
+    print(f"  最低星級: {min_star}★  顯示數量: {top_n}\n")
+
+    result = run_ml_scan(min_star=min_star, top_n=top_n)
+    if isinstance(result, tuple):
+        df_passed, _ = result
+    else:
+        df_passed = result
+
+    if df_passed is None or (hasattr(df_passed, "empty") and df_passed.empty):
+        print("  未找到符合條件的股票。No stocks passed ML filters.")
+        return
+
+    rows = df_passed.to_dict(orient="records") if hasattr(df_passed, "to_dict") else list(df_passed)
+    if not rows:
+        print("  未找到符合條件的股票。No stocks passed ML filters.")
+        return
+
+    _GREEN  = "\033[92m"
+    _YELLOW = "\033[93m"
+    _RED    = "\033[91m"
+    _CYAN   = "\033[96m"
+    _RESET  = "\033[0m"
+
+    print(f"\n{'─'*85}")
+    print(f"  {'#':<3} {'TICKER':<8} {'★':<6} {'ADR%':<7} {'$VOL':<8} "
+          f"{'3M%':<8} {'6M%':<8} {'SETUP':<12} {'EMA':<6} {'PB':<6} {'AVWAP':<6}")
+    print(f"{'─'*85}")
+
+    for i, r in enumerate(rows, 1):
+        star = float(r.get("ml_star") or r.get("stars") or 0)
+        star_col = _GREEN if star >= 4 else _YELLOW if star >= 3 else _RED if star < 2 else ""
+        adr  = r.get("adr")
+        dvol = r.get("dollar_volume_m")
+        m3   = r.get("mom_3m")
+        m6   = r.get("mom_6m")
+        setup = (r.get("setup_type") or "")[:10]
+        ema  = r.get("ema_structure", "")
+        pb   = r.get("pullback_quality", "")
+        avwap = r.get("avwap_score", "")
+
+        print(f"  {i:<3} {_CYAN}{r.get('ticker',''):<8}{_RESET} "
+              f"{star_col}{star:.1f}★{_RESET:<5} "
+              f"{f'{adr:.1f}%' if adr else '—':<7} "
+              f"{f'${dvol:.1f}M' if dvol else '—':<8} "
+              f"{f'+{m3:.1f}%' if m3 and m3>=0 else f'{m3:.1f}%' if m3 else '—':<8} "
+              f"{f'+{m6:.1f}%' if m6 and m6>=0 else f'{m6:.1f}%' if m6 else '—':<8} "
+              f"{setup:<12} "
+              f"{ema:<6} "
+              f"{pb:<6} "
+              f"{avwap:<6}")
+
+    print(f"{'─'*85}")
+    print(f"  共 {len(rows)} 個回調設置 | Total {len(rows)} pullback setups found\n")
+
+
+def cmd_ml_analyze(args):
+    """Martin Luk deep analysis for one or more tickers (star rating + trade plan)."""
+    from modules.ml_analyzer import analyze_ml
+
+    for ticker in args.tickers:
+        ticker = ticker.upper()
+        print(f"\n  Analyzing {ticker} (Martin Luk) …")
+        try:
+            result = analyze_ml(ticker, print_report=True)
+            if result and args.plan:
+                plan = result.get("trade_plan") or {}
+                if plan:
+                    print(f"\n  {'─'*45}")
+                    print(f"  交易方案 Trade Plan for {ticker} (ML)")
+                    print(f"  {'─'*45}")
+                    stop  = plan.get("stop_price")
+                    shares = plan.get("shares")
+                    pos_val = plan.get("position_value")
+                    t3r   = plan.get("target_3r")
+                    t5r   = plan.get("target_5r")
+                    trail = plan.get("trail_ema")
+                    if stop:   print(f"  Day 1 Stop: ${stop:.2f}  (LOD - 0.3%)")
+                    if shares: print(f"  Shares:     {shares}")
+                    if pos_val: print(f"  Position:   ${pos_val:,.0f}")
+                    if t3r:    print(f"  3R Target:  ${t3r:.2f}  (sell 15%)")
+                    if t5r:    print(f"  5R Target:  ${t5r:.2f}  (sell 15%)")
+                    if trail:  print(f"  Trail:      {trail} EMA (remaining position)")
+        except Exception as exc:
+            print(f"  Error analyzing {ticker}: {exc}")
+            if args.debug:
+                import traceback
+                traceback.print_exc()
+
+
 def _print_vcp(ticker: str, r: dict):
     """Pretty-print a VCP result."""
     _GREEN  = "\033[92m"
@@ -533,7 +640,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── qm-scan ───────────────────────────────────────────────────────────────
     p_qms = sub.add_parser("qm-scan",
                             help="Qullamaggie 突破波段掃描 Breakout Swing Scan")
-    p_qms.add_argument("--min-star", type=float, default=getattr(C, "QM_MIN_STAR_DISPLAY", 3.0),
+    p_qms.add_argument("--min-star", type=float, default=getattr(C, "QM_SCAN_MIN_STAR", 3.0),
                        metavar="STARS",
                        help="最低星級過濾 Minimum star rating to display (default: 3.0)")
     p_qms.add_argument("--top-n", type=int, default=getattr(C, "QM_SCAN_TOP_N", 50),
@@ -546,6 +653,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_qma.add_argument("tickers", nargs="+", metavar="TICKER",
                        help="One or more stock tickers to analyze")
     p_qma.add_argument("--plan", action="store_true",
+                       help="Print trade plan (stops + profit targets) after analysis")
+
+    # ── ml-scan ───────────────────────────────────────────────────────────────
+    p_mls = sub.add_parser("ml-scan",
+                            help="Martin Luk 回調波段掃描 Pullback Swing Scan")
+    p_mls.add_argument("--min-star", type=float, default=getattr(C, "ML_SCAN_MIN_STAR", 2.5),
+                       metavar="STARS",
+                       help="最低星級過濾 Minimum star rating to display (default: 2.5)")
+    p_mls.add_argument("--top-n", type=int, default=getattr(C, "ML_SCAN_TOP_N", 50),
+                       metavar="N",
+                       help="顯示前 N 名結果 Show top N results (default: 50)")
+
+    # ── ml-analyze ────────────────────────────────────────────────────────────
+    p_mla = sub.add_parser("ml-analyze",
+                            help="Martin Luk 個股星級分析 Single-stock star rating & trade plan")
+    p_mla.add_argument("tickers", nargs="+", metavar="TICKER",
+                       help="One or more stock tickers to analyze")
+    p_mla.add_argument("--plan", action="store_true",
                        help="Print trade plan (stops + profit targets) after analysis")
 
     return parser
@@ -569,6 +694,8 @@ _DISPATCH = {
     "vcp":         cmd_vcp,
     "qm-scan":     cmd_qm_scan,
     "qm-analyze":  cmd_qm_analyze,
+    "ml-scan":     cmd_ml_scan,
+    "ml-analyze":  cmd_ml_analyze,
 }
 
 

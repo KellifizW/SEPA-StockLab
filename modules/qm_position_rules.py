@@ -545,6 +545,189 @@ def get_profit_action(entry_price: float,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Green-to-Red Stop Detection  (Supplement 12)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_gap_down_stop(df: pd.DataFrame) -> dict:
+    """
+    Supplement 12 — Green-to-Red (G2R) Stop: detect when a stock that gapped
+    UP on open then reverses to go RED (below prior close).
+
+    Qullamaggie: "If a stock opens above prior close (gap up) and then goes RED
+    — sell immediately.  A green-to-red is almost always a sign of distribution.
+    Smart money used the gap-up open to unload their position."
+
+    Args:
+        df: OHLCV DataFrame (must have at least 2 bars)
+
+    Returns:
+        dict with:
+            'is_gap_up'           : bool  — today opened above prior close
+            'is_green_to_red'     : bool  — opened gap-up but now below prior close
+            'gap_up_pct'          : float — % of the opening gap
+            'suggested_stop_type' : str   — 'GREEN_TO_RED'|'NORMAL_LOD'|'N/A'
+            'warning_zh'          : str   — Chinese warning message
+    """
+    empty = {
+        "is_gap_up": False, "is_green_to_red": False,
+        "gap_up_pct": 0.0, "suggested_stop_type": "N/A", "warning_zh": "數據不足",
+    }
+    if df.empty or len(df) < 2:
+        return empty
+
+    if not getattr(C, "QM_GREEN_TO_RED_STOP", True):
+        return {**empty, "warning_zh": "G2R止損已禁用"}
+
+    prev_close  = float(df["Close"].iloc[-2])
+    today_open  = float(df["Open"].iloc[-1])
+    today_close = float(df["Close"].iloc[-1])
+
+    is_gap_up       = today_open > prev_close
+    is_green_to_red = is_gap_up and today_close < prev_close  # Closed below prior close
+    gap_pct         = (today_open / prev_close - 1.0) * 100.0 if is_gap_up else 0.0
+
+    if is_green_to_red:
+        stop_type = "GREEN_TO_RED"
+        warning   = (
+            f"⚠️ 高開低走 (Green-to-Red)！今天跳空高開 +{gap_pct:.1f}%，"
+            f"但現在跌破昨收 ${prev_close:.2f} — 建議立即出場 (S12)"
+        )
+    elif is_gap_up:
+        stop_type = "NORMAL_LOD"
+        warning   = f"跳空高開 +{gap_pct:.1f}%，監控是否高開低走 (S12警示)"
+    else:
+        stop_type = "N/A"
+        warning   = "今天非跳空開盤 (S12 G2R無效)"
+
+    return {
+        "is_gap_up":           is_gap_up,
+        "is_green_to_red":     is_green_to_red,
+        "gap_up_pct":          round(gap_pct, 2),
+        "suggested_stop_type": stop_type,
+        "warning_zh":          warning,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Broken Chart Detection  (Supplement 13)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_broken_chart(df: pd.DataFrame) -> dict:
+    """
+    Supplement 13 — Broken Chart Detection: identify when a chart structure is
+    definitively broken and the stock should be exited immediately.
+
+    Qullamaggie: "When a stock breaks below the 50-day on heavy volume AND
+    the 10-day and 20-day are also below it — the chart is broken.  Higher lows
+    pattern is broken.  Don't hope for a recovery — exit."
+
+    A broken chart requires ALL of:
+      1. Price < SMA10
+      2. Price < SMA20
+      3. Price < SMA50
+      4. SMA10 is declining over last 5 bars
+      5. SMA20 is declining over last 5 bars
+      6. No higher lows pattern (from get_higher_lows)
+
+    Args:
+        df: OHLCV DataFrame (at least 60 bars recommended)
+
+    Returns:
+        dict with:
+            'is_broken'   : bool — chart is definitively broken
+            'reason'      : str  — description of what broke
+            'criteria_met': int  — how many of the 6 criteria are met (0-6)
+            'warning_zh'  : str  — Chinese warning message
+    """
+    from modules.data_pipeline import get_higher_lows
+
+    empty = {
+        "is_broken": False, "reason": "數據不足",
+        "criteria_met": 0, "warning_zh": "無法評估",
+    }
+    if df.empty or len(df) < 55:
+        return empty
+
+    last_close = float(df["Close"].iloc[-1])
+    criteria   = []
+    reasons    = []
+
+    # Compute SMAs
+    sma10_series = df["Close"].rolling(10).mean().dropna()
+    sma20_series = df["Close"].rolling(20).mean().dropna()
+    sma50_series = df["Close"].rolling(50).mean().dropna()
+
+    sma10 = float(sma10_series.iloc[-1]) if not sma10_series.empty else None
+    sma20 = float(sma20_series.iloc[-1]) if not sma20_series.empty else None
+    sma50 = float(sma50_series.iloc[-1]) if not sma50_series.empty else None
+
+    # Criterion 1-3: Price below each MA
+    if sma10 and last_close < sma10:
+        criteria.append(True)
+        reasons.append("價格低於10SMA")
+    else:
+        criteria.append(False)
+
+    if sma20 and last_close < sma20:
+        criteria.append(True)
+        reasons.append("價格低於20SMA")
+    else:
+        criteria.append(False)
+
+    if sma50 and last_close < sma50:
+        criteria.append(True)
+        reasons.append("價格低於50SMA")
+    else:
+        criteria.append(False)
+
+    # Criterion 4-5: MA10 and MA20 declining (last 5 bars)
+    if len(sma10_series) >= 6:
+        declining10 = float(sma10_series.iloc[-1]) < float(sma10_series.iloc[-6])
+        criteria.append(declining10)
+        if declining10:
+            reasons.append("10SMA仍在下彎")
+    else:
+        criteria.append(False)
+
+    if len(sma20_series) >= 6:
+        declining20 = float(sma20_series.iloc[-1]) < float(sma20_series.iloc[-6])
+        criteria.append(declining20)
+        if declining20:
+            reasons.append("20SMA仍在下彎")
+    else:
+        criteria.append(False)
+
+    # Criterion 6: Higher lows broken
+    from modules.data_pipeline import get_higher_lows
+    hl_info = get_higher_lows(df)
+    no_higher_lows = not hl_info.get("has_higher_lows", False)
+    criteria.append(no_higher_lows)
+    if no_higher_lows:
+        reasons.append("高低點結構已破壞")
+
+    met_count = sum(criteria)
+    is_broken = met_count >= 5  # Need at least 5 of 6 to declare broken
+
+    if is_broken:
+        reason_str = "、".join(reasons)
+        warning_zh = (
+            f"🚨 圖表結構已破壞 ({met_count}/6 條件)：{reason_str} "
+            f"— 建議立即出場，不要等待反彈 (S13)"
+        )
+    elif met_count >= 3:
+        warning_zh = f"⚠️ 圖表結構快破壞 ({met_count}/6 條件)：{', '.join(reasons)} (S13監察)"
+    else:
+        warning_zh = f"圖表結構完整 ({met_count}/6 破壞條件)"
+
+    return {
+        "is_broken":    is_broken,
+        "criteria_met": met_count,
+        "reason":       "、".join(reasons) if reasons else "無明顯問題",
+        "warning_zh":   warning_zh,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Position health check (unified stop + profit assessment)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -653,6 +836,44 @@ def check_qm_position(
         if extended["status"] == "EXTREME" and not stop_triggered:
             primary_action = "SELL_IMMEDIATELY"
 
+    # ── Supplement 13: Broken Chart Detection ──────────────────────────────
+    broken = check_broken_chart(df)
+    if broken.get("is_broken"):
+        signals.append({
+            "type":     "BROKEN_CHART",
+            "severity": "critical",
+            "msg_zh":   broken["warning_zh"],
+            "msg_en":   f"Broken chart ({broken['criteria_met']}/6 criteria): {broken['reason']}",
+        })
+        if not stop_triggered:
+            primary_action = "SELL_IMMEDIATELY"
+    elif broken.get("criteria_met", 0) >= 3:
+        signals.append({
+            "type":     "BROKEN_CHART_WARNING",
+            "severity": "warning",
+            "msg_zh":   broken["warning_zh"],
+            "msg_en":   f"Chart weakening ({broken['criteria_met']}/6 criteria)",
+        })
+
+    # ── Supplement 12: Green-to-Red (G2R) Stop ─────────────────────────────
+    g2r = get_gap_down_stop(df)
+    if g2r.get("is_green_to_red"):
+        signals.append({
+            "type":     "GREEN_TO_RED",
+            "severity": "critical",
+            "msg_zh":   g2r["warning_zh"],
+            "msg_en":   f"Green-to-Red! Gap up {g2r['gap_up_pct']:.1f}% then reversed — sell immediately",
+        })
+        if not stop_triggered:
+            primary_action = "SELL_IMMEDIATELY"
+    elif g2r.get("is_gap_up"):
+        signals.append({
+            "type":     "GAP_UP_WATCH",
+            "severity": "info",
+            "msg_zh":   g2r["warning_zh"],
+            "msg_en":   f"Gap up {g2r['gap_up_pct']:.1f}% — monitor for G2R reversal",
+        })
+
     return {
         "ticker":           ticker,
         "current_phase":    phase,
@@ -667,6 +888,8 @@ def check_qm_position(
         "day3_trail":       day3_info,
         "profit_action":    profit,
         "extended":         extended,
+        "broken_chart":     broken,
+        "green_to_red":     g2r,
         "signals":          signals,
         "scan_date":        date.today().isoformat(),
     }

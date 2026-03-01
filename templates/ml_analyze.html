@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}ML 個股分析{% endblock %}
+
+{% block extra_head %}
+<style>
+  .star-val { font-size: 2rem; font-weight: 700; }
+  .star-5  { color: #3fb950; }
+  .star-4  { color: #3fb950; }
+  .star-3  { color: #e3b341; }
+  .star-low { color: #f85149; }
+  .dim-bar-wrap { background: #21262d; border-radius: 4px; height: 8px; overflow: hidden; }
+  .dim-bar { height: 8px; border-radius: 4px; transition: width .6s ease; }
+  .veto-alert { background: #3a0a0a; border: 1px solid #f85149; border-radius: 8px; padding: 12px 16px; }
+  .trade-plan-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .stop-phase { border-left: 3px solid; padding: 10px 14px; margin-bottom: 8px; border-radius: 0 6px 6px 0; }
+  .stop-phase-1 { border-color: #f85149; background: #1a0a0a; }
+  .stop-phase-2 { border-color: #e3b341; background: #1a1000; }
+  .stop-phase-3 { border-color: #3fb950; background: #0a1a0a; }
+  .profit-step { border-left: 3px solid #58a6ff; background: #0a0e1a;
+                 padding: 10px 14px; margin-bottom: 8px; border-radius: 0 6px 6px 0; }
+  .badge-pb   { background: #0e4429; color: #3fb950; }
+  .badge-br   { background: #1a3060; color: #58a6ff; }
+  .badge-bo   { background: #4a3800; color: #e3b341; }
+  .badge-ep   { background: #3a0060; color: #d49fff; }
+  .badge-chg  { background: #003040; color: #00d4ff; }
+  .badge-para { background: #3a0a0a; color: #f85149; }
+  .badge-uk   { background: #1c2128; color: #8b949e; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Search bar -->
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="d-flex gap-2 align-items-center">
+      <h4 class="mb-0">
+        <i class="bi bi-graph-up-arrow me-2" style="color:#3fb950"></i>
+        ML 個股分析 <span style="color:#8b949e;font-size:13px">Martin Luk Pullback Analysis</span>
+      </h4>
+      <div class="input-group ms-auto" style="max-width:300px">
+        <input type="text" class="form-control form-control-sm"
+               id="tickerInput" placeholder="輸入股票代號…  e.g. AAPL"
+               value="{{ prefill }}" style="background:#0d1117;color:#c9d1d9;border-color:#30363d"
+               onkeydown="if(event.key==='Enter') analyzeStock()">
+        <button class="btn btn-sm" onclick="analyzeStock()"
+                style="background:#238636;color:#fff;border:1px solid #2ea043">
+          <i class="bi bi-search me-1"></i>分析 Analyze
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Loading -->
+<div id="loadingArea" class="text-center py-5 d-none">
+  <div class="spinner-border mb-3" style="color:#3fb950" role="status"></div>
+  <div class="text-secondary">正在分析中… Analyzing…</div>
+</div>
+
+<!-- Empty state -->
+<div id="emptyState" class="{{ 'd-none' if prefill else '' }}">
+  <div class="text-center py-5 text-secondary">
+    <i class="bi bi-graph-up-arrow" style="font-size:3rem;opacity:0.3;color:#3fb950"></i>
+    <div class="mt-3">輸入股票代號並點擊「分析」</div>
+    <div style="font-size:12px;margin-top:4px">Enter a ticker and click Analyze</div>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="resultArea" class="d-none">
+
+  <!-- Row 1: Star + Setup + Dims -->
+  <div class="row g-3 mb-3">
+    <!-- Star rating -->
+    <div class="col-12 col-md-3">
+      <div class="card h-100 text-center">
+        <div class="card-header"><i class="bi bi-star-fill me-1" style="color:#3fb950"></i>ML 星級評分</div>
+        <div class="card-body d-flex flex-column align-items-center justify-content-center py-4">
+          <div class="star-val" id="starDisplay">—</div>
+          <div id="starStars" style="font-size:1.4rem;margin:8px 0"></div>
+          <div id="vetoDisplay" class="d-none veto-alert w-100 text-center mt-2">
+            <i class="bi bi-x-octagon-fill me-1"></i>VETO 否決
+            <div id="vetoReason" style="font-size:11px;margin-top:4px"></div>
+          </div>
+          <div id="recDisplay" class="mt-3 badge fs-6" style="background:#1c2128;color:#8b949e"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 7-dim scores -->
+    <div class="col-12 col-md-5">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-bar-chart-steps me-1"></i>七維評分 7-Dimension Scores
+        </div>
+        <div class="card-body" id="dimScoresArea">
+          <div class="text-secondary text-center">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick info -->
+    <div class="col-12 col-md-4">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-info-circle me-1"></i>基本資料</div>
+        <div class="card-body" id="infoArea">
+          <div class="text-secondary text-center">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 2: Trade Plan -->
+  <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-clipboard-data me-1" style="color:#3fb950"></i>交易計劃 Trade Plan</div>
+        <div class="card-body" id="tradePlanArea">
+          <div class="text-secondary text-center">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 3: Stop system -->
+  <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-shield-exclamation me-1 text-danger"></i>三階段止損系統 3-Phase Stop System</div>
+        <div class="card-body">
+          <div class="stop-phase stop-phase-1">
+            <strong>Phase 1 (Day 1)：</strong>止損 = 當日最低點 (LOD) 下方 0.3%
+            <div style="font-size:12px;color:#8b949e;margin-top:4px">Martin 用最緊的止損，因為進場在已知支撐點</div>
+          </div>
+          <div class="stop-phase stop-phase-2">
+            <strong>Phase 2 (Day 2)：</strong>止損移至成本價 (breakeven)
+            <div style="font-size:12px;color:#8b949e;margin-top:4px">快速脫離風險，讓交易變成零風險</div>
+          </div>
+          <div class="stop-phase stop-phase-3">
+            <strong>Phase 3 (Day 3+)：</strong>追蹤止損 = 9 EMA
+            <div style="font-size:12px;color:#8b949e;margin-top:4px">收盤跌穿 9 EMA → 出場所有剩餘持倉</div>
+          </div>
+          <div class="profit-step mt-3">
+            <strong>部分了結：</strong>3R 出 15% → 5R 再出 15% → 剩餘 70% 追蹤 9 EMA
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el =>
+    new bootstrap.Tooltip(el, { placement: 'top' })
+  );
+  const prefill = '{{ prefill }}';
+  if (prefill) analyzeStock();
+});
+
+async function analyzeStock() {
+  const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
+  if (!ticker) return;
+
+  document.getElementById('loadingArea').classList.remove('d-none');
+  document.getElementById('emptyState').classList.add('d-none');
+  document.getElementById('resultArea').classList.add('d-none');
+
+  try {
+    const resp = await fetch('/api/ml/analyze', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ticker })
+    });
+    const data = await resp.json();
+
+    if (!data.ok) {
+      toast('分析失敗：' + (data.error || ''), false);
+      document.getElementById('loadingArea').classList.add('d-none');
+      document.getElementById('emptyState').classList.remove('d-none');
+      return;
+    }
+
+    renderAnalysis(data.result);
+    document.getElementById('loadingArea').classList.add('d-none');
+    document.getElementById('resultArea').classList.remove('d-none');
+  } catch(e) {
+    toast('分析失敗：' + e, false);
+    document.getElementById('loadingArea').classList.add('d-none');
+    document.getElementById('emptyState').classList.remove('d-none');
+  }
+}
+
+function renderAnalysis(r) {
+  // Star rating
+  const stars = parseFloat(r.capped_stars || 0);
+  const starClass = stars >= 4.5 ? 'star-5' : stars >= 4 ? 'star-4' : stars >= 3 ? 'star-3' : 'star-low';
+  document.getElementById('starDisplay').className = 'star-val ' + starClass;
+  document.getElementById('starDisplay').textContent = stars.toFixed(1) + ' ★';
+  const fullStars = Math.floor(stars);
+  const half = (stars - fullStars) >= 0.5;
+  let ss = '';
+  for (let i = 0; i < fullStars; i++) ss += '⭐';
+  if (half) ss += '½';
+  document.getElementById('starStars').textContent = ss;
+
+  // Veto
+  if (r.veto) {
+    document.getElementById('vetoDisplay').classList.remove('d-none');
+    document.getElementById('vetoReason').textContent =
+      r.veto === 'RISK' ? '止損距離過大 > 2.5%' : '熊市否決 — 下降趨勢';
+  } else {
+    document.getElementById('vetoDisplay').classList.add('d-none');
+  }
+
+  // Recommendation
+  const rec = r.recommendation || '';
+  const recZh = r.recommendation_zh || '';
+  const recColors = {
+    'STRONG BUY': '#3fb950', 'BUY': '#3fb950',
+    'WATCH': '#e3b341', 'WEAK': '#8b949e', 'PASS': '#f85149'
+  };
+  const recEl = document.getElementById('recDisplay');
+  recEl.textContent = `${rec} — ${recZh}`;
+  recEl.style.background = recColors[rec] || '#1c2128';
+  recEl.style.color = rec === 'PASS' ? '#fff' : '#0d1117';
+
+  // 7-dim scores
+  const dims = r.dim_scores || {};
+  const dimLabels = {
+    A: 'EMA結構', B: '回調品質', C: 'AVWAP匯合',
+    D: '成交量', E: '風險回報', F: '相對強度', G: '市場環境'
+  };
+  let dimHtml = '';
+  for (const [key, label] of Object.entries(dimLabels)) {
+    const d = dims[key] || {};
+    const sc = parseFloat(d.score || 0);
+    const pct = Math.max(0, Math.min(100, (sc + 2) / 4 * 100));
+    const color = sc > 0 ? '#3fb950' : sc < 0 ? '#f85149' : '#8b949e';
+    dimHtml += `
+      <div class="d-flex align-items-center mb-2">
+        <span style="width:100px;font-size:12px;color:#8b949e">${key}: ${label}</span>
+        <div class="dim-bar-wrap flex-grow-1 mx-2">
+          <div class="dim-bar" style="width:${pct}%;background:${color}"></div>
+        </div>
+        <span style="width:45px;text-align:right;font-size:13px;color:${color}">${sc >= 0 ? '+' : ''}${sc.toFixed(1)}</span>
+      </div>`;
+  }
+  document.getElementById('dimScoresArea').innerHTML = dimHtml;
+
+  // Quick info
+  const setup = r.setup_type || {};
+  const setupCode = (setup.primary_setup || 'UNKNOWN').toUpperCase();
+  const setupBadge = setupBadgeHtml(setupCode);
+  document.getElementById('infoArea').innerHTML = `
+    <table class="table table-sm mb-0" style="font-size:13px">
+      <tr><td class="text-secondary">股票</td><td class="fw-bold" style="color:#3fb950">${r.ticker}</td></tr>
+      <tr><td class="text-secondary">收盤價</td><td>$${(r.close || 0).toFixed(2)}</td></tr>
+      <tr><td class="text-secondary">ADR (14日)</td><td>${(r.adr || 0).toFixed(1)}%</td></tr>
+      <tr><td class="text-secondary">日成交額</td><td>$${(r.dollar_volume_m || 0).toFixed(1)}M</td></tr>
+      <tr><td class="text-secondary">3M 動量</td><td>${fmtMom(r.mom_3m)}</td></tr>
+      <tr><td class="text-secondary">6M 動量</td><td>${fmtMom(r.mom_6m)}</td></tr>
+      <tr><td class="text-secondary">形態類型</td><td>${setupBadge} (信心 ${((setup.confidence || 0) * 100).toFixed(0)}%)</td></tr>
+    </table>`;
+
+  // Trade plan
+  const tp = r.trade_plan || {};
+  if (tp.action === 'BUY') {
+    document.getElementById('tradePlanArea').innerHTML = `
+      <div class="row g-3">
+        <div class="col-12 mb-2">
+          <code style="font-size:13px;color:#3fb950">${tp.formula || ''}</code>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="trade-plan-card text-center">
+            <div style="font-size:11px;color:#8b949e">進場 Entry</div>
+            <div class="fw-bold" style="font-size:18px">$${(tp.entry || 0).toFixed(2)}</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="trade-plan-card text-center">
+            <div style="font-size:11px;color:#f85149">止損 Stop</div>
+            <div class="fw-bold text-danger" style="font-size:18px">$${(tp.stop || 0).toFixed(2)}</div>
+            <div style="font-size:11px;color:#8b949e">${(tp.stop_pct || 0).toFixed(1)}%</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="trade-plan-card text-center">
+            <div style="font-size:11px;color:#8b949e">股數 Shares</div>
+            <div class="fw-bold" style="font-size:18px">${tp.shares || 0}</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="trade-plan-card text-center">
+            <div style="font-size:11px;color:#8b949e">倉位金額</div>
+            <div class="fw-bold" style="font-size:18px">$${(tp.position_value || 0).toLocaleString()}</div>
+            <div style="font-size:11px;color:#8b949e">${(tp.position_pct || 0).toFixed(1)}%</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="trade-plan-card text-center">
+            <div style="font-size:11px;color:#3fb950">3R 目標</div>
+            <div class="fw-bold text-success" style="font-size:18px">${tp.target_1_price ? '$' + tp.target_1_price.toFixed(2) : '—'}</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="trade-plan-card text-center">
+            <div style="font-size:11px;color:#3fb950">5R 目標</div>
+            <div class="fw-bold text-success" style="font-size:18px">${tp.target_2_price ? '$' + tp.target_2_price.toFixed(2) : '—'}</div>
+          </div>
+        </div>
+      </div>
+      <div class="mt-2" style="font-size:12px;color:#8b949e">
+        <i class="bi bi-shield me-1"></i>風險金額：$${(tp.risk_dollars || 0).toFixed(0)} (${(tp.risk_pct_of_account || 0).toFixed(2)}%)
+        &nbsp;|&nbsp; ${tp.trail_label || ''}
+      </div>`;
+  } else {
+    document.getElementById('tradePlanArea').innerHTML =
+      '<div class="text-center text-secondary py-3"><i class="bi bi-x-circle me-1"></i>不符合交易條件 — ' +
+      (tp.action || 'PASS') + '</div>';
+  }
+}
+
+function setupBadgeHtml(code) {
+  const map = {
+    'PB_EMA':   ['badge-pb',  'PB_EMA',  'EMA回調買入'],
+    'BR_RETEST':['badge-br',  'BR_RETEST','突破回測'],
+    'BREAKOUT': ['badge-bo',  'BREAKOUT', '突破'],
+    'EP':       ['badge-ep',  'EP',       '跳空缺口'],
+    'CHAR_CHG': ['badge-chg', 'CHAR_CHG', '走勢轉變'],
+    'PARABOLIC':['badge-para','PARA',     '拋物線'],
+  };
+  const info = map[code] || ['badge-uk', code || '?', '未分類'];
+  return `<span class="badge ${info[0]}">${info[1]}</span>`;
+}
+
+function fmtMom(v) {
+  if (v == null) return '—';
+  const n = parseFloat(v);
+  const cls = n >= 0 ? 'text-success' : 'text-danger';
+  return `<span class="${cls}">${n >= 0 ? '+' : ''}${n.toFixed(1)}%</span>`;
+}
+</script>
+{% endblock %}

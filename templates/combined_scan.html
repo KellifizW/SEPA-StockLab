@@ -869,10 +869,14 @@ async function startScan() {
   setStatus('Scanning…');
 
   try {
+    // Always request min_star=3.0 from backend so the full ≥3★ pool is
+    // available for interactive client-side filtering (minStar dropdown).
+    // top_n is sent so "全部" in the topN dropdown works end-to-end.
+    var topNVal = parseInt(document.getElementById('topN').value) || 50;
     var resp = await fetch('/api/combined/scan/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({refresh_rs: refreshRs, stage1_source: stage1Src})
+      body: JSON.stringify({refresh_rs: refreshRs, stage1_source: stage1Src, min_star: 3.0, top_n: topNVal >= 9999 ? null : topNVal})
     });
     var r = await resp.json();
     _jid = r.job_id;
@@ -988,7 +992,8 @@ function onDone(result) {
     document.getElementById('scanLogPath').textContent = result.log_path;
   }
 
-  setStatus('Done — SEPA: ' + sepaRows.length + '/' + sepaAll.length + ' | QM: ' + _qmAllData.length);
+  // Show filtered QM count (matching table) rather than raw backend pool size
+  setStatus('Done — SEPA: ' + sepaRows.length + '/' + sepaAll.length + ' | QM: ' + filteredQmLen + '★4+ (' + _qmAllData.length + ' total ≥3★)');
   document.getElementById('btnLoadLast').classList.remove('d-none');
 
   // ── Completion popup notification ─────────────────────────────────
@@ -997,7 +1002,7 @@ function onDone(result) {
   if (result.qm_csv)   csvHint += '<br><small class="text-muted">QM CSV: '   + result.qm_csv   + '</small>';
   var logHint = result.log_path ? '<br><small class="text-muted">日誌: ' + result.log_path + '</small>' : '';
   toastCompletion(
-    '✅ Combined 掃描完成！<br>SEPA: <strong>' + sepaRows.length + '</strong> 個股票 | QM: <strong>' + _qmAllData.length + '</strong> 個設置' + csvHint + logHint,
+    '✅ Combined 掃描完成！<br>SEPA: <strong>' + sepaRows.length + '</strong> 個股票 | QM: <strong>' + filteredQmLen + '</strong> 個設置 (≥4★) /' + _qmAllData.length + ' (≥3★)' + csvHint + logHint,
     true
   );
 

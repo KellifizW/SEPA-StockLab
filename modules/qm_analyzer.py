@@ -48,7 +48,8 @@ _RESET  = "\033[0m"
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _score_dim_a(df: pd.DataFrame, rs_rank: Optional[float] = None,
-                 sector_rank: Optional[float] = None) -> dict:
+                 sector_rank: Optional[float] = None,
+                 ticker: Optional[str] = None) -> dict:
     """
     Score Dimension A: Momentum Quality (0 to +2 star adjustment).
 
@@ -127,11 +128,28 @@ def _score_dim_a(df: pd.DataFrame, rs_rank: Optional[float] = None,
             detail["sector_bonus"] = f"{weak_penalty:.2f} (弱勢板塊 — 後70%百分位)"
         detail["sector_rank"] = round(sector_rank, 1)
 
+    # ── Supplement 20: Rocket Fuel — extreme earnings + revenue growth ────
+    # "When I see +100% earnings AND +100% revenue — that's rocket fuel"
+    if ticker:
+        try:
+            from modules.data_pipeline import get_earnings_growth
+            fuel = get_earnings_growth(ticker)
+            if fuel.get("has_rocket_fuel"):
+                adj += fuel["adjustment"]
+                detail["rocket_fuel"] = fuel["note_zh"]
+                detail["eps_growth_pct"] = fuel.get("eps_growth_pct")
+                detail["rev_growth_pct"] = fuel.get("rev_growth_pct")
+            elif fuel.get("eps_growth_pct") is not None:
+                detail["earnings_note"] = fuel["note_zh"]
+        except Exception:  # pylint: disable=broad-except
+            pass
+
     detail["adjustment"] = round(adj, 2)
     detail["tooltip"] = (
         "動量品質 (Momentum Quality)\n"
         "通過的時間框架越多、RSI排名越高 → 越強\n"
         "板塊加成：最強板塊+1星，強勢板塊+0.5星（補充規則 S3）\n"
+        "火箭燃料：EPS+Rev均≥100%成長 → 額外加成（補充規則 S20）\n"
         f"1M={m1:.0f}% 3M={m3:.0f}% 6M={m6:.0f}%"
     )
     return {"score": round(adj, 2), "detail": detail}
@@ -252,6 +270,27 @@ def _score_dim_c(df: pd.DataFrame) -> dict:
     else:
         detail["vol_dryup"] = False
 
+    # ── Supplement 8: Narrow Range Day — K-line candle quality ───────────
+    # "First day of breakout should be a very narrow range — inside bar, NR7"
+    from modules.data_pipeline import get_pre_breakout_candle_quality
+    candle_q = get_pre_breakout_candle_quality(df)
+    if candle_q.get("adjustment", 0.0) != 0.0:
+        adj += candle_q["adjustment"]
+        detail["candle_quality"]      = candle_q["quality"]
+        detail["candle_ratio"]        = candle_q["ratio"]
+        detail["candle_consec_narrow"]= candle_q["consecutive_narrow"]
+        detail["candle_note_zh"]      = candle_q["note_zh"]
+
+    # ── Supplement 34: Compression Energy Score ───────────────────────────
+    # "The longer and tighter it consolidates, the more energy builds"
+    comp_score = tight.get("compression_score", 0.0) or 0.0
+    comp_thresh = getattr(C, "QM_COMPRESSION_BONUS_THRESH", 50.0)
+    comp_bonus  = getattr(C, "QM_COMPRESSION_BONUS", 0.25)
+    if comp_score >= comp_thresh:
+        adj += comp_bonus
+        detail["compression_score"]   = round(comp_score, 1)
+        detail["compression_note_zh"] = f"壓縮能量高 ({comp_score:.0f}) — 彈簧蓄力充足 (S34 +{comp_bonus}★)"
+
     # Cap
     adj = max(-2.0, min(adj, 2.0))
     detail["adjustment"] = round(adj, 2)
@@ -259,7 +298,9 @@ def _score_dim_c(df: pd.DataFrame) -> dict:
         "整理品質 (Consolidation Quality)\n"
         "Higher Lows = 機構資金累積的物理證據（最重要）\n"
         "收緊 = 供需趨近平衡 → 突破時爆發力更強\n"
-        "成交量萎縮 = 無人急著賣，供給稀缺"
+        "成交量萎縮 = 無人急著賣，供給稀缺\n"
+        "窄K線 = 突破前蓄力訊號（補充規則 S8）\n"
+        "壓縮能量分數 = 整理天數 × 緊密程度（補充規則 S34）"
     )
     return {"score": round(adj, 2), "detail": detail}
 
@@ -346,6 +387,39 @@ def _score_dim_d(df: pd.DataFrame) -> dict:
         slope_adj = getattr(C, "QM_MA_SLOPE_DOWN_PENALTY", -0.75)
     adj += slope_adj
 
+    # ── Supplement 9: First Bounce Detection ────────────────────────────
+    # "The first pull back to the 20-day is the best pull back to buy"
+    from modules.data_pipeline import get_first_bounce_info
+    bounce = get_first_bounce_info(df)
+    if bounce.get("adjustment", 0.0) != 0.0:
+        adj += bounce["adjustment"]
+        detail["first_bounce_ma"]   = bounce["first_bounce_ma"]
+        detail["bounce_count_20"]   = bounce["bounce_count_20"]
+        detail["bounce_count_10"]   = bounce["bounce_count_10"]
+        detail["bounce_note_zh"]    = bounce["note_zh"]
+
+    # ── Supplement 14: Price below 50SMA — hard penalty ─────────────────
+    # "I simply don't buy stocks that are below the 50-day moving average"
+    sma_50_val = None
+    if "SMA_50" in df.columns:
+        sma_50_val = float(df["SMA_50"].dropna().iloc[-1]) if not df["SMA_50"].dropna().empty else None
+    if sma_50_val is None:
+        sma_50_val = float(df["Close"].rolling(50).mean().dropna().iloc[-1]) if len(df) >= 50 else None
+    if sma_50_val and sma_50_val > 0:
+        last_close = float(df["Close"].iloc[-1])
+        if last_close < sma_50_val:
+            penalty_50 = getattr(C, "QM_BELOW_50SMA_PENALTY", -1.5)
+            adj += penalty_50
+            detail["below_50sma"]      = True
+            detail["below_50sma_note"] = f"收盤價跌破50SMA — 硬性扣分 {penalty_50}★ (S14)"
+            # Additional penalty if 50SMA itself is declining
+            if len(df) >= 55:
+                sma50_5ago = float(df["Close"].rolling(50).mean().dropna().iloc[-5])
+                if sma_50_val < sma50_5ago:
+                    extra = getattr(C, "QM_BELOW_50SMA_DECLINING", -0.5)
+                    adj += extra
+                    detail["sma50_declining_note"] = f"50SMA本身也在下降 (S14 額外 {extra}★)"
+
     adj = max(-2.0, min(adj, 2.0))
     detail["adjustment"] = round(adj, 2)
     detail["slope"] = slope_info
@@ -356,7 +430,8 @@ def _score_dim_d(df: pd.DataFrame) -> dict:
         "衝浪20SMA+均線全部向上 = 最佳設置\n"
         f"當前{primary_ma}SMA斜率: {slope_info['direction']} "
         f"({slope_info['slope_pct_per_bar']:.3f}%/bar≈{slope_info['angle_approx_deg']:.0f}°)\n"
-        "均線角度需≥45°(越陡越好);angle<45°=不是動量領導者"
+        "均線角度需≥45°(越陡越好);angle<45°=不是動量領導者\n"
+        "首次回測訊號：第一次最有力 (S9) | 跌破50SMA：硬性扣分 (S14)"
     )
     return {"score": round(adj, 2), "detail": detail}
 
@@ -786,7 +861,7 @@ def analyze_qm(ticker: str,
     setup = detect_setup_type(df, ticker=ticker)
 
     # ── Score all 6 dimensions ─────────────────────────────────────────────
-    dim_a = _score_dim_a(df, rs_rank=rs_rank, sector_rank=None)
+    dim_a = _score_dim_a(df, rs_rank=rs_rank, sector_rank=None, ticker=ticker)
     dim_b = _score_dim_b(df)
     dim_c = _score_dim_c(df)
     dim_d = _score_dim_d(df)
@@ -820,6 +895,20 @@ def analyze_qm(ticker: str,
     }
     trade_plan = _build_trade_plan(stars, row_for_plan)
 
+    # ── Supplement 16: Sub-setup label (3.0-3.5 ★) ────────────────────────
+    # "When I see a 3-star, I give it a tiny position — it's a sub-setup"
+    sub_setup_min = getattr(C, "QM_SUB_SETUP_MIN_STARS", 3.0)
+    sub_setup_max = getattr(C, "QM_SUB_SETUP_MAX_STARS", 3.5)
+    sub_setup_pos_max = getattr(C, "QM_SUB_SETUP_POSITION_MAX", 5.0)
+    is_sub_setup = sub_setup_min <= stars <= sub_setup_max
+
+    # ── Supplement 30: Close Strength Signal ──────────────────────────────
+    from modules.data_pipeline import get_close_strength, get_follow_through
+    close_str = get_close_strength(df)
+
+    # ── Supplement 26: Follow-Through Detection ───────────────────────────
+    ft = get_follow_through(df)
+
     result = {
         "ticker":            ticker.upper(),
         "scan_date":         date.today().isoformat(),
@@ -844,6 +933,20 @@ def analyze_qm(ticker: str,
         "mom_1m":            mom.get("1m"),
         "mom_3m":            mom.get("3m"),
         "mom_6m":            mom.get("6m"),
+        # ── S16: Sub-setup flag ──────────────────────────────────────────
+        "sub_setup":         is_sub_setup,
+        "sub_setup_note":    (
+            f"次級形態 (Sub-Setup)：{stars:.1f}★在3.0-3.5范圍 — "
+            f"建議最多 {sub_setup_pos_max:.0f}% 試倉 (S16)"
+        ) if is_sub_setup else None,
+        # ── S30: Close Strength Signal ───────────────────────────────────
+        "close_strength":     close_str.get("close_strength"),
+        "close_strength_label": close_str.get("label"),
+        "close_strength_note": close_str.get("note_zh"),
+        # ── S26: Follow-Through Status ───────────────────────────────────
+        "follow_through":     ft.get("status"),
+        "follow_through_days":ft.get("follow_through_days"),
+        "follow_through_note":ft.get("note_zh"),
     }
 
     if print_report:

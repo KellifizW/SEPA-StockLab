@@ -33,6 +33,12 @@ from modules.market_env import assess
 
 logger = logging.getLogger(__name__)
 
+# ── ANSI colours for terminal output ──────────────────────────────────────────
+_GREEN  = "\033[92m"
+_RED    = "\033[91m"
+_YELLOW = "\033[93m"
+_RESET  = "\033[0m"
+
 # ─── Combined scan progress / cancel (module-level) ──────────────────────────
 _combined_lock      = threading.Lock()
 _combined_cancel    = threading.Event()
@@ -80,7 +86,7 @@ def run_combined_scan(custom_filters: dict | None = None,
     refresh_rs     : force rebuild of RS cache
     verbose        : print progress to console
     stage1_source  : 'finviz' | 'nasdaq_ftp' | None (uses C.STAGE1_SOURCE)
-    min_star       : QM minimum star rating for df_passed (default: C.QM_MIN_STAR_DISPLAY)
+    min_star       : QM minimum star rating for df_passed (default: C.QM_SCAN_MIN_STAR=3.0)
     top_n          : QM result cap (default: C.QM_SCAN_TOP_N)
     strict_rs      : QM strict RS≥90 filter (Supplement 35)
 
@@ -336,7 +342,10 @@ def run_combined_scan(custom_filters: dict | None = None,
             qm_df_passed = qm_df_all_scored.copy() if not qm_df_all_scored.empty else pd.DataFrame()
 
             # min_star filter
-            _min_star = min_star if min_star is not None else getattr(C, "QM_MIN_STAR_DISPLAY", 3.0)
+            # NOTE: Combined scan defaults to QM_SCAN_MIN_STAR (3.0) so the full
+            # ≥3★ pool is returned to the frontend for interactive client-side
+            # filtering without re-running the scan.
+            _min_star = min_star if min_star is not None else getattr(C, "QM_SCAN_MIN_STAR", 3.0)
             if not qm_df_passed.empty and "qm_star" in qm_df_passed.columns:
                 qm_df_passed = qm_df_passed[qm_df_passed["qm_star"] >= _min_star]
 
@@ -354,10 +363,29 @@ def run_combined_scan(custom_filters: dict | None = None,
             qm_df_all = pd.DataFrame(s2_passed) if s2_passed else pd.DataFrame()
 
             logger.info("[Combined QM] Final passed count after filters: %d", len(qm_df_passed))
+            
+            # ── Supplement 7: Scan result count warning ──────────────────────
+            # "If I'm getting hundreds of setups, my criteria are too loose"
+            # "In a good market there should be a manageable number of setups"
+            qm_scan_count_warning = None
+            max_results_warn = getattr(C, "QM_SCAN_MAX_RESULTS_WARN", 50)
+            if len(qm_df_passed) > max_results_warn:
+                qm_scan_count_warning = (
+                    f"⚠️ 掃描結果過多 ({len(qm_df_passed)} 個設置 > {max_results_warn} 建議上限) — "
+                    f"條件可能太寬鬆。建議：收緊 ADR 門檻或提高最低星級要求 (S7)"
+                )
+                logger.warning(
+                    "[Combined QM S7] %d results exceed warn threshold %d — criteria may be too loose",
+                    len(qm_df_passed), max_results_warn
+                )
+                if verbose:
+                    print(f"\n{_YELLOW}{qm_scan_count_warning}{_RESET}")
+            
             qm_result = {
                 "passed": qm_df_passed,
                 "all": qm_df_all,
                 "all_scored": qm_df_all_scored,
+                "scan_count_warning": qm_scan_count_warning,
             }
         except Exception as e:
             logger.error("[Combined] QM process failed: %s", e, exc_info=True)
@@ -423,6 +451,7 @@ def run_combined_scan(custom_filters: dict | None = None,
         "timing": _timing,
         "error": qm_error,
         "blocked": qm_blocked,
+        "scan_count_warning": qm_result.get("scan_count_warning") if qm_result else None,
     }
     
     _progress("Combined scan complete", 100, f"Done in {total_elapsed:.1f}s")

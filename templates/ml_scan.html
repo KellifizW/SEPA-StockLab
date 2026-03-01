@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+{% block title %}ML 掃描 Scan{% endblock %}
+
+{% block extra_head %}
+<style>
+  .star-5  { color: #3fb950; font-weight: 700; }
+  .star-4  { color: #3fb950; }
+  .star-3  { color: #e3b341; }
+  .star-low { color: #f85149; }
+  .badge-pb   { background: #0e4429; color: #3fb950; }
+  .badge-br   { background: #1a3060; color: #58a6ff; }
+  .badge-bo   { background: #4a3800; color: #e3b341; }
+  .badge-ep   { background: #3a0060; color: #d49fff; }
+  .badge-chg  { background: #003040; color: #00d4ff; }
+  .badge-para { background: #3a0a0a; color: #f85149; }
+  .badge-uk   { background: #1c2128; color: #8b949e; }
+  .ml-row:hover { background: #0a1a12 !important; cursor: pointer; }
+  .progress-stage { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .filter-bar { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3">
+  <h4 class="mb-0"><i class="bi bi-graph-up-arrow me-2" style="color:#3fb950"></i>
+    Martin Luk 回調買入掃描 <span style="color:#8b949e;font-size:13px">Pullback Buy Scanner</span>
+  </h4>
+  <span class="badge bg-secondary ms-auto">每日收盤後使用 • Use after market close</span>
+</div>
+
+<!-- Controls -->
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="filter-bar">
+      <div class="row g-3 align-items-end">
+        <div class="col-auto">
+          <label class="form-label text-secondary" style="font-size:12px">最低星級 Min Stars</label>
+          <select id="minStar" class="form-select form-select-sm" style="width:110px;background:#0d1117;color:#c9d1d9;border-color:#30363d">
+            <option value="2.5">★★½ 2.5+</option>
+            <option value="3" selected>★★★ 3+</option>
+            <option value="3.5">★★★½ 3.5+</option>
+            <option value="4">★★★★ 4+</option>
+            <option value="4.5">★★★★½ 4.5+</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label text-secondary" style="font-size:12px">顯示數量 Top N</label>
+          <select id="topN" class="form-select form-select-sm" style="width:100px;background:#0d1117;color:#c9d1d9;border-color:#30363d">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <button class="btn px-4" id="btnScan" onclick="startScan()"
+                  style="background:#238636;color:#fff;border:1px solid #2ea043">
+            <i class="bi bi-graph-up-arrow me-1"></i>開始掃描 Run Scan
+          </button>
+          <button class="btn btn-outline-secondary btn-sm ms-2 d-none" id="btnCancel" onclick="cancelScan()">
+            <i class="bi bi-stop-circle me-1"></i>取消 Cancel
+          </button>
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-outline-secondary btn-sm" onclick="loadLast()">
+            <i class="bi bi-clock-history me-1"></i>上次結果 Load Last
+          </button>
+        </div>
+        <div class="col ms-auto text-end">
+          <small class="text-secondary">
+            <i class="bi bi-info-circle me-1"></i>
+            篩選條件：EMA(9>21>50>150)排列、ADR≥4%、回調至EMA支撐、AVWAP匯合
+          </small>
+        </div>
+      </div>
+
+      <!-- Progress bar -->
+      <div id="progressArea" class="mt-3 d-none">
+        <div class="progress" style="height:6px;background:#21262d">
+          <div id="progressBar" class="progress-bar" style="background:#3fb950;width:0%;transition:width .4s"></div>
+        </div>
+        <div class="progress-stage" id="progressStage">準備中…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Summary -->
+<div class="row g-3 mb-3" id="summaryRow" style="display:none!important">
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="metPassCount">—</div>
+      <div class="metric-lbl">通過股票 Passed</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="met4Star" style="color:#3fb950">—</div>
+      <div class="metric-lbl">4★ 以上</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="metAvgStar" style="color:#e3b341">—</div>
+      <div class="metric-lbl">平均星級 Avg Stars</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="metScanTime" style="color:#8b949e">—</div>
+      <div class="metric-lbl">掃描時間 Scan Time</div>
+    </div>
+  </div>
+</div>
+
+<!-- Results table -->
+<div class="card">
+  <div class="card-header d-flex align-items-center gap-2">
+    <i class="bi bi-table me-1"></i>掃描結果 Results
+    <span id="resultCount" class="badge bg-secondary ms-auto">—</span>
+    <button class="btn btn-outline-secondary btn-sm" onclick="exportCSV()" id="btnExport" disabled>
+      <i class="bi bi-download me-1"></i>匯出 CSV
+    </button>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0" id="resultTable">
+        <thead>
+          <tr>
+            <th style="width:40px">#</th>
+            <th>股票 Ticker</th>
+            <th>⭐ 星級 Stars
+              <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip"
+                 title="Martin Luk 7維評分：EMA結構、回調品質、AVWAP匯合、成交量、風險回報、相對強度、市場環境。5★滿分。"></i>
+            </th>
+            <th>ADR%
+              <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip"
+                 title="平均日波動幅 ≥4% 才有足夠空間。"></i>
+            </th>
+            <th>成交額 $Vol</th>
+            <th>3M%</th>
+            <th>6M%</th>
+            <th>形態 Setup
+              <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip"
+                 title="PB_EMA=EMA回調買入, BR_RETEST=突破回測, BREAKOUT=突破, EP=跳空缺口, CHAR_CHG=走勢轉變, PARABOLIC=拋物線"></i>
+            </th>
+            <th>EMA結構</th>
+            <th>回調 PB</th>
+            <th>AVWAP</th>
+            <th>成交量 Vol</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody">
+          <tr><td colspan="12" class="text-center text-secondary py-5">
+            <i class="bi bi-graph-up-arrow" style="font-size:2rem;opacity:0.3;color:#3fb950"></i>
+            <div class="mt-2">點擊「開始掃描」以篩選 Martin Luk 回調買入設置</div>
+            <div style="font-size:12px;margin-top:4px">Click "Run Scan" to find pullback buy setups</div>
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Info footer -->
+<div class="mt-3 p-3" style="background:#161b22;border:1px solid #30363d;border-radius:8px;font-size:12px;color:#8b949e">
+  <i class="bi bi-lightbulb me-1 text-warning"></i>
+  <strong>Martin Luk 掃描說明：</strong>
+  此掃描器基於 Martin Luk 的系統化回調買入法。
+  篩選 EMA(9/21/50/150) 排列良好、回調至 EMA 支撐、AVWAP 匯合、
+  和成交量萎縮的理想回調買入點。
+  <span class="ms-2" style="color:#3fb950">止損上限 2.5%，每筆風險 0.5%，公式化倉位管理。</span>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let _jobId = null;
+let _pollInterval = null;
+let _scanStartTime = null;
+let _lastRows = [];
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el =>
+    new bootstrap.Tooltip(el, { placement: 'top' })
+  );
+  loadLast();
+});
+
+async function startScan() {
+  const minStar = parseFloat(document.getElementById('minStar').value);
+  const topN = parseInt(document.getElementById('topN').value);
+
+  document.getElementById('btnScan').disabled = true;
+  document.getElementById('btnCancel').classList.remove('d-none');
+  document.getElementById('progressArea').classList.remove('d-none');
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressStage').textContent = '啟動掃描… Starting…';
+  document.getElementById('btnExport').disabled = true;
+  _scanStartTime = Date.now();
+
+  try {
+    const resp = await fetch('/api/ml/scan/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ min_star: minStar, top_n: topN })
+    });
+    const data = await resp.json();
+    _jobId = data.job_id;
+    pollProgress();
+  } catch(e) {
+    toast('掃描請求失敗：' + e, false);
+    resetScanUI();
+  }
+}
+
+function cancelScan() {
+  if (_jobId) {
+    fetch('/api/ml/scan/cancel/' + _jobId, { method: 'POST' });
+    toast('已發送取消請求 Cancel request sent');
+    resetScanUI();
+  }
+}
+
+function pollProgress() {
+  _pollInterval = setInterval(async () => {
+    try {
+      const r = await fetch('/api/ml/scan/status/' + _jobId).then(x => x.json());
+      const p = await fetch('/api/ml/scan/progress').then(x => x.json()).catch(() => null);
+      if (p) {
+        document.getElementById('progressBar').style.width = (p.pct || 0) + '%';
+        let stageText = p.stage || '';
+        if (p.ticker) stageText += ' — ' + p.ticker;
+        if (p.msg) stageText += ': ' + p.msg;
+        document.getElementById('progressStage').textContent = stageText;
+      }
+
+      if (r.status === 'done') {
+        clearInterval(_pollInterval);
+        const elapsed = ((Date.now() - _scanStartTime) / 1000).toFixed(0);
+        renderResults(r.result || []);
+        document.getElementById('progressBar').style.width = '100%';
+        document.getElementById('progressStage').textContent = `掃描完成 (${elapsed}秒)`;
+        resetScanUI(true);
+        toastCompletion(`✓ ML 掃描完成！找到 ${(r.result||[]).length} 個回調買入設置`, true);
+      } else if (r.status === 'error') {
+        clearInterval(_pollInterval);
+        toast('掃描錯誤：' + (r.error || ''), false);
+        resetScanUI();
+      }
+    } catch(e) {}
+  }, 2000);
+}
+
+function resetScanUI(done=false) {
+  document.getElementById('btnScan').disabled = false;
+  document.getElementById('btnCancel').classList.add('d-none');
+  if (!done) document.getElementById('progressArea').classList.add('d-none');
+  _jobId = null;
+}
+
+async function loadLast() {
+  try {
+    const data = await fetch('/api/ml/scan/last').then(r => r.json());
+    if (data.rows && data.rows.length > 0) {
+      renderResults(data.rows);
+      toast(`已載入上次掃描結果（${data.rows.length} 個設置）`, true);
+    }
+  } catch(e) {}
+}
+
+function renderResults(rows) {
+  _lastRows = rows;
+  const tbody = document.getElementById('resultBody');
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="12" class="text-center text-secondary py-4">未找到符合條件的股票</td></tr>';
+    document.getElementById('resultCount').textContent = '0';
+    return;
+  }
+
+  const stars4 = rows.filter(r => (r.ml_star || r.stars || 0) >= 4).length;
+  const avgStar = (rows.reduce((s, r) => s + (r.ml_star || r.stars || 0), 0) / rows.length).toFixed(1);
+  document.getElementById('metPassCount').textContent = rows.length;
+  document.getElementById('met4Star').textContent = stars4;
+  document.getElementById('metAvgStar').textContent = avgStar + '★';
+  document.getElementById('metScanTime').textContent = new Date().toLocaleTimeString('zh-HK');
+  document.getElementById('summaryRow').style.display = '';
+  document.getElementById('resultCount').textContent = rows.length;
+  document.getElementById('btnExport').disabled = false;
+
+  tbody.innerHTML = rows.map((r, i) => {
+    const star = parseFloat(r.ml_star ?? r.stars ?? 0);
+    const starClass = star >= 4.5 ? 'star-5' : star >= 4 ? 'star-4' : star >= 3 ? 'star-3' : 'star-low';
+    const starStr = renderStars(star);
+    const setup = (r.setup_type || '').toUpperCase();
+    const setupBadge = setupBadgeHtml(setup);
+    const adr = r.adr != null ? parseFloat(r.adr).toFixed(1) + '%' : '—';
+    const dvol = r.dollar_volume_m != null ? '$' + parseFloat(r.dollar_volume_m).toFixed(1) + 'M' : '—';
+    const m3 = r.mom_3m != null ? fmtMom(r.mom_3m) : '—';
+    const m6 = r.mom_6m != null ? fmtMom(r.mom_6m) : '—';
+    const ema = fmtScore(r.ema_structure);
+    const pb = fmtScore(r.pullback_quality);
+    const avw = fmtScore(r.avwap_score);
+    const vol = fmtScore(r.volume_score);
+
+    return `<tr class="ml-row" onclick="window.location='/ml/analyze?ticker=${r.ticker}'">
+      <td class="text-secondary">${i+1}</td>
+      <td><a href="/ml/analyze?ticker=${r.ticker}" class="fw-bold" style="color:#3fb950" onclick="event.stopPropagation()">${r.ticker}</a></td>
+      <td class="${starClass}">${starStr}</td>
+      <td>${adr}</td>
+      <td>${dvol}</td>
+      <td>${m3}</td>
+      <td class="fw-bold">${m6}</td>
+      <td>${setupBadge}</td>
+      <td>${ema}</td>
+      <td>${pb}</td>
+      <td>${avw}</td>
+      <td>${vol}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderStars(val) {
+  const full = Math.floor(val);
+  const half = (val - full) >= 0.5;
+  let s = '';
+  for (let i = 0; i < full; i++) s += '★';
+  if (half) s += '½';
+  return s + ` <small>(${val.toFixed(1)})</small>`;
+}
+
+function setupBadgeHtml(code) {
+  const map = {
+    'PB_EMA':   ['badge-pb',  'PB',   'EMA回調買入'],
+    'BR_RETEST':['badge-br',  'BR',   '突破回測'],
+    'BREAKOUT': ['badge-bo',  'BO',   '突破'],
+    'EP':       ['badge-ep',  'EP',   '跳空缺口'],
+    'CHAR_CHG': ['badge-chg', 'CHG',  '走勢轉變'],
+    'PARABOLIC':['badge-para','PARA', '拋物線'],
+  };
+  const info = map[code] || ['badge-uk', code || '?', '未分類'];
+  return `<span class="badge ${info[0]}" data-bs-toggle="tooltip" title="${info[2]}">${info[1]}</span>`;
+}
+
+function fmtMom(v) {
+  const n = parseFloat(v);
+  const cls = n >= 30 ? 'text-success fw-bold' : n >= 0 ? 'text-success' : 'text-danger';
+  return `<span class="${cls}">${n >= 0 ? '+' : ''}${n.toFixed(1)}%</span>`;
+}
+
+function fmtScore(v) {
+  if (v == null) return '<span class="text-secondary">—</span>';
+  const n = parseFloat(v);
+  const cls = n > 0 ? 'text-success' : n < 0 ? 'text-danger' : 'text-secondary';
+  return `<span class="${cls}">${n >= 0 ? '+' : ''}${n.toFixed(1)}</span>`;
+}
+
+function exportCSV() {
+  if (!_lastRows.length) return;
+  const keys = ['ticker','ml_star','setup_type','adr','dollar_volume_m','mom_3m','mom_6m','ema_structure','pullback_quality','avwap_score','volume_score','recommendation'];
+  let csv = keys.join(',') + '\n';
+  csv += _lastRows.map(r => keys.map(k => r[k] ?? '').join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ml_scan_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+</script>
+{% endblock %}

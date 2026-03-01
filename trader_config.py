@@ -400,3 +400,213 @@ QM_POSITION_SIZING_6STAR_MAX = 30.0  # 6-star maximum position: 30% of account
 # ── Supplement 35: RS rank hard filter (strict screener mode) ────────────────
 # Rule: "It needs to be like 90 plus, 95% plus" (for percentage rank filter)
 QM_RS_STRICT_MIN_RANK      = 90.0  # Strict mode: RS rank must be ≥ 90th percentile
+
+# ── Supplement 8: Narrow Range Day — K-line quality check ────────────────────
+# Rule: "First day of breakout should be a very narrow range — inside bar, NR7, NR4"
+# Rule: "If last candle before breakout is wide, it's a bad setup"
+QM_NARROW_RANGE_RATIO      = 0.5   # (High-Low)/ATR < 0.5 = narrow range day (good)
+QM_WIDE_RANGE_RATIO        = 1.5   # (High-Low)/ATR > 1.5 = wide range day (bad)
+QM_NARROW_RANGE_BONUS      = 0.3   # Dim C: +0.3 for single narrow range day
+QM_NARROW_SEQ_BONUS        = 0.5   # Dim C: +0.5 for 2+ consecutive narrow range days
+QM_WIDE_RANGE_PENALTY      = -0.3  # Dim C: -0.3 for wide range day before breakout
+
+# ── Supplement 9: First Bounce Detection ─────────────────────────────────────
+# Rule: "The first pull back to the 20-day is the best pull back to buy — not the 3rd"
+# Rule: "First bounces are more powerful than 2nd or 3rd bounces"
+QM_FIRST_BOUNCE_20_BONUS   = 0.5   # Dim D: +0.5 for confirmed first bounce off 20SMA
+QM_FIRST_BOUNCE_10_BONUS   = 0.3   # Dim D: +0.3 for confirmed first bounce off 10SMA
+QM_FIRST_BOUNCE_50_BONUS   = 0.2   # Dim D: +0.2 for confirmed first bounce off 50SMA
+QM_BOUNCE_TOUCH_PCT        = 1.5   # % distance to consider price "touching" a MA
+
+# ── Supplement 14: Price below 50SMA hard penalty ────────────────────────────
+# Rule: "I simply don't buy stocks that are below the 50-day moving average"
+# Rule: "The 50-day is not absolute but it filters 99% of bad setups"
+QM_BELOW_50SMA_PENALTY     = -1.5  # Dim D: -1.5 if price below 50SMA
+QM_BELOW_50SMA_DECLINING   = -0.5  # Additional -0.5 if 50SMA itself is declining
+
+# ── Supplement 16: Sub-setup label (3.0-3.5 star) ────────────────────────────
+# Rule: "When I see a 3-star, I give it a tiny position — it's a sub-setup"
+# Rule: "It's not your best, but it's still worth watching with less size"
+QM_SUB_SETUP_MIN_STARS     = 3.0   # Stars ≥ 3.0 and ≤ 3.5 → sub-setup flag
+QM_SUB_SETUP_MAX_STARS     = 3.5
+QM_SUB_SETUP_POSITION_MAX  = 5.0   # Max position % for sub-setup: 5% (half normal)
+
+# ── Supplement 20: Rocket Fuel — extreme earnings growth ─────────────────────
+# Rule: "When I see +100% earnings AND +100% revenue — that's rocket fuel"
+# Rule: "I look for hyper-growth stocks. 100% EPS growth changes the story"
+QM_ROCKET_FUEL_EPS_MIN     = 100.0 # EPS growth ≥ 100% YoY → rocket fuel threshold
+QM_ROCKET_FUEL_REV_MIN     = 100.0 # Revenue growth ≥ 100% YoY → rocket fuel
+QM_ROCKET_FUEL_BONUS       = 0.25  # Dim A: +0.25 for true rocket fuel (both criteria)
+
+# ── Supplement 26: Follow-through detection ──────────────────────────────────
+# Rule: "After day 1 breakout, I want to see follow-through — higher prices next day"
+# Rule: "If stock closes up next day too, that confirms the move"
+QM_FOLLOW_THROUGH_MIN_DAYS = 2     # Min consecutive higher-close days to confirm FT
+QM_FOLLOW_THROUGH_LOOKBACK = 3     # Days to look back for follow-through signal
+
+# ── Supplement 30: Close strength signal (alternative entry) ─────────────────
+# Rule: "If stock closes in the top 10% of its range, that's a very strong close"
+# Rule: "A strong close near HOD is better than closing in middle of range"
+QM_CLOSE_STRENGTH_STRONG   = 0.90  # Close in top 10% of range = strong close signal
+QM_CLOSE_STRENGTH_WEAK     = 0.40  # Close in bottom 40% = weak close signal
+
+# ── Supplement 34: Compression energy score ──────────────────────────────────
+# Rule: "The longer it consolidates without breaking, the more energy builds"
+# Rule: "A tight 6-week base with higher lows = charged spring"
+QM_COMPRESSION_BONUS_THRESH = 50.0 # compression_score threshold for bonus
+QM_COMPRESSION_BONUS        = 0.25 # Dim C: +0.25 for high compression score
+
+# ── Supplement 12: Green-to-Red stop ─────────────────────────────────────────
+# Rule: "If a stock opens above prior close (gap up) and then goes RED — sell immediately"
+# Rule: "A green-to-red is almost always a sign of distribution"
+QM_GREEN_TO_RED_STOP       = True  # Enable G2R stop monitoring
+
+# ── Supplement 15 + 22: Stopped-out / Revenge trade warning ──────────────────
+# Rule: "Do not re-enter a stock you just got stopped out of on same day or next few days"
+# Rule: "Revenge trading is your worst enemy — wait for a proper re-setup"
+QM_REVENGE_TRADE_LOOKBACK  = 7     # Days back to check for prior stop-out on same ticker
+
+# ── Supplement 7: Scan result count warning ──────────────────────────────────
+# Rule: "If I'm getting hundreds of setups, my criteria are too loose"
+# Rule: "In a good market there should be manageable number of setups"
+QM_SCAN_MAX_RESULTS_WARN   = 50    # Warn if scan produces more than 50 results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MARTIN LUK (ML) — Systematic Swing Trading Configuration
+# Reference: MartinLukStockGuidePart1.md + MartinLukStockGuidePart2.md
+# Core philosophy: Pullback buying on EMA structure; tight stops (<2.5%);
+# formula-based position sizing (risk% / stop%); 22% win rate offset by
+# large R:R (20-30R winners); AVWAP as primary S/R indicator.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── EMA structure (Chapter 5, 12) ────────────────────────────────────────────
+# Martin uses EMA (not SMA) — faster reaction to price changes
+ML_EMA_PERIODS           = [9, 21, 50, 150]   # Core EMAs: 9 (fast), 21 (primary), 50 (slow), 150 (trend)
+ML_EMA_MIN_SLOPE_PCT     = 0.20    # Min slope for rising EMA (% per bar)
+ML_EMA_SLOPE_IDEAL_PCT   = 0.40    # Ideal slope for strong uptrend
+
+# ── Pullback classification (Chapter 5.3-5.5) ────────────────────────────────
+# Primary: Pullback to 21 EMA is the "golden zone"
+# Hierarchy: 9 EMA (strongest) > 21 EMA (primary) > 50 EMA (deepest acceptable)
+ML_PULLBACK_TOLERANCE_PCT = 3.0    # Price within 3% of EMA counts as "at EMA"
+ML_EXTENDED_EMA21_PCT     = 20.0   # >20% above 21 EMA = too extended, skip
+ML_EXTENDED_EMA9_PCT      = 15.0   # >15% above 9 EMA = very extended
+
+# ── Anchored VWAP (Chapter 6) ────────────────────────────────────────────────
+# Martin's core indicator: AVWAP from swing high = overhead supply
+# AVWAP from swing low = dynamic support; price reclaiming AVWAP = bullish
+ML_AVWAP_SWING_LOOKBACK      = 5      # Bars on each side for swing detection
+ML_AVWAP_SEARCH_BARS         = 120    # How far back to search for anchor points (~6M)
+ML_AVWAP_RECLAIM_CONFIRM_BARS = 2     # Bars of close above AVWAP to confirm reclaim
+
+# ── Risk management (Chapter 4) ──────────────────────────────────────────────
+# 🔴 Hard Rules — never violated
+ML_MAX_STOP_LOSS_PCT      = 2.5    # Absolute max stop: 2.5% from entry
+ML_IDEAL_STOP_LOSS_PCT    = 1.5    # Ideal stop: 1.0-1.5% (tight)
+ML_RISK_PER_TRADE_PCT     = 0.50   # Risk 0.50% of account per trade
+ML_MAX_RISK_PER_TRADE_PCT = 0.75   # Hard ceiling: never risk > 0.75% per trade
+# Position sizing: shares = (account × risk%) / (entry - stop)
+# Example: $100K × 0.5% = $500 risk; entry $50, stop $49 → 500 shares
+
+# ── Account management (Chapter 4.3) ─────────────────────────────────────────
+ML_MAX_OPEN_POSITIONS       = 6      # Max open positions at once
+ML_MAX_PORTFOLIO_HEAT_PCT   = 3.0    # Total open risk ≤ 3% of account
+ML_MAX_SINGLE_POSITION_PCT  = 25.0   # No single position > 25% of account
+ML_MIN_POSITION_SIZE_USD    = 1000   # Minimum position size to be meaningful
+
+# ── Scanner momentum filters (Chapter 5.1) ───────────────────────────────────
+# Martin scans for "stocks that have already moved" — proven leaders
+ML_MOMENTUM_3M_MIN_PCT   = 30.0    # ≥30% gain in 3 months (proven mover)
+ML_MOMENTUM_6M_MIN_PCT   = 80.0    # ≥80% gain in 6 months (very strong)
+ML_MIN_PRICE              = 5.0     # Minimum price (avoid penny stocks)
+ML_MIN_AVG_VOLUME         = 300_000 # Min 20-day avg volume (liquidity)
+ML_MIN_DOLLAR_VOLUME      = 5_000_000  # Min daily $ volume ($5M)
+
+# ── ADR / ATR filters ────────────────────────────────────────────────────────
+ML_ADR_PERIOD             = 14      # 14-day ADR window
+ML_MIN_ADR_PCT            = 4.0     # 4%+ ADR for swing trading
+ML_IDEAL_ADR_PCT          = 7.0     # 7%+ ADR is ideal
+
+# ── Volume analysis (Chapter 5.6, 7) ─────────────────────────────────────────
+ML_VOLUME_DRY_UP_RATIO     = 0.50   # Volume < 50% of 20-day avg = dry-up (bullish on PB)
+ML_VOLUME_SURGE_MULT       = 1.5    # Volume > 1.5× avg on bounce = confirmation
+ML_IDEAL_VOLUME_SURGE_MULT = 2.0    # 2× avg on bounce = strong confirmation
+
+# ── Intraday entry rules (Chapter 7) ─────────────────────────────────────────
+# Martin uses 1-min chart for precise entries
+ML_ENTRY_CONFIRM_1MIN      = True   # Require 1-min chart hammer/engulf at EMA
+ML_MAX_CHASE_ABOVE_EMA_PCT = 1.5    # Don't chase > 1.5% above target EMA
+ML_LOD_STOP_BUFFER_PCT     = 0.3    # Stop = LOD - 0.3% buffer
+
+# ── Sell rules (Chapter 8) ───────────────────────────────────────────────────
+# Martin's 3R/5R partial sell system + 9 EMA trailing
+ML_PARTIAL_SELL_1_R       = 3.0     # First partial: sell 15% at 3R profit
+ML_PARTIAL_SELL_1_PCT     = 15.0    # Sell 15% of position at 3R
+ML_PARTIAL_SELL_2_R       = 5.0     # Second partial: sell 15% at 5R profit
+ML_PARTIAL_SELL_2_PCT     = 15.0    # Sell 15% of position at 5R
+ML_TRAIL_EMA              = 9       # Trail remaining 70% on 9 EMA (daily close)
+ML_TRAIL_EMA_CLOSE_BELOW_DAYS = 1   # Close below 9 EMA → sell all on next day
+ML_SELL_INTO_STRENGTH      = True   # Sell into strength, not weakness (Chapter 8.2)
+
+# ── Weekly chart strategic rules (Chapter 12) ────────────────────────────────
+ML_WEEKLY_EMA_PERIODS     = [10, 40]  # Weekly 10 EMA ≈ daily 50, Weekly 40 ≈ daily 200
+ML_WEEKLY_UPTREND_CHECK   = True      # Require weekly chart in uptrend for entry
+
+# ── Setup classification (Chapter 5, Part 2 patterns) ────────────────────────
+# Martin's primary setups — scored in ml_setup_detector.py
+# PB_EMA   : Pullback to rising EMA with volume dry-up → bounce
+# BR_RETEST: Breakout then retest of breakout level + AVWAP confluence
+# BREAKOUT : Classic breakout above resistance on volume
+# EP       : Episodic Pivot — gap up on catalyst (earnings, news)
+# CHAR_CHG : Character Change — stock emerging from Stage 1 to Stage 2
+# PARABOLIC: Parabolic move → risky, only for experienced (Chapter 8.5)
+ML_SETUP_CONFIDENCE_MIN   = 0.40    # Min confidence to classify a setup type
+
+# ── Pullback Buy Quality Scorecard (Chapter 5.7) ─────────────────────────────
+# 7 dimensions for scoring pullback quality (replaces QM's star system)
+# Score: 0-5 stars (not 6 like QM — Martin keeps it simpler)
+ML_STAR_BASE              = 2.5     # Starting baseline score
+ML_STAR_MAX               = 5.0     # Maximum star rating
+
+# Dimension weights (must sum to ~1.0)
+ML_DIM_A_WEIGHT           = 0.20    # A: EMA Structure (stacking + rising)
+ML_DIM_B_WEIGHT           = 0.20    # B: Pullback Quality (depth + volume dry-up)
+ML_DIM_C_WEIGHT           = 0.15    # C: AVWAP Confluence (support/reclaim)
+ML_DIM_D_WEIGHT           = 0.15    # D: Volume Pattern (dry-up on PB, surge on bounce)
+ML_DIM_E_WEIGHT           = 0.15    # E: Risk/Reward (stop distance + R:R ratio)
+ML_DIM_F_WEIGHT           = 0.10    # F: Relative Strength (vs market)
+ML_DIM_G_WEIGHT           = 0.05    # G: Market Environment
+
+# ── Scan output controls ─────────────────────────────────────────────────────
+ML_SCAN_TOP_N             = 40      # Max candidates from ML scan
+ML_SCAN_MIN_STAR          = 2.5     # Minimum star to appear in results
+ML_SCAN_MIN_DOLLAR_VOL    = 5_000_000  # $Volume gate for output
+ML_SCAN_RESULTS_KEEP      = 30      # Max CSV files to keep in scan_results/
+
+# ── Scan performance tuning ──────────────────────────────────────────────────
+ML_STAGE2_MAX_WORKERS     = 12      # Parallel threads for Stage 2
+ML_STAGE2_BATCH_SIZE      = 60      # Tickers per yf.download() batch
+ML_STAGE2_BATCH_SLEEP     = 1.0     # Seconds between batch downloads
+
+# ── Market environment gate ──────────────────────────────────────────────────
+# Martin reduces activity in corrections but doesn't fully block
+# (22% win rate means most trades lose anyway — survival mode in bear)
+ML_BLOCK_IN_BEAR          = True    # Block all entries in DOWNTREND
+ML_REDUCE_IN_CORRECTION   = True    # Reduce sizing in CORRECTION
+ML_CORRECTION_SIZE_MULT   = 0.50    # Cut position size by 50% in correction
+
+# ── Martin Luk specific: December drawdown awareness (Chapter 10) ────────────
+# Martin had a -11.3% drawdown in Dec 2024; his rule: after 3 consecutive
+# losing trades, reduce size by 50%; after 5, go to paper trading
+ML_CONSECUTIVE_LOSS_REDUCE = 3      # After N consecutive losses → reduce size 50%
+ML_CONSECUTIVE_LOSS_PAUSE  = 5      # After N consecutive losses → paper trade only
+
+# ── SEPA 5-Pillar scoring weights for ML strategy ────────────────────────────
+# Martin's system is 95% technical, but still acknowledges:
+# "I won't buy a stock if the company is going bankrupt next week"
+ML_W_TREND          = 0.35   # Trend (EMA structure) — highest weight
+ML_W_PULLBACK       = 0.25   # Pullback quality + AVWAP
+ML_W_VOLUME         = 0.15   # Volume pattern (dry-up + surge)
+ML_W_RISK_REWARD    = 0.15   # Risk/Reward quality
+ML_W_MARKET         = 0.10   # Market environment

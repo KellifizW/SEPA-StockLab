@@ -4,7 +4,7 @@ modules/data_pipeline.py
 Unified data access layer integrating all three libraries:
   • finvizfinance  → coarse screener, sector rankings, quick snapshots
   • yfinance       → historical OHLCV, fundamentals, earnings data
-  • pandas_ta      → SMA50/150/200, RSI, ATR, BBands, Slope (all local)
+  • pandas_ta      → SMA50/150/200, EMA9/21/50/150, RSI, ATR, BBands, Slope
 
 All upper-layer modules import ONLY from here — single point of change.
 """
@@ -785,6 +785,10 @@ def _build_study():
                 {"kind": "sma",    "length": 50},
                 {"kind": "sma",    "length": 150},
                 {"kind": "sma",    "length": 200},
+                {"kind": "ema",    "length": 9},      # ML: Martin Luk fast EMA
+                {"kind": "ema",    "length": 21},     # ML: Martin Luk medium EMA
+                {"kind": "ema",    "length": 50},     # ML: Martin Luk slow EMA
+                {"kind": "ema",    "length": 150},    # ML: Martin Luk very-slow EMA
                 {"kind": "rsi",    "length": 14},
                 {"kind": "atr",    "length": 14},
                 {"kind": "bbands", "length": 20, "std": 2},
@@ -827,6 +831,10 @@ def get_technicals(df: pd.DataFrame) -> pd.DataFrame:
             df.ta.sma(length=50, append=True)
             df.ta.sma(length=150, append=True)
             df.ta.sma(length=200, append=True)
+            df.ta.ema(length=9, append=True)
+            df.ta.ema(length=21, append=True)
+            df.ta.ema(length=50, append=True)
+            df.ta.ema(length=150, append=True)
             df.ta.rsi(length=14, append=True)
             df.ta.atr(length=14, append=True)
             df.ta.bbands(length=20, std=2, append=True)
@@ -838,6 +846,14 @@ def get_technicals(df: pd.DataFrame) -> pd.DataFrame:
             if col not in df.columns:
                 try:
                     df[col] = df["Close"].rolling(length).mean()
+                except Exception:
+                    pass
+        # Try EMA individually
+        for length in [9, 21, 50, 150]:
+            col = f"EMA_{length}"
+            if col not in df.columns:
+                try:
+                    df[col] = df["Close"].ewm(span=length, adjust=False).mean()
                 except Exception:
                     pass
         return df
@@ -878,6 +894,39 @@ def get_technicals(df: pd.DataFrame) -> pd.DataFrame:
     df["LOW_52W"]  = lo_252
     df["PCT_FROM_52W_HIGH"] = (close - hi_252) / hi_252 * 100   # negative = below high
     df["PCT_FROM_52W_LOW"]  = (close - lo_252) / lo_252 * 100   # positive = above low
+
+    # ── ML (Martin Luk) EMA-derived columns ──────────────────────────────────
+    # EMA fallback: if pandas_ta didn't produce EMA columns, compute manually
+    for ema_len in [9, 21, 50, 150]:
+        ema_col = f"EMA_{ema_len}"
+        if ema_col not in df.columns:
+            try:
+                df[ema_col] = close.ewm(span=ema_len, adjust=False).mean()
+            except Exception:
+                pass
+
+    # EMA boolean conditions (Martin Luk trend alignment)
+    for ema_col, bool_col in [("EMA_9", "ABOVE_EMA9"),
+                               ("EMA_21", "ABOVE_EMA21"),
+                               ("EMA_50", "ABOVE_EMA50"),
+                               ("EMA_150", "ABOVE_EMA150")]:
+        if ema_col in df.columns:
+            df[bool_col] = close > df[ema_col]
+
+    # EMA ordering booleans (ML stacking: EMA9 > EMA21 > EMA50 > EMA150)
+    for col_a, col_b, bool_col in [
+        ("EMA_9",  "EMA_21",  "EMA9_GT_EMA21"),
+        ("EMA_21", "EMA_50",  "EMA21_GT_EMA50"),
+        ("EMA_50", "EMA_150", "EMA50_GT_EMA150"),
+    ]:
+        if col_a in df.columns and col_b in df.columns:
+            df[bool_col] = df[col_a] > df[col_b]
+
+    # EMA slopes (22-day slope for 21 and 50 EMAs)
+    if "EMA_21" in df.columns:
+        df["EMA21_SLOPE"] = _rolling_slope_pct(df["EMA_21"], 22)
+    if "EMA_50" in df.columns:
+        df["EMA50_SLOPE"] = _rolling_slope_pct(df["EMA_50"], 22)
 
     return df
 
@@ -1407,6 +1456,11 @@ def get_consolidation_tightness(df: pd.DataFrame, lookback: int = 20) -> dict:
         "is_tight":        tightness < threshold,
         "avg_body_pct":    round(avg_body, 3),
         "range_trend":     range_trend,
+        # Supplement 34: compression energy score
+        # "The longer and tighter it consolidates, the more energy builds up"
+        # compression_score = consolidation_days × (1 / tightness_ratio)
+        # Higher = more coiled spring energy before breakout
+        "compression_score": round(lookback * (1.0 / max(tightness, 0.01)), 1),
     }
 
 
@@ -1587,5 +1641,837 @@ def _empty_slope(period: int) -> dict:
         "passes_45deg":      False,
         "is_steep":          False,
         "ma_value":          0.0,
+        "ma_period":         period,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E2. Qullamaggie Supplement Rules — new signal functions (S8/S9/S20/S26/S30)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_pre_breakout_candle_quality(df: pd.DataFrame) -> dict:
+    """
+    Supplement 8 — Narrow Range Day (K線品質): measure the quality of the
+    most recent candles before an expected breakout.
+
+    Qullamaggie: "First day of breakout should be a very narrow range —
+    inside bar, NR7, NR4.  If last candle before breakout is wide, it's a
+    bad setup."
+
+    Args:
+        df: OHLCV DataFrame (needs at least 20 bars for ATR baseline)
+
+    Returns:
+        dict with:
+            'quality'             : str   — 'extremely_tight_sequence' | 'narrow' |
+                                            'normal' | 'wide'
+            'ratio'               : float — (H-L)/ATR for most recent bar
+            'consecutive_narrow'  : int   — how many consecutive narrow bars
+            'adjustment'          : float — star adjustment to apply in Dim C
+            'note_zh'             : str   — Chinese description
+    """
+    atr = get_atr(df)
+    narrow_ratio = getattr(C, "QM_NARROW_RANGE_RATIO", 0.5)
+    wide_ratio   = getattr(C, "QM_WIDE_RANGE_RATIO", 1.5)
+
+    empty = {
+        "quality": "unknown", "ratio": None,
+        "consecutive_narrow": 0, "adjustment": 0.0, "note_zh": "數據不足",
+    }
+    if not atr or atr <= 0 or df.empty or len(df) < 5:
+        return empty
+
+    # Measure last 3 bars
+    recent = df.tail(3)
+    ratios = []
+    for _, row in recent.iterrows():
+        r = (row["High"] - row["Low"]) / atr
+        ratios.append(r)
+
+    last_ratio = ratios[-1] if ratios else 1.0
+
+    # Count consecutive narrow bars from most recent backward
+    consec = 0
+    for r in reversed(ratios):
+        if r < narrow_ratio:
+            consec += 1
+        else:
+            break
+
+    adj = 0.0
+    if consec >= 2:
+        quality = "extremely_tight_sequence"
+        adj = getattr(C, "QM_NARROW_SEQ_BONUS", 0.5)
+        note_zh = f"連續{consec}根窄K線，蓄能充足 (S8極強訊號)"
+    elif last_ratio < narrow_ratio:
+        quality = "narrow"
+        adj = getattr(C, "QM_NARROW_RANGE_BONUS", 0.3)
+        note_zh = f"最新K線窄縮 (H-L/ATR={last_ratio:.2f}<{narrow_ratio}) — 好形態"
+    elif last_ratio > wide_ratio:
+        quality = "wide"
+        adj = getattr(C, "QM_WIDE_RANGE_PENALTY", -0.3)
+        note_zh = f"最新K線過寬 (H-L/ATR={last_ratio:.2f}>{wide_ratio}) — 形態較差"
+    else:
+        quality = "normal"
+        adj = 0.0
+        note_zh = f"K線寬度正常 (H-L/ATR={last_ratio:.2f})"
+
+    return {
+        "quality":            quality,
+        "ratio":              round(last_ratio, 3),
+        "consecutive_narrow": consec,
+        "adjustment":         adj,
+        "note_zh":            note_zh,
+    }
+
+
+def get_first_bounce_info(df: pd.DataFrame) -> dict:
+    """
+    Supplement 9 — First Bounce Detection: detect whether the current
+    pullback is the FIRST time price has touched a key moving average
+    after a trend began.
+
+    Qullamaggie: "The first pull back to the 20-day is the best pull back
+    to buy — not the 3rd or 4th.  First bounces are more powerful because
+    there is still a lot of supply above."
+
+    Args:
+        df: OHLCV DataFrame (at least 60 bars recommended)
+
+    Returns:
+        dict with:
+            'first_bounce_ma'  : int|None — MA period with first bounce (10/20/50)
+            'bounce_count_10'  : int — how many prior touches of 10SMA
+            'bounce_count_20'  : int — how many prior touches of 20SMA
+            'bounce_count_50'  : int — how many prior touches of 50SMA
+            'adjustment'       : float — star adjustment to apply in Dim D
+            'note_zh'          : str — Chinese description
+    """
+    touch_pct = getattr(C, "QM_BOUNCE_TOUCH_PCT", 1.5) / 100.0
+
+    empty = {
+        "first_bounce_ma": None, "bounce_count_10": 0,
+        "bounce_count_20": 0, "bounce_count_50": 0,
+        "adjustment": 0.0, "note_zh": "數據不足",
+    }
+    if df.empty or len(df) < 30:
+        return empty
+
+    sma_cols = {10: "SMA_10", 20: "SMA_20", 50: "SMA_50"}
+    counts = {}
+
+    for period, col in sma_cols.items():
+        # Compute or use the SMA column
+        if col in df.columns:
+            sma = df[col].dropna()
+        else:
+            sma = df["Close"].rolling(window=period).mean().dropna()
+
+        if len(sma) < 2:
+            counts[period] = 0
+            continue
+
+        # Align index
+        aligned = df[["Low", "Close"]].join(sma.rename("_sma"), how="inner")
+        if aligned.empty:
+            counts[period] = 0
+            continue
+
+        # Count bars where Low ≤ SMA × (1 + touch_pct) — price touched/dipped to MA
+        touch_mask = aligned["Low"] <= aligned["_sma"] * (1 + touch_pct)
+        # Exclude the most recent bar (that's the current setup)
+        counts[period] = int(touch_mask.iloc[:-1].sum())
+
+    best_ma   = None
+    best_adj  = 0.0
+    note_zh   = "未曾反彈前高均線"
+
+    bonuses = {
+        20: getattr(C, "QM_FIRST_BOUNCE_20_BONUS", 0.5),
+        10: getattr(C, "QM_FIRST_BOUNCE_10_BONUS", 0.3),
+        50: getattr(C, "QM_FIRST_BOUNCE_50_BONUS", 0.2),
+    }
+    priority = [20, 10, 50]  # 20SMA most important per Qullamaggie
+
+    for ma in priority:
+        if counts.get(ma, 0) == 0:
+            # Zero prior touches → this IS the first potential bounce
+            best_ma  = ma
+            best_adj = bonuses[ma]
+            note_zh  = f"首次回測 {ma}SMA — 第一次反彈最強 (S9加成 +{best_adj:.1f}★)"
+            break
+        elif counts.get(ma, 0) == 1:
+            best_ma  = ma
+            best_adj = bonuses[ma] * 0.5  # Second bounce: half bonus
+            note_zh  = f"第二次回測 {ma}SMA — 仍有加成但已減弱"
+            break
+
+    return {
+        "first_bounce_ma":  best_ma,
+        "bounce_count_10":  counts.get(10, 0),
+        "bounce_count_20":  counts.get(20, 0),
+        "bounce_count_50":  counts.get(50, 0),
+        "adjustment":       best_adj,
+        "note_zh":          note_zh,
+    }
+
+
+def get_earnings_growth(ticker: str) -> dict:
+    """
+    Supplement 20 — Rocket Fuel: check for extreme earnings AND revenue growth.
+
+    Qullamaggie: "When I see +100% earnings AND +100% revenue — that's rocket fuel.
+    I look for hyper-growth stocks. 100% EPS growth changes the story completely."
+
+    Args:
+        ticker: Stock symbol
+
+    Returns:
+        dict with:
+            'has_rocket_fuel'  : bool  — both EPS and Rev ≥ threshold
+            'eps_growth_pct'   : float|None — most recent quarter YoY EPS growth %
+            'rev_growth_pct'   : float|None — most recent quarter YoY revenue growth %
+            'adjustment'       : float — star adjustment for Dim A
+            'note_zh'          : str   — Chinese description
+    """
+    import yfinance as yf
+
+    eps_min = getattr(C, "QM_ROCKET_FUEL_EPS_MIN", 100.0)
+    rev_min = getattr(C, "QM_ROCKET_FUEL_REV_MIN", 100.0)
+    bonus   = getattr(C, "QM_ROCKET_FUEL_BONUS", 0.25)
+
+    result = {
+        "has_rocket_fuel": False, "eps_growth_pct": None,
+        "rev_growth_pct": None,   "adjustment": 0.0,
+        "note_zh": "無盈利成長數據",
+    }
+
+    try:
+        t = yf.Ticker(ticker)
+        fin = t.quarterly_financials
+        if fin is None or fin.empty:
+            return result
+
+        # Net Income growth (proxy for EPS growth from financials)
+        if "Net Income" in fin.index and fin.shape[1] >= 5:
+            ni = fin.loc["Net Income"].dropna()
+            if len(ni) >= 5:
+                # Most recent quarter vs same quarter 1 year ago (4 quarters back)
+                latest = float(ni.iloc[0])
+                year_ago = float(ni.iloc[4])
+                if year_ago != 0:
+                    eps_growth = (latest / abs(year_ago) - 1.0) * 100.0
+                    result["eps_growth_pct"] = round(eps_growth, 1)
+
+        # Total Revenue growth
+        rev_key = None
+        for k in ["Total Revenue", "Revenue"]:
+            if k in fin.index:
+                rev_key = k
+                break
+        if rev_key and fin.shape[1] >= 5:
+            rev = fin.loc[rev_key].dropna()
+            if len(rev) >= 5:
+                latest_r  = float(rev.iloc[0])
+                year_ago_r = float(rev.iloc[4])
+                if year_ago_r > 0:
+                    rev_growth = (latest_r / year_ago_r - 1.0) * 100.0
+                    result["rev_growth_pct"] = round(rev_growth, 1)
+
+        eps_ok = result["eps_growth_pct"] is not None and result["eps_growth_pct"] >= eps_min
+        rev_ok = result["rev_growth_pct"] is not None and result["rev_growth_pct"] >= rev_min
+
+        if eps_ok and rev_ok:
+            result["has_rocket_fuel"] = True
+            result["adjustment"] = bonus
+            result["note_zh"] = (
+                f"火箭燃料！EPS成長 {result['eps_growth_pct']:.0f}% + "
+                f"收入成長 {result['rev_growth_pct']:.0f}% "
+                f"(S20 +{bonus:.2f}★)"
+            )
+        elif eps_ok or rev_ok:
+            result["note_zh"] = (
+                f"部分成長: EPS={result.get('eps_growth_pct','N/A')}% "
+                f"Rev={result.get('rev_growth_pct','N/A')}%"
+            )
+        else:
+            result["note_zh"] = (
+                f"成長未達標: EPS={result.get('eps_growth_pct','N/A')}% "
+                f"Rev={result.get('rev_growth_pct','N/A')}%"
+            )
+
+    except Exception as e:  # pylint: disable=broad-except
+        logger.debug("get_earnings_growth(%s) error: %s", ticker, e)
+        result["note_zh"] = "盈利數據獲取失敗"
+
+    return result
+
+
+def get_follow_through(df: pd.DataFrame, lookback: int = None) -> dict:
+    """
+    Supplement 26 — Follow-Through Detection: check if price showed
+    follow-through buying after a recent breakout.
+
+    Qullamaggie: "After day 1 breakout, I want to see follow-through —
+    higher prices next day.  If stock closes up next day too, that confirms
+    the move.  No follow-through = weak."
+
+    Args:
+        df:       OHLCV DataFrame
+        lookback: Days to examine for follow-through (default: QM_FOLLOW_THROUGH_LOOKBACK)
+
+    Returns:
+        dict with:
+            'follow_through_days' : int  — consecutive higher closes from reference
+            'status'              : str  — 'STRONG_FT'|'MODERATE_FT'|'NO_FT'|'TOO_EARLY'
+            'note_zh'             : str  — Chinese description
+    """
+    if lookback is None:
+        lookback = getattr(C, "QM_FOLLOW_THROUGH_LOOKBACK", 3)
+    min_days = getattr(C, "QM_FOLLOW_THROUGH_MIN_DAYS", 2)
+
+    empty = {
+        "follow_through_days": 0, "status": "TOO_EARLY", "note_zh": "數據不足",
+    }
+    if df.empty or len(df) < lookback + 1:
+        return empty
+
+    closes = df["Close"].tail(lookback + 1).values
+    ft_days = 0
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            ft_days += 1
+        else:
+            ft_days = 0  # Reset on any down day
+
+    if ft_days >= min_days + 1:
+        status  = "STRONG_FT"
+        note_zh = f"強力跟漲！連續{ft_days}天高收 (S26極佳確認)"
+    elif ft_days >= min_days:
+        status  = "MODERATE_FT"
+        note_zh = f"跟漲確認: {ft_days}天持續收升 (S26有效)"
+    elif ft_days == 1:
+        status  = "NO_FT"
+        note_zh = "初步跟漲，需要更多確認 (S26未確認)"
+    else:
+        status  = "NO_FT"
+        note_zh = "無跟漲訊號 — 突破後出現賣壓 (S26警示)"
+
+    return {
+        "follow_through_days": ft_days,
+        "status":              status,
+        "note_zh":             note_zh,
+    }
+
+
+def get_close_strength(df: pd.DataFrame) -> dict:
+    """
+    Supplement 30 — Close Strength Signal: measure where price closed
+    relative to its intraday range.
+
+    Qullamaggie: "If stock closes in the top 10% of its range, that's a
+    very strong close.  A strong close near HOD is better than closing in
+    middle of range — it shows buyers in control end of day."
+
+    Args:
+        df: OHLCV DataFrame
+
+    Returns:
+        dict with:
+            'close_strength'  : float — (Close-Low)/(High-Low), 0-1 scale
+            'is_strong_close' : bool  — ≥ QM_CLOSE_STRENGTH_STRONG threshold
+            'is_weak_close'   : bool  — ≤ QM_CLOSE_STRENGTH_WEAK threshold
+            'label'           : str   — 'STRONG'|'NORMAL'|'WEAK'
+            'note_zh'         : str   — Chinese description
+    """
+    strong_thresh = getattr(C, "QM_CLOSE_STRENGTH_STRONG", 0.90)
+    weak_thresh   = getattr(C, "QM_CLOSE_STRENGTH_WEAK",   0.40)
+
+    empty = {
+        "close_strength": None, "is_strong_close": False,
+        "is_weak_close": False, "label": "unknown", "note_zh": "數據不足",
+    }
+    if df.empty:
+        return empty
+
+    last = df.iloc[-1]
+    hi   = float(last["High"])
+    lo   = float(last["Low"])
+    cl   = float(last["Close"])
+
+    if hi == lo:
+        return {**empty, "close_strength": 0.5, "label": "normal",
+                "note_zh": "高低點相同 (十字星)"}
+
+    cs = (cl - lo) / (hi - lo)
+
+    is_strong = cs >= strong_thresh
+    is_weak   = cs <= weak_thresh
+
+    if is_strong:
+        label    = "STRONG"
+        note_zh  = f"強力高收！收盤在日內高點前 {cs*100:.0f}% — 買家控盤 (S30)"
+    elif is_weak:
+        label    = "WEAK"
+        note_zh  = f"弱收 — 收盤在日內低點附近 {cs*100:.0f}%，賣壓存在 (S30)"
+    else:
+        label    = "NORMAL"
+        note_zh  = f"正常收盤位置 {cs*100:.0f}% (S30)"
+
+    return {
+        "close_strength":  round(cs, 3),
+        "is_strong_close": is_strong,
+        "is_weak_close":   is_weak,
+        "label":           label,
+        "note_zh":         note_zh,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# F. Martin Luk (ML) — EMA helpers, Anchored VWAP, swing detection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def detect_swing_high(df: pd.DataFrame, lookback: int = 5) -> list:
+    """
+    Detect local swing highs in an OHLCV DataFrame.
+
+    A swing high at index i means:
+        High[i] ≥ max(High[i-lookback:i]) AND High[i] ≥ max(High[i+1:i+lookback+1])
+
+    Args:
+        df:       OHLCV DataFrame with a 'High' column
+        lookback: bars on each side to confirm the swing (default: 5)
+
+    Returns:
+        List of (date_str, price) tuples sorted by date ascending.
+    """
+    if df.empty or len(df) < lookback * 2 + 1:
+        return []
+    highs = df["High"].values
+    result = []
+    for i in range(lookback, len(highs) - lookback):
+        left  = highs[i - lookback: i]
+        right = highs[i + 1: i + lookback + 1]
+        if highs[i] >= left.max() and highs[i] >= right.max():
+            result.append((str(df.index[i])[:10], float(highs[i])))
+    return result
+
+
+def detect_swing_low(df: pd.DataFrame, lookback: int = 5) -> list:
+    """
+    Detect local swing lows in an OHLCV DataFrame.
+
+    A swing low at index i means:
+        Low[i] ≤ min(Low[i-lookback:i]) AND Low[i] ≤ min(Low[i+1:i+lookback+1])
+
+    Args:
+        df:       OHLCV DataFrame with a 'Low' column
+        lookback: bars on each side to confirm the swing (default: 5)
+
+    Returns:
+        List of (date_str, price) tuples sorted by date ascending.
+    """
+    if df.empty or len(df) < lookback * 2 + 1:
+        return []
+    lows = df["Low"].values
+    result = []
+    for i in range(lookback, len(lows) - lookback):
+        left  = lows[i - lookback: i]
+        right = lows[i + 1: i + lookback + 1]
+        if lows[i] <= left.min() and lows[i] <= right.min():
+            result.append((str(df.index[i])[:10], float(lows[i])))
+    return result
+
+
+def compute_avwap(df: pd.DataFrame, anchor_date: str) -> pd.Series:
+    """
+    Compute Anchored VWAP (volume-weighted average price) from a specific date.
+
+    Martin Luk's core indicator: AVWAP is the volume-weighted average price
+    anchored from a significant swing high or swing low. It acts as dynamic
+    supply/demand equilibrium.
+
+    Formula:  AVWAP = cumsum(Typical_Price × Volume) / cumsum(Volume)
+    where Typical_Price = (High + Low + Close) / 3
+
+    Args:
+        df:          OHLCV DataFrame (must have High, Low, Close, Volume columns)
+        anchor_date: ISO date string (e.g. '2024-06-15') — start of AVWAP
+
+    Returns:
+        pd.Series with AVWAP values from anchor_date onwards (NaN before).
+    """
+    if df.empty:
+        return pd.Series(dtype=float, index=df.index)
+
+    # Find the anchor index
+    anchor_dt = pd.Timestamp(anchor_date)
+    mask = df.index >= anchor_dt
+    if not mask.any():
+        return pd.Series(np.nan, index=df.index)
+
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
+    tp_vol = tp * df["Volume"]
+
+    # Cumulative sums from anchor date only
+    cum_tp_vol = tp_vol.where(mask, 0.0).cumsum()
+    cum_vol    = df["Volume"].where(mask, 0.0).cumsum()
+
+    avwap = cum_tp_vol / cum_vol.replace(0, np.nan)
+    avwap = avwap.where(mask, np.nan)
+    return avwap
+
+
+def get_avwap_from_swing_high(df: pd.DataFrame, lookback_bars: int = 120,
+                               swing_lookback: int = 5) -> dict:
+    """
+    Find the most recent significant swing high and compute AVWAP from it.
+
+    Martin Luk uses AVWAP from the most recent swing high as overhead
+    supply/resistance. Price reclaiming this AVWAP is a bullish signal.
+
+    Args:
+        df:              OHLCV DataFrame
+        lookback_bars:   how many bars to search for the swing high (default 120 ~ 6M)
+        swing_lookback:  bars on each side for swing detection (default 5)
+
+    Returns:
+        dict with:
+            'anchor_date'  : str   — date of the swing high anchor
+            'anchor_price' : float — price of the swing high
+            'avwap_current': float — current AVWAP value
+            'price_vs_avwap_pct': float — % distance of price from AVWAP
+            'above_avwap'  : bool  — price > AVWAP
+            'avwap_series' : pd.Series — full AVWAP series (for charting)
+    """
+    empty = {
+        "anchor_date": None, "anchor_price": None,
+        "avwap_current": None, "price_vs_avwap_pct": None,
+        "above_avwap": False, "avwap_series": pd.Series(dtype=float),
+    }
+    if df.empty or len(df) < lookback_bars // 2:
+        return empty
+
+    recent = df.tail(lookback_bars)
+    swings = detect_swing_high(recent, lookback=swing_lookback)
+    if not swings:
+        return empty
+
+    # Use the most recent swing high
+    anchor_date, anchor_price = swings[-1]
+    avwap = compute_avwap(df, anchor_date)
+    avwap_current = float(avwap.dropna().iloc[-1]) if not avwap.dropna().empty else None
+    last_close = float(df["Close"].iloc[-1])
+
+    pct = None
+    if avwap_current and avwap_current > 0:
+        pct = (last_close / avwap_current - 1.0) * 100.0
+
+    return {
+        "anchor_date":        anchor_date,
+        "anchor_price":       anchor_price,
+        "avwap_current":      round(avwap_current, 4) if avwap_current else None,
+        "price_vs_avwap_pct": round(pct, 2) if pct is not None else None,
+        "above_avwap":        last_close > avwap_current if avwap_current else False,
+        "avwap_series":       avwap,
+    }
+
+
+def get_avwap_from_swing_low(df: pd.DataFrame, lookback_bars: int = 120,
+                              swing_lookback: int = 5) -> dict:
+    """
+    Find the most recent significant swing low and compute AVWAP from it.
+
+    Martin Luk uses AVWAP from the most recent swing low as dynamic support.
+    Price holding above this AVWAP is a bullish continuation signal.
+
+    Args:
+        df:              OHLCV DataFrame
+        lookback_bars:   how many bars to search for the swing low (default 120 ~ 6M)
+        swing_lookback:  bars on each side for swing detection (default 5)
+
+    Returns:
+        dict with same keys as get_avwap_from_swing_high().
+    """
+    empty = {
+        "anchor_date": None, "anchor_price": None,
+        "avwap_current": None, "price_vs_avwap_pct": None,
+        "above_avwap": False, "avwap_series": pd.Series(dtype=float),
+    }
+    if df.empty or len(df) < lookback_bars // 2:
+        return empty
+
+    recent = df.tail(lookback_bars)
+    swings = detect_swing_low(recent, lookback=swing_lookback)
+    if not swings:
+        return empty
+
+    anchor_date, anchor_price = swings[-1]
+    avwap = compute_avwap(df, anchor_date)
+    avwap_current = float(avwap.dropna().iloc[-1]) if not avwap.dropna().empty else None
+    last_close = float(df["Close"].iloc[-1])
+
+    pct = None
+    if avwap_current and avwap_current > 0:
+        pct = (last_close / avwap_current - 1.0) * 100.0
+
+    return {
+        "anchor_date":        anchor_date,
+        "anchor_price":       anchor_price,
+        "avwap_current":      round(avwap_current, 4) if avwap_current else None,
+        "price_vs_avwap_pct": round(pct, 2) if pct is not None else None,
+        "above_avwap":        last_close > avwap_current if avwap_current else False,
+        "avwap_series":       avwap,
+    }
+
+
+def get_ema_alignment(df: pd.DataFrame,
+                       ema_periods: list = None) -> dict:
+    """
+    Calculate EMA values and check ML-style EMA alignment / stacking.
+
+    Martin Luk requires EMA9 > EMA21 > EMA50 > EMA150 for a Stage 2 uptrend.
+    Price must be above all EMAs. EMAs must be rising.
+
+    Args:
+        df:          OHLCV DataFrame (should already have EMA columns from
+                     get_technicals())
+        ema_periods: list of EMA periods (default: [9, 21, 50, 150])
+
+    Returns:
+        dict with:
+            'ema_{n}'            : float — current EMA value
+            'ema_{n}_rising'     : bool  — EMA trending up over last 5 bars
+            'price_vs_ema_{n}'   : float — % of price relative to EMA
+            'all_stacked'        : bool  — EMA9>EMA21>EMA50>EMA150
+            'all_rising'         : bool  — all specified EMAs are rising
+            'price_above_all'    : bool  — price above all EMAs
+            'pullback_to_ema'    : int|None — which EMA price is nearest (for PB)
+    """
+    if ema_periods is None:
+        ema_periods = getattr(C, "ML_EMA_PERIODS", [9, 21, 50, 150])
+    rising_days = 5
+
+    result: dict = {}
+    if df.empty or len(df) < max(ema_periods) + rising_days:
+        for n in ema_periods:
+            result[f"ema_{n}"]           = None
+            result[f"ema_{n}_rising"]    = False
+            result[f"price_vs_ema_{n}"]  = None
+        result["all_stacked"]     = False
+        result["all_rising"]      = False
+        result["price_above_all"] = False
+        result["pullback_to_ema"] = None
+        return result
+
+    last_close = float(df["Close"].iloc[-1])
+    all_rising = True
+    price_above_all = True
+    ema_vals = {}
+
+    for n in ema_periods:
+        ema_col = f"EMA_{n}"
+        if ema_col in df.columns:
+            ema_series = df[ema_col]
+        else:
+            ema_series = df["Close"].ewm(span=n, adjust=False).mean()
+
+        ema_val = float(ema_series.iloc[-1]) if not ema_series.empty else None
+        if ema_val is None or pd.isna(ema_val):
+            result[f"ema_{n}"]          = None
+            result[f"ema_{n}_rising"]   = False
+            result[f"price_vs_ema_{n}"] = None
+            all_rising = False
+            price_above_all = False
+            continue
+
+        ema_vals[n] = ema_val
+
+        # Check rising
+        clean = ema_series.dropna()
+        if len(clean) >= rising_days + 1:
+            rising = float(clean.iloc[-1]) > float(clean.iloc[-(rising_days + 1)])
+        else:
+            rising = False
+        if not rising:
+            all_rising = False
+
+        pct_vs = (last_close / ema_val - 1.0) * 100.0 if ema_val > 0 else None
+        if pct_vs is not None and pct_vs < 0:
+            price_above_all = False
+
+        result[f"ema_{n}"]          = round(ema_val, 4)
+        result[f"ema_{n}_rising"]   = rising
+        result[f"price_vs_ema_{n}"] = round(pct_vs, 2) if pct_vs is not None else None
+
+    # Check stacking: EMA9 > EMA21 > EMA50 > EMA150
+    stacked = True
+    sorted_periods = sorted(ema_periods)
+    for i in range(len(sorted_periods) - 1):
+        a, b = sorted_periods[i], sorted_periods[i + 1]
+        va, vb = ema_vals.get(a), ema_vals.get(b)
+        if va is None or vb is None or va <= vb:
+            stacked = False
+            break
+
+    result["all_stacked"]     = stacked
+    result["all_rising"]      = all_rising
+    result["price_above_all"] = price_above_all
+
+    # Identify which EMA price is pulling back toward (nearest EMA below price)
+    tolerance_pct = getattr(C, "ML_PULLBACK_TOLERANCE_PCT", 3.0)
+    pullback_ema = None
+    for n in sorted_periods:
+        pct = result.get(f"price_vs_ema_{n}")
+        if pct is not None and 0 <= pct <= tolerance_pct:
+            pullback_ema = n
+            break
+    result["pullback_to_ema"] = pullback_ema
+
+    return result
+
+
+def get_pullback_depth(df: pd.DataFrame,
+                       ema_periods: list = None) -> dict:
+    """
+    Measure how deep the current pullback is relative to EMAs.
+
+    Martin Luk's pullback hierarchy (strongest to weakest):
+      1. Pullback to 9 EMA → strongest stocks
+      2. Pullback to 21 EMA → normal pullback, primary buy zone
+      3. Pullback to 50 EMA → deeper pullback, still valid
+      4. Below 50 EMA → avoid (too weak)
+
+    Args:
+        df:          OHLCV DataFrame with EMA columns
+        ema_periods: list of EMA periods (default: [9, 21, 50, 150])
+
+    Returns:
+        dict with:
+            'nearest_ema'        : int|None — which EMA price is at
+            'depth_pct'          : float    — % below recent high
+            'recovery_from'      : int|None — which EMA price bounced from
+            'too_extended'       : bool     — >20% above 21 EMA (avoid)
+            'pullback_quality'   : str      — 'ideal' / 'acceptable' / 'deep' / 'broken'
+    """
+    if ema_periods is None:
+        ema_periods = getattr(C, "ML_EMA_PERIODS", [9, 21, 50, 150])
+
+    empty = {
+        "nearest_ema": None, "depth_pct": None, "recovery_from": None,
+        "too_extended": False, "pullback_quality": "unknown",
+    }
+    if df.empty or len(df) < 50:
+        return empty
+
+    last_close = float(df["Close"].iloc[-1])
+
+    # Depth from recent high (20-day)
+    recent_high = float(df["High"].tail(20).max())
+    depth_pct = (last_close / recent_high - 1.0) * 100.0 if recent_high > 0 else 0.0
+
+    # Find nearest EMA
+    nearest_ema = None
+    min_dist = float("inf")
+    for n in sorted(ema_periods):
+        ema_col = f"EMA_{n}"
+        if ema_col not in df.columns:
+            continue
+        ema_val = float(df[ema_col].iloc[-1])
+        if pd.isna(ema_val) or ema_val <= 0:
+            continue
+        dist = abs(last_close / ema_val - 1.0) * 100.0
+        if dist < min_dist:
+            min_dist = dist
+            nearest_ema = n
+
+    # Check if too extended above 21 EMA
+    ext_threshold = getattr(C, "ML_EXTENDED_EMA21_PCT", 20.0)
+    too_extended = False
+    if "EMA_21" in df.columns:
+        ema21_val = float(df["EMA_21"].iloc[-1])
+        if ema21_val > 0:
+            pct_above = (last_close / ema21_val - 1.0) * 100.0
+            too_extended = pct_above > ext_threshold
+
+    # Quality classification
+    if nearest_ema is None:
+        quality = "unknown"
+    elif nearest_ema <= 9:
+        quality = "ideal"       # Pulling back to fast EMA
+    elif nearest_ema <= 21:
+        quality = "ideal"       # Primary pullback zone
+    elif nearest_ema <= 50:
+        quality = "acceptable"  # Deeper but still valid
+    else:
+        quality = "broken"      # Below 50 EMA = broken trend
+
+    # Check if price below 50 EMA → broken
+    if "EMA_50" in df.columns:
+        ema50_val = float(df["EMA_50"].iloc[-1])
+        if not pd.isna(ema50_val) and ema50_val > 0 and last_close < ema50_val:
+            quality = "broken"
+
+    return {
+        "nearest_ema":      nearest_ema,
+        "depth_pct":        round(depth_pct, 2),
+        "recovery_from":    nearest_ema if min_dist < 3.0 else None,
+        "too_extended":     too_extended,
+        "pullback_quality": quality,
+    }
+
+
+def get_ema_slope(df: pd.DataFrame, period: int = 21,
+                  lookback: int = 20) -> dict:
+    """
+    Calculate EMA slope and direction — Martin Luk equivalent of QM's MA slope.
+
+    Args:
+        df:       OHLCV DataFrame (needs 'EMA_{period}' col or will compute)
+        period:   EMA period to evaluate (e.g. 9, 21, 50)
+        lookback: number of bars for slope calculation (default: 20)
+
+    Returns:
+        dict with same shape as get_ma_slope() for consistency.
+    """
+    import math
+    min_slope = getattr(C, "ML_EMA_MIN_SLOPE_PCT", 0.20)
+    ideal_slope = getattr(C, "ML_EMA_SLOPE_IDEAL_PCT", 0.40)
+
+    col = f"EMA_{period}"
+    if col in df.columns:
+        ema_series = df[col].dropna()
+    else:
+        if df.empty or len(df) < period:
+            return _empty_slope(period)
+        ema_series = df["Close"].ewm(span=period, adjust=False).mean().dropna()
+
+    if len(ema_series) < lookback + 1:
+        return _empty_slope(period)
+
+    recent_ema = ema_series.iloc[-lookback:]
+    pct_changes = recent_ema.pct_change().dropna() * 100.0
+    slope_pct = float(pct_changes.mean())
+
+    angle_deg = math.degrees(math.atan(abs(slope_pct) / 100.0 * 50))
+
+    if slope_pct >= ideal_slope:
+        direction = "rising_fast"
+    elif slope_pct >= min_slope:
+        direction = "rising"
+    elif slope_pct >= 0.0:
+        direction = "flat"
+    else:
+        direction = "declining"
+
+    ema_val = float(ema_series.iloc[-1]) if not ema_series.empty else 0.0
+
+    return {
+        "slope_pct_per_bar": round(slope_pct, 4),
+        "angle_approx_deg":  round(angle_deg, 1),
+        "direction":         direction,
+        "passes_45deg":      slope_pct >= min_slope,
+        "is_steep":          slope_pct >= ideal_slope,
+        "ma_value":          round(ema_val, 2),
         "ma_period":         period,
     }

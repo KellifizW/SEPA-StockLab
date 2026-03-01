@@ -509,6 +509,17 @@ def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
     elif not s20_rising and not s10_rising:
         star -= 1.0   # MAs diverging down
 
+    # ── Supplement 14: Price below 50SMA hard penalty ─────────────────────
+    # "I simply don't buy stocks that are below the 50-day moving average"
+    if sma_50 and sma_50 > 0:
+        if close_price < sma_50:
+            below50_penalty = getattr(C, "QM_BELOW_50SMA_PENALTY", -1.5)
+            star += below50_penalty
+            logger.debug(
+                "[QM S3 S14] %s price=%.2f < SMA50=%.2f → star %.2f (S14 penalty)",
+                ticker, close_price, sma_50, below50_penalty
+            )
+
     # ── Supplement 2: Earnings proximity blackout ─────────────────────────
     # "Five star setup but I'm not trading it because of earnings." — Qullamaggie
     earnings_warning   = False
@@ -757,6 +768,27 @@ def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None,
 
     if top_n_val and len(df_passed) > top_n_val:
         df_passed = df_passed.head(top_n_val)
+
+    # ── Supplement 7: Scan result count warning ────────────────────────────
+    # "If I'm getting hundreds of setups, my criteria are too loose"
+    # "In a good market there should be a manageable number of setups"
+    max_results_warn = getattr(C, "QM_SCAN_MAX_RESULTS_WARN", 50)
+    scan_count_warning = None
+    if len(df_passed) > max_results_warn:
+        scan_count_warning = (
+            f"⚠️ 掃描結果過多 ({len(df_passed)} 個設置 > {max_results_warn} 建議上限) — "
+            f"條件可能太寬鬆。建議：收緊 ADR 門檻或提高最低星級要求 (S7)"
+        )
+        logger.warning(
+            "[QM Scan S7] %d results exceed warn threshold %d — criteria may be too loose",
+            len(df_passed), max_results_warn
+        )
+        if verbose:
+            print(f"\n{_YELLOW}{scan_count_warning}{_RESET}")
+
+    # Store warning in progress state so app.py can surface it to the UI
+    _progress("Warn" if scan_count_warning else "Counting",
+              95, scan_count_warning or f"{len(df_passed)} stocks counted")
 
     # ── Final sorting and filtering ────────────────────────────────────────
     # Note: qm_star is a heuristic approximation. For precise rating including 

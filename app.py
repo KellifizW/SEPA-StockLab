@@ -191,6 +191,45 @@ def _load_qm_last_scan() -> dict:
     return {}
 
 
+# ── Martin Luk (ML) last scan persistence ─────────────────────────────────────
+_ML_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "ml_last_scan.json"
+
+
+def _save_ml_last_scan(rows: list, all_rows: list = None):
+    try:
+        data = {"saved_at": datetime.now().isoformat(),
+                "count": len(rows), "rows": rows,
+                "all_scored_count": len(all_rows) if all_rows else len(rows),
+                "all_scored": all_rows or []}
+        _ML_LAST_SCAN_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+    except Exception as exc:
+        logging.warning(f"Could not save ml_last_scan: {exc}")
+
+    if getattr(C, "DB_ENABLED", True):
+        try:
+            from modules.db import append_ml_scan_history
+            all_to_save = (all_rows or []) + rows
+            seen: set = set()
+            deduped = []
+            for r in all_to_save:
+                if r.get("ticker") not in seen:
+                    seen.add(r.get("ticker"))
+                    deduped.append(r)
+            append_ml_scan_history(deduped)
+        except Exception as exc:
+            logging.warning(f"DB ml_scan_history write skipped: {exc}")
+
+
+def _load_ml_last_scan() -> dict:
+    try:
+        if _ML_LAST_SCAN_FILE.exists():
+            return json.loads(_ML_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
 # ── Combined last scan persistence ────────────────────────────────────────────
 _COMBINED_LAST_FILE = ROOT / C.DATA_DIR / "combined_last_scan.json"
 
@@ -358,6 +397,7 @@ def _finish_job(jid: str, result=None, error: str = None, log_file: str = ""):
 
 _market_job_ids: set = set()  # Track which job IDs are market assessments
 _qm_job_ids: set = set()      # Track which job IDs are QM scans
+_ml_job_ids: set = set()       # Track which job IDs are ML scans
 
 
 def _get_job(jid: str) -> dict:
@@ -375,6 +415,12 @@ def _get_job(jid: str) -> dict:
             try:
                 from modules.qm_screener import get_qm_scan_progress
                 job["progress"] = get_qm_scan_progress()
+            except Exception:
+                pass
+        elif jid in _ml_job_ids:
+            try:
+                from modules.ml_screener import get_ml_scan_progress
+                job["progress"] = get_ml_scan_progress()
             except Exception:
                 pass
         else:
@@ -566,6 +612,26 @@ def qm_guide_page():
     guide_path = ROOT / "docs" / "QullamaggieStockguide.md"
     content = guide_path.read_text(encoding="utf-8") if guide_path.exists() else "QM Guide not found."
     return render_template("qm_guide.html", content=content)
+
+
+# ─── Martin Luk (ML) page routes ─────────────────────────────────────────────
+
+@app.route("/ml/scan")
+def ml_scan_page():
+    return render_template("ml_scan.html")
+
+
+@app.route("/ml/analyze")
+def ml_analyze_page():
+    ticker = request.args.get("ticker", "")
+    return render_template("ml_analyze.html", prefill=ticker)
+
+
+@app.route("/ml/guide")
+def ml_guide_page():
+    guide_path = ROOT / "docs" / "MartinLukStockGuidePart1.md"
+    content = guide_path.read_text(encoding="utf-8") if guide_path.exists() else "ML Guide not found."
+    return render_template("ml_guide.html", content=content)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -802,7 +868,7 @@ def api_scan_status(jid):
 @app.route("/api/qm/scan/run", methods=["POST"])
 def api_qm_scan_run():
     data     = request.get_json(silent=True) or {}
-    min_star = float(data.get("min_star", getattr(C, "QM_MIN_STAR_DISPLAY", 3.0)))
+    min_star = float(data.get("min_star", getattr(C, "QM_SCAN_MIN_STAR", 3.0)))
     top_n    = int(data.get("top_n", getattr(C, "QM_SCAN_TOP_N", 50)))
     stage1_source = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
     jid      = _new_job()
@@ -1268,6 +1334,193 @@ def api_qm_analyze():
         return jsonify({"ok": False, "error": str(exc), "ticker": ticker})
     finally:
         for logger_name in _QM_ANALYZE_LOGGERS:
+            logging.getLogger(logger_name).removeHandler(analyze_handler)
+        analyze_handler.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API – Martin Luk (ML) Scan & Analyze
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/ml/scan/run", methods=["POST"])
+def api_ml_scan_run():
+    data     = request.get_json(silent=True) or {}
+    min_star = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
+    top_n    = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
+    jid      = _new_job()
+    cancel_ev = _get_cancel(jid)
+    _ml_job_ids.add(jid)
+
+    # Per-scan log file
+    scan_log_file = _LOG_DIR / f"ml_scan_{jid}_{datetime.now().isoformat(timespec='seconds').replace(':', '-')}.log"
+    scan_handler = logging.FileHandler(scan_log_file, encoding="utf-8")
+    scan_handler.setLevel(logging.DEBUG)
+    scan_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    _ML_SCAN_LOGGERS = ["modules.ml_screener", "modules.ml_analyzer", "modules.data_pipeline"]
+    for logger_name in _ML_SCAN_LOGGERS:
+        logging.getLogger(logger_name).addHandler(scan_handler)
+    _scan_file_handlers[jid] = scan_handler
+    _scan_log_paths[jid] = scan_log_file
+
+    def _run():
+        try:
+            from modules.ml_screener import run_ml_scan, set_ml_scan_cancel
+            set_ml_scan_cancel(cancel_ev)
+            result = run_ml_scan(min_star=min_star, top_n=top_n)
+            if isinstance(result, tuple):
+                df_passed, df_all = result
+            else:
+                df_passed = result
+                df_all = result
+
+            def _to_rows(df):
+                import pandas as pd
+                if df is None or not hasattr(df, "to_dict"):
+                    return []
+                if hasattr(df, "empty") and df.empty:
+                    return []
+                try:
+                    records = []
+                    for idx, row in df.iterrows():
+                        record = {}
+                        for col, val in row.items():
+                            if isinstance(val, (pd.DataFrame, pd.Series, dict, list)):
+                                continue
+                            if pd.isna(val):
+                                record[col] = None
+                            else:
+                                record[col] = val
+                        records.append(record)
+                    return _clean(records)
+                except Exception as e:
+                    logging.error(f"[_to_rows] ML conversion failed: {e}", exc_info=True)
+                    return []
+
+            rows = _to_rows(df_passed)
+            all_rows = _to_rows(df_all)
+            _save_ml_last_scan(rows, all_rows=all_rows)
+            log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
+            _finish_job(jid, result=rows, log_file=log_rel)
+        except Exception as exc:
+            logging.exception("ML scan thread error")
+            log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
+            _finish_job(jid, error=str(exc), log_file=log_rel)
+        finally:
+            _ml_job_ids.discard(jid)
+            if jid in _scan_file_handlers:
+                handler = _scan_file_handlers.pop(jid)
+                for logger_name in _ML_SCAN_LOGGERS:
+                    logging.getLogger(logger_name).removeHandler(handler)
+                handler.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"job_id": jid})
+
+
+@app.route("/api/ml/scan/cancel/<jid>", methods=["POST"])
+def api_ml_scan_cancel(jid):
+    ev = _cancel_events.get(jid)
+    if ev:
+        ev.set()
+        with _jobs_lock:
+            if jid in _jobs and _jobs[jid]["status"] == "pending":
+                _jobs[jid]["progress"] = {"stage": "Cancelling…",
+                                           "pct": 100, "msg": ""}
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Job not found"}), 404
+
+
+@app.route("/api/ml/scan/last", methods=["GET"])
+def api_ml_scan_last():
+    """Return last ML scan results."""
+    data = _load_ml_last_scan()
+    include_all = request.args.get("include_all", "0") == "1"
+    if not include_all:
+        data.pop("all_scored", None)
+        data.pop("all_scored_count", None)
+    return jsonify(data)
+
+
+@app.route("/api/ml/scan/status/<jid>")
+def api_ml_scan_status(jid):
+    try:
+        job = _get_job(jid)
+        job_sanitized = _sanitize_for_json(job)
+        return jsonify(job_sanitized)
+    except Exception as e:
+        logging.error(f"[ML_SCAN_STATUS {jid}] Exception: {e}", exc_info=True)
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/api/ml/scan/progress")
+def api_ml_scan_progress():
+    """Live progress polling endpoint for active ML scan."""
+    try:
+        from modules.ml_screener import get_ml_scan_progress
+        return jsonify(get_ml_scan_progress())
+    except Exception as exc:
+        return jsonify({"stage": "Error", "pct": 0, "msg": str(exc)})
+
+
+@app.route("/api/ml/scan/logs/<jid>")
+def api_ml_scan_logs(jid):
+    """Retrieve diagnostic logs for an ML scan job."""
+    if jid not in _scan_log_paths:
+        return jsonify({"ok": False, "error": "Job ID not found"}), 404
+    log_file = _scan_log_paths[jid]
+    if not log_file.exists():
+        return jsonify({"ok": False, "error": "Log file not found"}), 404
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        return jsonify({
+            "ok": True, "job_id": jid,
+            "log_file": str(log_file.relative_to(ROOT)),
+            "full_logs": content.split("\n")[-100:],
+            "total_lines": len(content.split("\n")),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Failed to read logs: {exc}"}), 500
+
+
+@app.route("/api/ml/analyze", methods=["POST"])
+def api_ml_analyze():
+    """
+    Synchronous ML deep analysis for a single ticker.
+    Returns: star rating, 7-dimension scores, setup type, trade plan.
+    """
+    data   = request.get_json(silent=True) or {}
+    ticker = str(data.get("ticker", "")).upper().strip()
+    if not ticker:
+        return jsonify({"ok": False, "error": "ticker required"}), 400
+
+    analyze_log_file = _LOG_DIR / f"ml_analyze_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    analyze_handler  = logging.FileHandler(analyze_log_file, encoding="utf-8")
+    analyze_handler.setLevel(logging.DEBUG)
+    analyze_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s  %(message)s")
+    )
+    _ML_ANALYZE_LOGGERS = [
+        "modules.ml_analyzer", "modules.ml_setup_detector",
+        "modules.data_pipeline", "modules.market_env",
+    ]
+    for logger_name in _ML_ANALYZE_LOGGERS:
+        logging.getLogger(logger_name).addHandler(analyze_handler)
+
+    try:
+        from modules.ml_analyzer import analyze_ml
+        result = analyze_ml(ticker, print_report=False)
+        clean_result = _clean(result) if result else {}
+        log_rel = str(analyze_log_file.relative_to(ROOT)) if analyze_log_file.exists() else ""
+        return jsonify({"ok": True, "ticker": ticker,
+                        "result": clean_result, "log_file": log_rel})
+    except Exception as exc:
+        logging.exception("ML analyze error: %s", ticker)
+        return jsonify({"ok": False, "error": str(exc), "ticker": ticker})
+    finally:
+        for logger_name in _ML_ANALYZE_LOGGERS:
             logging.getLogger(logger_name).removeHandler(analyze_handler)
         analyze_handler.close()
 

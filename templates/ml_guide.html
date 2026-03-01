@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}ML 教學 Martin Luk Guide{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.5.1/github-markdown-dark.min.css">
+<style>
+  .markdown-body { background: transparent; color: #c9d1d9; }
+  .markdown-body h1 { color: #3fb950; border-bottom-color: #30363d; }
+  .markdown-body h2 { color: #3fb950; border-bottom-color: #21262d; }
+  .markdown-body h3 { color: #e3b341; }
+  .markdown-body h4 { color: #d2a8ff; }
+  .markdown-body code { background: #1c2128; color: #ff9580; }
+  .markdown-body pre { background: #161b22; border: 1px solid #30363d; }
+  .markdown-body table th { background: #1c2128; color: #3fb950; }
+  .markdown-body table td, .markdown-body table th { border-color: #30363d; }
+  .markdown-body blockquote { border-left-color: #3fb950; background: #0a1a0a; padding: 8px 16px; }
+  .markdown-body blockquote p { color: #3fb950; }
+  .markdown-body hr { border-color: #30363d; }
+  .markdown-body a { color: #58a6ff; }
+  .toc-panel a { color: #8b949e; text-decoration: none; display: block; padding: 2px 4px; border-radius: 4px; font-size: 13px; }
+  .toc-panel a:hover { color: #3fb950; background: #1c2128; }
+  .toc-panel .toc-h2 { padding-left: 10px; }
+  .toc-panel .toc-h3 { padding-left: 20px; font-size: 11px; }
+  .toc-panel .toc-h4 { padding-left: 30px; font-size: 10px; color: #6e7681; }
+  .author-badge { background: #0a1a0a; border: 1px solid #3fb950; padding: 10px 16px;
+                  border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Page header -->
+<div class="d-flex align-items-center mb-4 gap-3">
+  <h4 class="mb-0">
+    <i class="bi bi-graph-up-arrow me-2" style="color:#3fb950"></i>
+    Martin Luk 回調買入交易教學
+    <span style="color:#8b949e;font-size:13px">Pullback Buy Trading Guide</span>
+  </h4>
+  <a href="/ml/scan" class="btn btn-sm ms-auto" style="background:#238636;color:#fff;border:1px solid #2ea043">
+    <i class="bi bi-graph-up-arrow me-1"></i>前往掃描 Go to ML Scan
+  </a>
+</div>
+
+<!-- Author badge -->
+<div class="author-badge">
+  <i class="bi bi-person-circle me-1" style="color:#3fb950"></i>
+  <strong>Martin Luk</strong> — 系統化回調買入法 (Systematic Pullback Buy Method)
+  <br><small class="text-secondary">EMA(9/21/50/150) 結構 | AVWAP 支撐/阻力 | 嚴格止損 ≤2.5% | 0.5% 風險每筆交易</small>
+</div>
+
+<!-- Content area (2-column: TOC + Markdown) -->
+<div class="row">
+  <!-- Table of Contents sidebar -->
+  <div class="col-12 col-md-3">
+    <div class="card sticky-top" style="top:80px;max-height:calc(100vh - 100px);overflow-y:auto">
+      <div class="card-header py-2"><i class="bi bi-list-nested me-1"></i>目錄 Contents</div>
+      <div class="card-body toc-panel py-2" id="tocPanel">
+        <div class="text-secondary" style="font-size:12px">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Markdown content -->
+  <div class="col-12 col-md-9">
+    <div class="card">
+      <div class="card-body markdown-body" id="mdContent">
+        {{ content | safe }}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const mdEl = document.getElementById('mdContent');
+  const raw = mdEl.textContent || mdEl.innerText;
+
+  // Render markdown
+  if (typeof marked !== 'undefined') {
+    mdEl.innerHTML = marked.parse(raw);
+  }
+
+  // Build TOC
+  const headers = mdEl.querySelectorAll('h1, h2, h3, h4');
+  const tocPanel = document.getElementById('tocPanel');
+  if (headers.length > 0) {
+    let tocHtml = '';
+    headers.forEach((h, i) => {
+      const id = 'toc-' + i;
+      h.id = id;
+      const level = h.tagName.toLowerCase();
+      const cls = level === 'h1' ? '' : 'toc-' + level;
+      tocHtml += `<a href="#${id}" class="${cls}">${h.textContent}</a>`;
+    });
+    tocPanel.innerHTML = tocHtml;
+  } else {
+    tocPanel.innerHTML = '<div class="text-secondary" style="font-size:12px">無標題</div>';
+  }
+});
+</script>
+{% endblock %}

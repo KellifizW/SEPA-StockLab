@@ -122,6 +122,23 @@
               <i class="bi bi-book me-2"></i>QM 教學 Guide</a></li>
           </ul>
         </li>
+        <!-- ── Martin Luk dropdown ──────────────────────────────── -->
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% if request.path.startswith('/ml') %}active{% endif %}"
+             href="#" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-graph-up-arrow me-1" style="color:#3fb950"></i>ML
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark" style="background:#161b22;border-color:#30363d">
+            <li><h6 class="dropdown-header" style="color:#8b949e;font-size:10px">MARTIN LUK 回調波段</h6></li>
+            <li><a class="dropdown-item {% if request.path=='/ml/scan' %}text-info{% endif %}" href="/ml/scan">
+              <i class="bi bi-graph-up-arrow me-2" style="color:#3fb950"></i>ML Scan 掃描</a></li>
+            <li><a class="dropdown-item {% if request.path=='/ml/analyze' %}text-info{% endif %}" href="/ml/analyze">
+              <i class="bi bi-search me-2"></i>ML Analyze 分析</a></li>
+            <li><hr class="dropdown-divider" style="border-color:#30363d"></li>
+            <li><a class="dropdown-item {% if request.path=='/ml/guide' %}text-info{% endif %}" href="/ml/guide">
+              <i class="bi bi-book me-2"></i>ML 教學 Guide</a></li>
+          </ul>
+        </li>
       </ul>
       <ul class="navbar-nav gap-1">
         <li class="nav-item"><a class="nav-link" href="/latest-report" target="_blank"><i class="bi bi-file-earmark-text me-1"></i>Report</a></li>
