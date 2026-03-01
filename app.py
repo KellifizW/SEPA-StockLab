@@ -289,7 +289,65 @@ def _get_cancel(jid: str) -> threading.Event:
     return _cancel_events.get(jid, threading.Event())
 
 
+def _sanitize_for_json(obj, depth=0, max_depth=5):
+    """
+    Recursively sanitize object to ensure it's JSON-serializable.
+    Safely converts any non-serializable types to None or string representation.
+    """
+    import pandas as pd
+    import numpy as np
+    
+    if depth > max_depth:
+        return None
+    
+    # Handle None, bool, int, float, str
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    
+    # Handle float (including NaN, inf)
+    if isinstance(obj, (float, np.floating)):
+        if pd.isna(obj) or np.isnan(obj):
+            return None
+        if np.isinf(obj):
+            return str(obj)
+        return float(obj)
+    
+    # Handle numpy types
+    if isinstance(obj, (np.integer, np.bool_)):
+        return obj.item()
+    
+    # Skip DataFrames and Series entirely
+    if isinstance(obj, (pd.DataFrame, pd.Series)):
+        return None
+    
+    # Handle list
+    if isinstance(obj, list):
+        return [_sanitize_for_json(item, depth+1, max_depth) for item in obj]
+    
+    # Handle dict
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v, depth+1, max_depth) 
+                for k, v in obj.items()}
+    
+    # Handle tuple → convert to list
+    if isinstance(obj, tuple):
+        return [_sanitize_for_json(item, depth+1, max_depth) for item in obj]
+    
+    # Fallback: convert to string
+    return str(obj)
+
+
 def _finish_job(jid: str, result=None, error: str = None, log_file: str = ""):
+    # Sanitize result before storing to ensure JSON serialization won't fail
+    if result is not None:
+        import sys
+        try:
+            result = _sanitize_for_json(result)
+            logging.info(f"[FINISH_JOB {jid}] Result sanitized successfully")
+        except Exception as e:
+            logging.error(f"[FINISH_JOB {jid}] Error sanitizing result: {e}", exc_info=True)
+            result = {"error": "Result sanitization failed: " + str(e)}
+    
     with _jobs_lock:
         _jobs[jid]["status"] = "done" if error is None else "error"
         _jobs[jid]["result"] = result
@@ -330,7 +388,13 @@ def _get_job(jid: str) -> dict:
 
 def _clean(obj):
     """Recursively convert numpy/NaN/DataFrame values to JSON-safe Python types."""
+    import pandas as pd
+    
     if obj is None:
+        return None
+    
+    # Skip DataFrames and Series early - don't try to process them
+    if isinstance(obj, (pd.DataFrame, pd.Series)):
         return None
     
     # Try numpy scalar extraction FIRST (before isinstance checks)
@@ -358,6 +422,9 @@ def _clean(obj):
     if isinstance(obj, dict):
         cleaned = {}
         for k, v in obj.items():
+            # Skip DataFrame/Series values in dicts
+            if isinstance(v, (pd.DataFrame, pd.Series)):
+                continue
             cleaned_v = _clean(v)
             if cleaned_v is not None or v is None:
                 cleaned[k] = cleaned_v
@@ -365,19 +432,6 @@ def _clean(obj):
     
     if isinstance(obj, (list, tuple)):
         return [_clean(i) for i in obj]
-    
-    # Handle pandas DataFrame or Series
-    if hasattr(obj, "empty"):
-        try:
-            if obj.empty:
-                return []
-            if hasattr(obj, "to_dict"):   # DataFrame
-                return [_clean(row) for row in obj.to_dict(orient="records")]
-            if hasattr(obj, "tolist"):    # Series
-                return [_clean(v) for v in obj.tolist()]
-            return []
-        except Exception:
-            return None
     
     # For other types, try to convert to string representation
     try:
@@ -555,11 +609,32 @@ def api_scan_run():
                 df_all = scan_result
 
             def _to_rows(df):
-                if df is not None and hasattr(df, "to_dict") and not df.empty:
-                    return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
-                elif df is not None and not hasattr(df, "to_dict"):
-                    return _clean(list(df))
-                return []
+                import pandas as pd
+                
+                if df is None or not hasattr(df, "to_dict"):
+                    return []
+                if hasattr(df, "empty") and df.empty:
+                    return []
+                
+                try:
+                    # Convert row-by-row to avoid DataFrame comparison issues
+                    records = []
+                    for idx, row in df.iterrows():
+                        record = {}
+                        for col, val in row.items():
+                            # Skip DataFrame/Series/complex objects
+                            if isinstance(val, (pd.DataFrame, pd.Series, dict, list)):
+                                continue
+                            # Convert NaN/None to None
+                            if pd.isna(val):
+                                record[col] = None
+                            else:
+                                record[col] = val
+                        records.append(record)
+                    return _clean(records)
+                except Exception as e:
+                    logging.error(f"[_to_rows] SEPA conversion failed: {e}", exc_info=True)
+                    return []
 
             rows = _to_rows(df_passed)
             all_rows = _to_rows(df_all)
@@ -579,7 +654,13 @@ def api_scan_run():
                 handler.close()
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": jid})
+    try:
+        response = jsonify({"job_id": jid})
+        logging.info(f"[SCAN {jid}] Initial response created successfully")
+        return response
+    except Exception as e:
+        logging.error(f"[SCAN {jid}] Error creating initial response: {e}", exc_info=True)
+        return jsonify({"job_id": jid, "error": "Response creation error"}), 500
 
 
 @app.route("/api/scan/cancel/<jid>", methods=["POST"])
@@ -698,7 +779,20 @@ def api_scan_cache_info():
 
 @app.route("/api/scan/status/<jid>")
 def api_scan_status(jid):
-    return jsonify(_get_job(jid))
+    try:
+        job = _get_job(jid)
+        job_sanitized = _sanitize_for_json(job)
+        response = jsonify(job_sanitized)
+        logging.debug(f"[SCAN_STATUS {jid}] Successfully returned job status")
+        return response
+    except TypeError as te:
+        logging.error(f"[SCAN_STATUS {jid}] JSON serialization error: {te}", exc_info=True)
+        job = _get_job(jid)
+        job_sanitized = _sanitize_for_json(job)
+        return jsonify(job_sanitized)
+    except Exception as e:
+        logging.error(f"[SCAN_STATUS {jid}] Unhandled exception: {e}", exc_info=True)
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -740,11 +834,32 @@ def api_qm_scan_run():
                 df_all = result
 
             def _to_rows(df):
-                if df is not None and hasattr(df, "to_dict") and not df.empty:
-                    return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
-                elif df is not None and not hasattr(df, "to_dict"):
-                    return _clean(list(df))
-                return []
+                import pandas as pd
+                
+                if df is None or not hasattr(df, "to_dict"):
+                    return []
+                if hasattr(df, "empty") and df.empty:
+                    return []
+                
+                try:
+                    # Convert row-by-row to avoid DataFrame comparison issues
+                    records = []
+                    for idx, row in df.iterrows():
+                        record = {}
+                        for col, val in row.items():
+                            # Skip DataFrame/Series/complex objects
+                            if isinstance(val, (pd.DataFrame, pd.Series, dict, list)):
+                                continue
+                            # Convert NaN/None to None
+                            if pd.isna(val):
+                                record[col] = None
+                            else:
+                                record[col] = val
+                        records.append(record)
+                    return _clean(records)
+                except Exception as e:
+                    logging.error(f"[_to_rows] QM conversion failed: {e}", exc_info=True)
+                    return []
 
             rows = _to_rows(df_passed)
             all_rows = _to_rows(df_all)
@@ -764,7 +879,13 @@ def api_qm_scan_run():
                 handler.close()
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": jid})
+    try:
+        response = jsonify({"job_id": jid})
+        logging.info(f"[QM_SCAN {jid}] Initial response created successfully")
+        return response
+    except Exception as e:
+        logging.error(f"[QM_SCAN {jid}] Error creating initial response: {e}", exc_info=True)
+        return jsonify({"job_id": jid, "error": "Response creation error"}), 500
 
 
 @app.route("/api/combined/scan/run", methods=["POST"])
@@ -781,69 +902,120 @@ def api_combined_scan_run():
 
     # Create a unique log file for this combined scan
     combined_log_file = _LOG_DIR / f"combined_scan_{jid}_{datetime.now().isoformat(timespec='seconds').replace(':', '-')}.log"
+    combined_log_file.parent.mkdir(parents=True, exist_ok=True)
+    
     log_handler = logging.FileHandler(combined_log_file, encoding="utf-8")
     log_handler.setLevel(logging.DEBUG)
-    log_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    log_formatter = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] %(name)s | %(funcName)s:%(lineno)d | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
     )
+    log_handler.setFormatter(log_formatter)
+    
     # Attach to combined_scanner and related modules
-    _COMBINED_LOGGERS = ["modules.combined_scanner", "modules.screener", "modules.qm_screener", "modules.data_pipeline"]
+    _COMBINED_LOGGERS = [
+        "modules.combined_scanner", "modules.screener", "modules.qm_screener", 
+        "modules.data_pipeline", "modules.rs_ranking", "modules.market_env", 
+        "modules.qm_analyzer"
+    ]
     for logger_name in _COMBINED_LOGGERS:
-        logging.getLogger(logger_name).addHandler(log_handler)
+        lgr = logging.getLogger(logger_name)
+        lgr.addHandler(log_handler)
+        lgr.setLevel(logging.DEBUG)
+    
     _scan_file_handlers[jid] = log_handler
     _scan_log_paths[jid] = combined_log_file
+    
+    # Log job start
+    logging.info(f"[COMBINED SCAN] Job {jid} started | refresh_rs={refresh_rs} stage1_source={stage1_source} min_star={min_star} top_n={top_n} strict_rs={strict_rs}")
 
     def _run():
         try:
+            logging.info(f"[COMBINED SCAN {jid}] Thread started, running combined scan...")
             from modules.combined_scanner import run_combined_scan, set_combined_cancel
             set_combined_cancel(cancel_ev)
 
-            sepa_result, qm_result = run_combined_scan(
-                refresh_rs=refresh_rs,
-                stage1_source=stage1_source,
-                verbose=False,
-                min_star=min_star,
-                top_n=top_n,
-                strict_rs=strict_rs,
-            )
+            logging.info(f"[COMBINED SCAN {jid}] Calling run_combined_scan()...")
+            try:
+                sepa_result, qm_result = run_combined_scan(
+                    refresh_rs=refresh_rs,
+                    stage1_source=stage1_source,
+                    verbose=False,
+                    min_star=min_star,
+                    top_n=top_n,
+                    strict_rs=strict_rs,
+                )
+                logging.info(f"[COMBINED SCAN {jid}] run_combined_scan() completed successfully")
+            except Exception as run_err:
+                # Catch errors during scan execution and convert to safe string representation
+                logging.error(f"[COMBINED SCAN {jid}] Error in run_combined_scan: {type(run_err).__name__}", exc_info=True)
+                # Create safe error message without including DataFrame representations
+                error_msg = str(run_err) if not "DataFrame" in str(type(run_err)) else f"{type(run_err).__name__}: DataFrame-related error during analysis"
+                raise RuntimeError(error_msg) from run_err
 
             def _to_rows(df):
-                if df is None or not hasattr(df, "to_dict") or df.empty:
+                import pandas as pd
+                import numpy as np
+                
+                if df is None or not hasattr(df, "to_dict"):
                     return []
-                # Drop any column whose values are themselves DataFrames or
-                # other non-scalar objects that cause `df.notna()` to crash
-                # with "truth value of a DataFrame is ambiguous".
-                scalar_cols = [
-                    c for c in df.columns
-                    if not df[c].apply(lambda x: isinstance(x, pd.DataFrame)).any()
-                ]
-                df = df[scalar_cols]
-                return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
+                if hasattr(df, "empty") and df.empty:
+                    return []
+                
+                try:
+                    # Convert row-by-row to avoid DataFrame comparison issues
+                    records = []
+                    for idx, row in df.iterrows():
+                        record = {}
+                        for col, val in row.items():
+                            # Skip DataFrame/Series/complex objects
+                            if isinstance(val, (pd.DataFrame, pd.Series, dict, list)):
+                                continue
+                            # Convert NaN/None to None
+                            if pd.isna(val):
+                                record[col] = None
+                            else:
+                                record[col] = val
+                        records.append(record)
+                    return _clean(records)
+                except Exception as e:
+                    logging.error(f"[_to_rows] Conversion failed: {e}", exc_info=True)
+                    return []
 
+            logging.info(f"[COMBINED SCAN {jid}] Converting results to rows...")
             sepa_rows      = _to_rows(sepa_result.get("passed"))
             sepa_all_rows  = _to_rows(sepa_result.get("all"))
             qm_rows        = _to_rows(qm_result.get("passed"))
-            qm_all_rows    = _to_rows(qm_result.get("all_scored") or qm_result.get("all"))
+            # Safe: check all_scored first, fall back to all if None/empty
+            qm_all_source = qm_result.get("all_scored")
+            if qm_all_source is None or (hasattr(qm_all_source, "empty") and qm_all_source.empty):
+                qm_all_source = qm_result.get("all")
+            qm_all_rows    = _to_rows(qm_all_source)
             market_env     = sepa_result.get("market_env", {})
             timing         = sepa_result.get("timing", {})
             qm_was_blocked = qm_result.get("blocked", False)
+            logging.info(f"[COMBINED SCAN {jid}] Converted results: SEPA {len(sepa_rows)} passed, QM {len(qm_rows)} passed, blocked={qm_was_blocked}")
 
             # ── Save results to scan_results/ ───────────────────────────────
             from datetime import datetime as _dt_now
             _scan_ts = _dt_now.now()
+            logging.info(f"[COMBINED SCAN {jid}] Saving CSV results...")
             sepa_csv_path, qm_csv_path = _save_combined_scan_csv(
                 sepa_result.get("passed"),
                 qm_result.get("passed"),
                 scan_ts=_scan_ts
             )
+            logging.info(f"[COMBINED SCAN {jid}] CSV saved: {sepa_csv_path}, {qm_csv_path}")
 
             # ── Persist combined summary for combined dashboard ──────────
+            logging.info(f"[COMBINED SCAN {jid}] Saving combined summary...")
             _save_combined_last(sepa_rows, qm_rows, market_env, timing,
                                 sepa_csv_path, qm_csv_path)
 
             # ── Mirror results to individual scan endpoints ──────────────
             # This makes /api/scan/last and /api/qm/scan/last reflect the
             # latest combined run, so individual scan pages stay up-to-date.
+            logging.info(f"[COMBINED SCAN {jid}] Mirroring results to individual endpoints...")
             _save_last_scan(sepa_rows, all_rows=sepa_all_rows)
             if not qm_was_blocked:
                 _save_qm_last_scan(qm_rows, all_rows=qm_all_rows)
@@ -867,39 +1039,81 @@ def api_combined_scan_run():
             log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
             _finish_job(jid, result=result, log_file=log_rel)
         except Exception as exc:
-            logging.exception("Combined scan thread error")
+            logging.exception("[CRITICAL] Combined scan thread encountered unhandled exception:")
+            logging.error("[CRITICAL] Exception type: %s", type(exc).__name__)
+            logging.error("[CRITICAL] Exception message: %s", str(exc))
+            import traceback
+            logging.error("[CRITICAL] Full traceback:\n%s", traceback.format_exc())
             log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
+            if log_handler in logging.root.handlers:
+                logging.root.removeHandler(log_handler)
             _finish_job(jid, error=str(exc), log_file=log_rel)
         finally:
+            logging.info(f"[COMBINED SCAN {jid}] Cleaning up handlers...")
             if jid in _scan_file_handlers:
                 handler = _scan_file_handlers.pop(jid)
                 for logger_name in _COMBINED_LOGGERS:
-                    logging.getLogger(logger_name).removeHandler(handler)
+                    logger_obj = logging.getLogger(logger_name)
+                    if handler in logger_obj.handlers:
+                        logger_obj.removeHandler(handler)
+                handler.flush()
                 handler.close()
+                logging.info(f"[COMBINED SCAN {jid}] Handler closed and removed")
+            # Ensure log file is written to disk
+            try:
+                import os
+                if combined_log_file.exists() and hasattr(os, 'sync'):
+                    os.sync()
+            except Exception as e:
+                logging.warning(f"Could not sync log file: {e}")
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": jid})
+    try:
+        response = jsonify({"job_id": jid})
+        logging.info(f"[COMBINED SCAN {jid}] Initial response created successfully")
+        return response
+    except Exception as e:
+        logging.error(f"[COMBINED SCAN {jid}] Error creating initial response: {e}", exc_info=True)
+        return jsonify({"job_id": jid, "error": "Response creation error"}), 500
 
 
 @app.route("/api/combined/scan/status/<jid>", methods=["GET"])
 def api_combined_scan_status(jid):
     """Poll combined scan job status."""
     from modules.combined_scanner import get_combined_progress
-    job = _get_job(jid)
-    if not job:
-        return jsonify({"status": "not_found"}), 404
+    
+    try:
+        job = _get_job(jid)
+        if not job:
+            return jsonify({"status": "not_found"}), 404
 
-    status = job["status"]
-    if status == "pending":
-        progress = get_combined_progress()
-        return jsonify({
-            "status": "pending",
-            "progress": progress
-        })
-    elif status == "done":
-        return jsonify({"status": "done", "result": job.get("result")})
-    else:  # error
-        return jsonify({"status": "error", "error": job.get("error")})
+        status = job["status"]
+        if status == "pending":
+            progress = get_combined_progress()
+            return jsonify({
+                "status": "pending",
+                "progress": progress
+            })
+        elif status == "done":
+            # Wrap in try/except to catch JSON serialization errors
+            try:
+                result = job.get("result")
+                response = jsonify({"status": "done", "result": result})
+                logging.info(f"[API_SCAN_STATUS {jid}] Successfully serialized result")
+                return response
+            except TypeError as te:
+                logging.error(f"[API_SCAN_STATUS {jid}] JSON serialization error: {te}", exc_info=True)
+                logging.error(f"[API_SCAN_STATUS {jid}] Result type: {type(result)}")
+                logging.error(f"[API_SCAN_STATUS {jid}] Result keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
+                # Return sanitized result
+                sanitized = _sanitize_for_json(result)
+                return jsonify({"status": "done", "result": sanitized})
+        else:  # error
+            return jsonify({"status": "error", "error": job.get("error")})
+    
+    except Exception as e:
+        logging.error(f"[API_SCAN_STATUS {jid}] Unhandled exception: {e}", exc_info=True)
+        return jsonify({"status": "error", "error": f"Status check failed: {str(e)}"}), 500
 
 
 @app.route("/api/combined/scan/cancel/<jid>", methods=["POST"])
@@ -948,7 +1162,20 @@ def api_qm_scan_last():
 
 @app.route("/api/qm/scan/status/<jid>")
 def api_qm_scan_status(jid):
-    return jsonify(_get_job(jid))
+    try:
+        job = _get_job(jid)
+        job_sanitized = _sanitize_for_json(job)
+        response = jsonify(job_sanitized)
+        logging.debug(f"[QM_SCAN_STATUS {jid}] Successfully returned job status")
+        return response
+    except TypeError as te:
+        logging.error(f"[QM_SCAN_STATUS {jid}] JSON serialization error: {te}", exc_info=True)
+        job = _get_job(jid)
+        job_sanitized = _sanitize_for_json(job)
+        return jsonify(job_sanitized)
+    except Exception as e:
+        logging.error(f"[QM_SCAN_STATUS {jid}] Unhandled exception: {e}", exc_info=True)
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 @app.route("/api/qm/scan/progress")

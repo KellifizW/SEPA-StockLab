@@ -990,6 +990,7 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
             progress_cb(bi + 1, total_batches,
                         f"Downloading batch {bi+1}/{total_batches} ({len(batch)} tickers)")
         try:
+            logger.debug(f"[Batch {bi+1}] Downloading {len(batch)} tickers: {batch}")
             raw = yf.download(
                 tickers=batch,
                 period=period,
@@ -998,8 +999,17 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
                 threads=True,
                 progress=False,
             )
-            if raw is None or raw.empty:
+            logger.debug(f"[Batch {bi+1}] Download returned type {type(raw).__name__}")
+            
+            if raw is None:
+                logger.warning(f"[Batch {bi+1}] yf.download returned None")
                 continue
+            
+            if raw.empty:
+                logger.warning(f"[Batch {bi+1}] yf.download returned empty DataFrame")
+                continue
+            
+            logger.debug(f"[Batch {bi+1}] Raw data shape: {raw.shape}, MultiIndex: {isinstance(raw.columns, pd.MultiIndex)}")
 
             # Parse per-ticker DataFrames from batch result
             if len(batch) == 1:
@@ -1009,15 +1019,22 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
                 if raw.index.tzinfo is not None:
                     raw.index = raw.index.tz_localize(None)
                 df_t = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
+                logger.debug(f"[Batch Single] {tkr} extracted, shape {df_t.shape if not df_t.empty else 'empty'}")
                 if not df_t.empty:
                     # Save to cache
                     try:
                         cache_path = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
                         df_t.to_parquet(cache_path)
                         cache_path.with_suffix(".meta").write_text(today)
-                    except Exception:
-                        pass
-                    result[tkr] = get_technicals(df_t)
+                    except Exception as save_err:
+                        logger.debug(f"[Batch Single] {tkr} cache save failed: {save_err}")
+                    try:
+                        logger.debug(f"[Batch Single] {tkr} calling get_technicals()...")
+                        tech_df = get_technicals(df_t)
+                        logger.debug(f"[Batch Single] {tkr} get_technicals returned shape {tech_df.shape}")
+                        result[tkr] = tech_df
+                    except Exception as tech_err:
+                        logger.error(f"[Batch Single] {tkr} get_technicals failed: {type(tech_err).__name__}: {tech_err}", exc_info=True)
             else:
                 for tkr in batch:
                     try:
@@ -1042,7 +1059,8 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
                         continue
 
         except Exception as exc:
-            logger.warning(f"Batch download error (batch {bi+1}): {exc}")
+            logger.error(f"[Batch {bi+1}] Download error: {type(exc).__name__}: {exc}", exc_info=True)
+            logger.error(f"[Batch {bi+1}] Exception details will help debug DataFrame ambiguity issues")
 
         # Rate-limit between batches
         if bi < total_batches - 1:
@@ -1441,10 +1459,16 @@ def get_next_earnings_date(ticker: str) -> "date | None":
     try:
         tkobj = yf.Ticker(ticker)
         cal   = tkobj.calendar
-        if cal is None or cal.empty:
+        
+        # Check if cal is None first
+        if cal is None:
             return None
+        
         # yfinance calendar may be a DataFrame or dict depending on version
+        # For DataFrame, check .empty attribute
         if isinstance(cal, pd.DataFrame):
+            if cal.empty:
+                return None
             # Rows are fields, columns may be dates; look for EarningsDate or first column
             if "Earnings Date" in cal.index:
                 val = cal.loc["Earnings Date"].iloc[0]
@@ -1453,6 +1477,9 @@ def get_next_earnings_date(ticker: str) -> "date | None":
             else:
                 return None
         elif isinstance(cal, dict):
+            # For dict, check if it's empty
+            if not cal:
+                return None
             val = cal.get("Earnings Date", [None])
             if isinstance(val, (list, tuple)) and val:
                 val = val[0]

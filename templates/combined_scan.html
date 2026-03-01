@@ -106,7 +106,7 @@
     <div class="col-md-3">
       <span class="text-secondary"
         data-bs-toggle="tooltip" data-bs-html="true"
-        title="&lt;b&gt;基本面資料快取&lt;/b&gt;&lt;br&gt;已快取今日基本面數據的股票數量（EPS 增長、ROE、營收、本益比等）。&lt;br&gt;SEPA 掃描需要基本面資料（財報數據）用於第三階段評分，QM 掃描不使用基本面。&lt;br&gt;資料來源：yfinance（免費）或 FMP（Financial Modeling Prep，月限 250 次）。&lt;br&gt;快取後同日不再重複請求，節省 API 配額。"
+        title="&lt;b&gt;基本面資料快取&lt;/b&gt;&lt;br&gt;已快取今日基本面數據的股票數量（EPS 增長、ROE、營收、本益比等）。&lt;br&gt;SEPA 掃描需要基本面資料（財報數據）用於第三階段評分，QM 掃描不使用基本面。&lt;br&gt;資料來源：yfinance（免費）。&lt;br&gt;快取後同日不再重複請求，節省 API 配額。"
       >Fundamentals <i class="bi bi-info-circle" style="font-size:10px"></i>:</span>
       <span id="cacheFundamentals" class="ms-1 badge bg-secondary">checking…</span>
     </div>
@@ -1624,7 +1624,7 @@ function loadCacheInfo() {
       if (info.fund_cached_today > 0)
         hints.push('📊 已快取 ' + info.fund_cached_today + ' 檔基本面資料（EPS/ROE/營收），SEPA Stage 3 評分將直接使用。');
       else
-        hints.push('📈 基本面快取為空；SEPA 評分時將從 yfinance/FMP 獲取財報數據（每次掃描只調用一次）。');
+        hints.push('📈 基本面快取為空；SEPA 評分時將從 yfinance 獲取財報數據（每次掃描只調用一次）。');
       if (info.finviz_cached)
         hints.push('🌐 Finviz 篩選結果已快取（' + info.finviz_ttl_hours + ' 小時 TTL）。若選擇 Finviz 模式，本次掃描將直接使用快取結果。');
       hints.push('ℹ️ Stage 1 來源：<b>NASDAQ FTP</b>（推薦，免費、快速、約覆蓋 5,000+ 上市股票）或 <b>Finviz</b>（備用，較慢，有日請求限制）。可在上方下拉選單切換。');

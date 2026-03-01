@@ -125,20 +125,6 @@
       </ul>
       <ul class="navbar-nav gap-1">
         <li class="nav-item"><a class="nav-link" href="/latest-report" target="_blank"><i class="bi bi-file-earmark-text me-1"></i>Report</a></li>
-        <!-- FMP API Call Counter Badge -->
-        <li class="nav-item d-flex align-items-center" title="FMP API 使用次數 (Free Plan: 250/月)">
-          <span class="d-flex align-items-center gap-1 px-2 py-1 rounded"
-                style="background:#161b22;border:1px solid #30363d;font-size:11px;cursor:default"
-                id="fmp-counter-nav"
-                data-bs-toggle="tooltip" data-bs-placement="bottom"
-                title="FMP API 月用量 | 點擊查看詳情">
-            <i class="bi bi-cloud-arrow-down" id="fmp-icon" style="color:#8b949e"></i>
-            <span style="color:#8b949e">FMP</span>
-            <span id="fmp-monthly" class="badge rounded-pill"
-                  style="background:#21262d;color:#e3b341;font-size:10px;min-width:40px">—</span>
-            <span style="color:#8b949e">/250</span>
-          </span>
-        </li>
       </ul>
     </div>
   </div>
@@ -224,50 +210,6 @@ function scoreClass(v) {
 function fmt2(v) { return (v == null) ? '—' : Number(v).toFixed(2); }
 function fmtPct(v) { return (v == null) ? '—' : Number(v).toFixed(1) + '%'; }
 function fmtInt(v) { return (v == null) ? '—' : Math.round(Number(v)); }
-
-// ── FMP API Call Counter (polls every 60 seconds) ─────────────────────────────
-async function refreshFmpCounter() {
-  try {
-    const d = await fetch('/api/fmp/stats').then(r => r.json());
-    const badge = document.getElementById('fmp-monthly');
-    const icon  = document.getElementById('fmp-icon');
-    if (!badge) return;
-
-    badge.textContent = d.monthly_calls;
-
-    // Colour coding: green < 200, yellow < 240, red >= 240
-    if (d.exhausted) {
-      badge.style.background = '#da3633';
-      badge.style.color = '#fff';
-      icon.style.color = '#da3633';
-    } else if (d.warning) {
-      badge.style.background = '#9e6a03';
-      badge.style.color = '#fff';
-      icon.style.color = '#e3b341';
-    } else {
-      badge.style.background = '#21262d';
-      badge.style.color = '#3fb950';
-      icon.style.color = '#3fb950';
-    }
-
-    // Update tooltip text
-    const nav = document.getElementById('fmp-counter-nav');
-    if (nav) {
-      const lastCall = d.last_call ? new Date(d.last_call).toLocaleString('zh-HK') : '從未使用';
-      nav.setAttribute('title',
-        `FMP API 月用量: ${d.monthly_calls} / ${d.monthly_limit} (${d.monthly_pct}%)\n` +
-        `剩餘: ${d.monthly_remaining} 次\n` +
-        `本月: ${d.current_month}\n` +
-        `上次: ${lastCall}`
-      );
-    }
-  } catch (e) {
-    // Silent fail — counter not critical
-  }
-}
-// Load immediately and refresh every 60 seconds
-refreshFmpCounter();
-setInterval(refreshFmpCounter, 60000);
 </script>
 {% block extra_js %}{% endblock %}
 </body>

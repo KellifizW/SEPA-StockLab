@@ -251,29 +251,43 @@ def run_combined_scan(custom_filters: dict | None = None,
             # Stage 2 using pre-downloaded union data
             # TT1-TT10 will naturally filter out QM-only tickers lacking
             # Minervini fundamentals — no pre-filtering needed here
+            logger.info("[Combined SEPA] Starting Stage 2 with %d tickers", len(s1_tickers))
             s2_results = run_stage2(s1_tickers, sector_leaders, verbose=verbose,
                                     enriched_map=enriched_map, shared=True)
+            logger.info("[Combined SEPA] Stage 2 completed: %d passing TT1-TT10", len(s2_results))
 
-            if _cancelled() or not s2_results:
+            # Check if s2_results is empty (list or DataFrame)
+            if _cancelled():
+                sepa_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+                return
+            is_empty = (isinstance(s2_results, list) and len(s2_results) == 0) or \
+                       (isinstance(s2_results, pd.DataFrame) and s2_results.empty)
+            if is_empty:
+                logger.warning("[Combined SEPA] Stage 2 returned no results")
                 sepa_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
                 return
 
             # Stage 3 scoring
+            logger.info("[Combined SEPA] Starting Stage 3 scoring")
             sepa_df_passed = run_stage3(s2_results, verbose=verbose, shared=True)
+            logger.info("[Combined SEPA] Stage 3 completed: %d passing final score", len(sepa_df_passed))
+            
             # Strip "df" (the OHLCV DataFrame stored by run_stage2 for scoring).
             # Keeping it would embed DataFrames inside a column and cause
             # "truth value of a DataFrame is ambiguous" on any subsequent
             # df.notna() / df.where() call during JSON serialisation.
+            logger.debug("[Combined SEPA] Stripping 'df' column from %d s2_results", len(s2_results))
             _safe_s2 = [{k: v for k, v in r.items() if k != "df"}
                         for r in s2_results]
             sepa_df_all = pd.DataFrame(_safe_s2) if _safe_s2 else pd.DataFrame()
+            logger.info("[Combined SEPA] Assembled all_scored DataFrame: shape %s", sepa_df_all.shape)
 
             sepa_result = {
                 "passed": sepa_df_passed,
                 "all": sepa_df_all,
             }
         except Exception as e:
-            logger.error("[Combined] SEPA process failed: %s", e)
+            logger.error("[Combined] SEPA process failed: %s", e, exc_info=True)
             sepa_error = str(e)
             sepa_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
     
@@ -289,19 +303,34 @@ def run_combined_scan(custom_filters: dict | None = None,
         try:
             from modules.qm_screener import run_qm_stage2, run_qm_stage3
 
+            logger.info("[Combined QM] Starting Stage 2 with %d tickers", len(s1_tickers))
             # Stage 2 — QM uses the FULL union universe so QM-only tickers
             # (filtered out by SEPA's ROE/EPS requirements) are still evaluated
             s2_passed = run_qm_stage2(s1_tickers, verbose=verbose,
                                       enriched_map=enriched_map, shared=True)
+            logger.info("[Combined QM] Stage 2 completed: %d passing gate", len(s2_passed))
 
-            if _cancelled() or not s2_passed:
+            # Check if s2_passed is empty (list or DataFrame)
+            if _cancelled():
+                qm_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+                return
+            is_empty = (isinstance(s2_passed, list) and len(s2_passed) == 0) or \
+                       (isinstance(s2_passed, pd.DataFrame) and s2_passed.empty)
+            if is_empty:
+                logger.warning("[Combined QM] Stage 2 returned no results")
                 qm_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
                 return
 
             # Stage 3 quality scoring (returns all scored rows, capped at QM_SCAN_TOP_N)
+            logger.info("[Combined QM] Starting Stage 3 scoring with %d candidates", len(s2_passed))
             qm_df_all_scored = run_qm_stage3(s2_passed, enriched_cache=enriched_map)
             if qm_df_all_scored is None:
+                logger.warning("[Combined QM] Stage 3 returned None")
                 qm_df_all_scored = pd.DataFrame()
+            elif qm_df_all_scored.empty:
+                logger.warning("[Combined QM] Stage 3 returned empty DataFrame")
+            else:
+                logger.info("[Combined QM] Stage 3 completed: shape %s", qm_df_all_scored.shape)
 
             # Apply the same post-filters as run_qm_scan() ────────────────
             qm_df_passed = qm_df_all_scored.copy() if not qm_df_all_scored.empty else pd.DataFrame()
@@ -324,13 +353,14 @@ def run_combined_scan(custom_filters: dict | None = None,
 
             qm_df_all = pd.DataFrame(s2_passed) if s2_passed else pd.DataFrame()
 
+            logger.info("[Combined QM] Final passed count after filters: %d", len(qm_df_passed))
             qm_result = {
                 "passed": qm_df_passed,
                 "all": qm_df_all,
                 "all_scored": qm_df_all_scored,
             }
         except Exception as e:
-            logger.error("[Combined] QM process failed: %s", e)
+            logger.error("[Combined] QM process failed: %s", e, exc_info=True)
             qm_error = str(e)
             qm_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
     
@@ -338,9 +368,20 @@ def run_combined_scan(custom_filters: dict | None = None,
         sepa_thread = executor.submit(_run_sepa)
         qm_thread = executor.submit(_run_qm)
         
-        # Wait for both to complete
-        sepa_thread.result(timeout=600)  # 10 min timeout per thread
-        qm_thread.result(timeout=600)
+        # Wait for both to complete, capture any exceptions from threads
+        try:
+            sepa_thread.result(timeout=600)  # 10 min timeout per thread
+        except Exception as e:
+            logger.error("[Combined] SEPA thread exception (not caught in _run_sepa): %s", e, exc_info=True)
+            sepa_error = str(e)
+            sepa_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+        
+        try:
+            qm_thread.result(timeout=600)
+        except Exception as e:
+            logger.error("[Combined] QM thread exception (not caught in _run_qm): %s", e, exc_info=True)
+            qm_error = str(e)
+            qm_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
     
     parallel_elapsed = _elapsed(_t_parallel)
     logger.info("[Timing] Parallel Stage 2-3: %.1fs", parallel_elapsed)
