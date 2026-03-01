@@ -127,7 +127,11 @@
   .market-status.closed { background:#1c2128; color:#8b949e; }
   .live-pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:#3fb950; animation:pulse 1.5s infinite; }
   @keyframes pulse { 0%, 100% { opacity:1; } 50% { opacity:0.4; } }
-  #intradayChartContainer { background:#0d1117; border-radius:6px; overflow:hidden; }
+  #watchPanel { display:block !important; width:100%; }
+  #watchPanel .card { display:block !important; width:100%; }
+  #watchPanel .card-body { display:block !important; width:100%; overflow:auto; }
+  #intradayChartContainer { background:#0d1117; border-radius:6px; overflow:hidden; display:block; min-height:450px; box-sizing:border-box; }
+  #resultArea { display:block; width:100%; }
   .intraday-legend { display:flex; flex-wrap:wrap; gap:10px; padding:8px 12px; font-size:11px; color:#8b949e; border-bottom:1px solid #21262d; }
   .intraday-btn-group { display:flex; gap:4px; margin-bottom:12px; }
   .intraday-btn { font-size:11px; padding:6px 12px; border:1px solid #30363d; background:#0d1117; color:#8b949e; border-radius:4px; cursor:pointer; transition:all .2s; }
@@ -416,7 +420,7 @@
           <span><span style="display:inline-block;width:14px;height:2px;background:#f85149;border-top:1px dashed #f85149"></span>&nbsp;LOD</span>
           <span style="margin-left:auto; font-size:10px; color:#6e7681">📍 灰色 = 盤前 Pre-Market</span>
         </div>
-        <div id="intradayChartContainer" style="width:100%;height:450px">
+        <div id="intradayChartContainer">
           <div class="text-center py-5 text-secondary">
             <div class="spinner-border spinner-border-sm" style="color:#3fb950"></div>
             <div class="mt-2" style="font-size:12px">載入盤中圖表…</div>
@@ -1281,6 +1285,14 @@ async function loadIntradayChart(ticker, interval) {
     // Force reflow and recalculate dimensions
     void container.offsetHeight;
     
+    // Ensure container is visible and block-level
+    container.style.display = 'block';
+    const watchPanel = document.getElementById('watchPanel');
+    watchPanel.style.display = 'block';
+    
+    // Force browser layout recalculation
+    void watchPanel.offsetWidth;
+    
     // Get accurate container dimensions - check multiple levels
     let containerWidth = container.clientWidth;
     console.log('📐 Container clientWidth:', containerWidth);
@@ -1298,8 +1310,15 @@ async function loadIntradayChart(ticker, interval) {
           containerWidth = gp.clientWidth - 40;
           console.log('📐 Using grandparent width:', containerWidth);
         } else {
-          containerWidth = window.innerWidth - 60;
-          console.log('📐 Using window width:', containerWidth);
+          // Final fallback: use a reasonable default based on viewport
+          const resultArea = document.getElementById('resultArea');
+          if (resultArea?.clientWidth > 0) {
+            containerWidth = resultArea.clientWidth - 40;
+            console.log('📐 Using resultArea width:', containerWidth);
+          } else {
+            containerWidth = Math.min(window.innerWidth - 60, 1200);
+            console.log('📐 Using window width:', containerWidth);
+          }
         }
       }
     }
@@ -1311,6 +1330,13 @@ async function loadIntradayChart(ticker, interval) {
     }
     
     console.log('📐 Final width for chart:', containerWidth);
+    
+    // 🔑 CRITICAL: Set the actual pixel width on the container element
+    // This ensures the container has a real width, not just width:100% which breaks
+    container.style.width = containerWidth + 'px';
+    container.style.display = 'block';
+    container.style.height = '450px';
+    console.log('✅ Container width set to:', containerWidth + 'px');
     
     const LWC = window.LightweightCharts;
     if (!LWC) {
@@ -1401,7 +1427,25 @@ async function loadIntradayChart(ticker, interval) {
       });
     }
     
+    console.log('✅ All series added to chart');
+    
+    // Force final layout and fit
     _mlWatchChart.timeScale().fitContent();
+    
+    // Give browser time to render, then check visibility
+    setTimeout(() => {
+      console.log('✅ Chart rendered, checking visibility');
+      console.log('   Container display:', getComputedStyle(container).display);
+      console.log('   Container width:', container.clientWidth);
+      console.log('   WatchPanel display:', getComputedStyle(watchPanel).display);
+      
+      // Ensure final visibility
+      if (getComputedStyle(container).display === 'none') {
+        container.style.display = 'block';
+        watchPanel.style.display = 'block';
+        console.log('   ⚠️  Force display block applied');
+      }
+    }, 50);
     
     // Update intraday commentary
     renderIntradayCommentary(data.signals, getMarketStatus());
@@ -1415,10 +1459,11 @@ async function loadIntradayChart(ticker, interval) {
       document.getElementById('watchPrice').textContent = '$' + lastCandle.close.toFixed(2);
     }
     
-    // Responsive resize
+    // Responsive resize with improved width calculation
     try {
       new ResizeObserver(() => {
-        const w = container.clientWidth || window.innerWidth - 40;
+        const w = container.clientWidth > 0 ? container.clientWidth : (window.innerWidth - 60);
+        console.log('📐 ResizeObserver triggered, chart width:', w);
         if (_mlWatchChart) _mlWatchChart.applyOptions({ width: w });
       }).observe(container);
     } catch(e) {
