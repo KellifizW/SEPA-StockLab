@@ -243,7 +243,23 @@ async function loadCombinedHighlights() {
 
     // ── Stats row ─────────────────────────────────────────────────
     document.getElementById('combinedSepaCount').textContent = r.sepa_count ?? sepaRows.length;
-    document.getElementById('combinedQmCount').textContent   = r.qm_count   ?? qmRows.length;
+    // Prefer the ≥4★ filtered count; fall back to raw total
+    const qmDisplayCount = r.qm_count_4star ?? r.qm_count ?? qmRows.length;
+    const qmCountEl = document.getElementById('combinedQmCount');
+    qmCountEl.textContent = qmDisplayCount;
+    if (r.qm_count_4star != null && r.qm_count != null && r.qm_count !== r.qm_count_4star) {
+      qmCountEl.title = `全部通過: ${r.qm_count} | 顯示 ≥4★: ${r.qm_count_4star}`;
+      // show sub-label
+      const lbl = document.querySelector(`[for='combinedQmCount'], .qm-count-sub`);
+      const parent = qmCountEl.closest('span');
+      if (parent && !parent.querySelector('.qm-count-sub')) {
+        const sub = document.createElement('small');
+        sub.className = 'text-muted ms-1 qm-count-sub';
+        sub.style.fontSize = '10px';
+        sub.textContent = `(★4+)`;
+        parent.appendChild(sub);
+      }
+    }
     const t = r.timing || {};
     if (t.total_secs) {
       document.getElementById('combinedTimingInfo').textContent =

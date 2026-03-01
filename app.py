@@ -199,16 +199,24 @@ def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
                         sepa_csv="", qm_csv=""):
     """Persist last combined scan summary for dashboard display."""
     try:
+        # Compute a ≥4-star filtered count to match the default display filter
+        # in combined_scan.html (minStar default = 4)
+        _default_star = 4.0
+        qm_count_4star = sum(
+            1 for r in qm_rows
+            if float(r.get("qm_star") or r.get("stars") or 0) >= _default_star
+        )
         data = {
-            "saved_at":   datetime.now().isoformat(),
-            "sepa_count": len(sepa_rows),
-            "qm_count":   len(qm_rows),
-            "sepa_rows":  sepa_rows[:20],   # top 20 sufficient for dashboard
-            "qm_rows":    qm_rows[:20],
-            "market_env": market_env,
-            "timing":     timing,
-            "sepa_csv":   sepa_csv,
-            "qm_csv":     qm_csv,
+            "saved_at":      datetime.now().isoformat(),
+            "sepa_count":    len(sepa_rows),
+            "qm_count":      len(qm_rows),        # raw total
+            "qm_count_4star": qm_count_4star,     # filtered at ≥4★ (default)
+            "sepa_rows":     sepa_rows[:20],   # top 20 sufficient for dashboard
+            "qm_rows":       qm_rows[:20],
+            "market_env":    market_env,
+            "timing":        timing,
+            "sepa_csv":      sepa_csv,
+            "qm_csv":        qm_csv,
         }
         _COMBINED_LAST_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")

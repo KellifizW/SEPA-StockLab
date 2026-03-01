@@ -831,8 +831,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         if (qm.length) {
           _qmAllData = qm;
-          filterQmTable();
-          updateQmSummary(qm);
+          filterQmTable();   // handles rendering + summary cards
         }
         if (cached.market) renderMarket(cached.market);
         if (cached.timing)  renderTiming(cached.timing);
@@ -965,11 +964,10 @@ function onDone(result) {
   renderSepaTable(_sepaShowAll ? _sepaAllData : _sepaData);
   populateSectorFilter();
   renderScanCharts(_sepaShowAll ? _sepaAllData : _sepaData);
-  filterQmTable();   // ← applies min_star filter immediately
+  filterQmTable();   // ← applies min_star filter + updates summary cards
   renderMarket(market);
   renderTiming(timing);
   updateSepaSummary(sepaRows, sepaAll);
-  updateQmSummary(_qmAllData);
 
   document.getElementById('sepaBadge').textContent = sepaRows.length;
   // QM badge = filtered count
@@ -1358,6 +1356,8 @@ function filterQmTable() {
     .slice(0, topN);
   renderQmTable(filtered);
   document.getElementById('qmBadge').textContent = filtered.length;
+  // Keep summary cards in sync with what the table actually shows
+  if (_qmAllData.length > 0) updateQmSummary(filtered);
 }
 
 function renderQmTable(rows) {
