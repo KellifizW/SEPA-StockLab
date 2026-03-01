@@ -191,6 +191,81 @@ def _load_qm_last_scan() -> dict:
     return {}
 
 
+# ── Combined last scan persistence ────────────────────────────────────────────
+_COMBINED_LAST_FILE = ROOT / C.DATA_DIR / "combined_last_scan.json"
+
+
+def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
+                        sepa_csv="", qm_csv=""):
+    """Persist last combined scan summary for dashboard display."""
+    try:
+        data = {
+            "saved_at":   datetime.now().isoformat(),
+            "sepa_count": len(sepa_rows),
+            "qm_count":   len(qm_rows),
+            "sepa_rows":  sepa_rows[:20],   # top 20 sufficient for dashboard
+            "qm_rows":    qm_rows[:20],
+            "market_env": market_env,
+            "timing":     timing,
+            "sepa_csv":   sepa_csv,
+            "qm_csv":     qm_csv,
+        }
+        _COMBINED_LAST_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+    except Exception as exc:
+        logging.warning("Could not save combined_last_scan: %s", exc)
+
+
+def _load_combined_last() -> dict:
+    try:
+        if _COMBINED_LAST_FILE.exists():
+            return json.loads(_COMBINED_LAST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_combined_scan_csv(sepa_df, qm_df, scan_ts=None) -> tuple:
+    """
+    Save combined scan results to scan_results/ folder.
+    Creates two timestamped CSV files per run:
+      scan_results/combined_sepa_YYYYMMDD_HHMMSS.csv  — SEPA passed stocks
+      scan_results/combined_qm_YYYYMMDD_HHMMSS.csv    — QM passed stocks
+
+    Returns (sepa_path, qm_path) as relative path strings for display.
+    """
+    from datetime import datetime as _dt
+    sepa_path = qm_path = ""
+    try:
+        out_dir = ROOT / "scan_results"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts_str = (scan_ts or _dt.now()).strftime("%Y%m%d_%H%M%S")
+        keep = getattr(C, "QM_SCAN_RESULTS_KEEP", 30)
+
+        for label, df in [("combined_sepa", sepa_df), ("combined_qm", qm_df)]:
+            fpath = out_dir / f"{label}_{ts_str}.csv"
+            if df is not None and hasattr(df, "to_csv") and not df.empty:
+                df.to_csv(fpath, index=False)
+                logging.info("[Combined Scan] Saved %d rows → %s", len(df), fpath.name)
+            else:
+                fpath.write_text("(no results)\n", encoding="utf-8")
+                logging.info("[Combined Scan] No data for %s — wrote empty placeholder", fpath.name)
+            if label == "combined_sepa":
+                sepa_path = f"scan_results/{fpath.name}"
+            else:
+                qm_path = f"scan_results/{fpath.name}"
+            # Rotate: keep only most recent N files of this label type
+            existing = sorted(out_dir.glob(f"{label}_*.csv"), reverse=True)
+            for old in existing[keep:]:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+    except Exception as exc:
+        logging.warning("Could not save combined scan CSVs: %s", exc)
+    return sepa_path, qm_path
+
+
 def _new_job() -> str:
     jid = str(uuid.uuid4())[:8]
     ev = threading.Event()
@@ -728,6 +803,19 @@ def api_combined_scan_run():
             market_env = sepa_result.get("market_env", {})
             timing = sepa_result.get("timing", {})
 
+            # ── Save results to scan_results/ ───────────────────────────────
+            from datetime import datetime as _dt_now
+            _scan_ts = _dt_now.now()
+            sepa_csv_path, qm_csv_path = _save_combined_scan_csv(
+                sepa_result.get("passed"),
+                qm_result.get("passed"),
+                scan_ts=_scan_ts
+            )
+
+            # ── Persist combined summary for dashboard ───────────────────
+            _save_combined_last(sepa_rows, qm_rows, market_env, timing,
+                                sepa_csv_path, qm_csv_path)
+
             result = {
                 "sepa": {
                     "passed": sepa_rows,
@@ -739,6 +827,8 @@ def api_combined_scan_run():
                 },
                 "market": market_env,
                 "timing": timing,
+                "sepa_csv": sepa_csv_path,
+                "qm_csv":   qm_csv_path,
             }
 
             log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
@@ -791,6 +881,12 @@ def api_combined_scan_cancel(jid):
                                            "pct": 100, "msg": ""}
         return jsonify({"ok": True})
     return jsonify({"ok": False, "error": "Job not found"}), 404
+
+
+@app.route("/api/combined/scan/last", methods=["GET"])
+def api_combined_scan_last():
+    """Return the most recent combined scan summary for dashboard display."""
+    return jsonify(_load_combined_last())
 
 
 @app.route("/api/qm/scan/cancel/<jid>", methods=["POST"])

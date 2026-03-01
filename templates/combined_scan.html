@@ -84,25 +84,37 @@
       <i class="bi bi-speedometer2 me-1" style="color:var(--accent)"></i>
       快取 &amp; 速度預估 Cache Speed
     </span>
-    <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="loadCacheInfo()" title="Refresh">
+    <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="loadCacheInfo()" title="重新整理 Refresh">
       <i class="bi bi-arrow-clockwise"></i>
     </button>
   </div>
   <div class="row g-2 small">
     <div class="col-md-3">
-      <span class="text-secondary">RS Rankings:</span>
+      <span class="text-secondary"
+        data-bs-toggle="tooltip" data-bs-html="true"
+        title="&lt;b&gt;RS 相對強度排名快取&lt;/b&gt;&lt;br&gt;IBD 風格的相對強度（RS）百分位排名，比較個股3個月/6個月/12個月漲幅與全市場所有股票。&lt;br&gt;✓ cached = 今日排名已建立，Stage 2 可直接使用&lt;br&gt;✗ needs rebuild = 首次使用或超過一天，需重建（約 5 分鐘）&lt;br&gt;括號內數字 = 加入排名的股票數目。"
+      >RS Rankings <i class="bi bi-info-circle" style="font-size:10px"></i>:</span>
       <span id="cacheRS" class="ms-1 badge bg-secondary">checking…</span>
     </div>
     <div class="col-md-3">
-      <span class="text-secondary">Price Cache:</span>
+      <span class="text-secondary"
+        data-bs-toggle="tooltip" data-bs-html="true"
+        title="&lt;b&gt;股價歷史快取&lt;/b&gt;&lt;br&gt;已快取今日 OHLCV（開高低收量）的股票數量。&lt;br&gt;系統使用 yfinance 批量下載，並以 Parquet 格式儲存於 data/price_cache/。&lt;br&gt;同日再次掃描時，直接讀取快取（毫秒級），大幅縮短掃描時間。&lt;br&gt;數字越高，Stage 2 速度越快。&lt;br&gt;每個快取檔案以股票代號+時間段命名，有效期一個交易日。"
+      >Price Cache <i class="bi bi-info-circle" style="font-size:10px"></i>:</span>
       <span id="cachePrice" class="ms-1 badge bg-secondary">checking…</span>
     </div>
     <div class="col-md-3">
-      <span class="text-secondary">Fundamentals:</span>
+      <span class="text-secondary"
+        data-bs-toggle="tooltip" data-bs-html="true"
+        title="&lt;b&gt;基本面資料快取&lt;/b&gt;&lt;br&gt;已快取今日基本面數據的股票數量（EPS 增長、ROE、營收、本益比等）。&lt;br&gt;SEPA 掃描需要基本面資料（財報數據）用於第三階段評分，QM 掃描不使用基本面。&lt;br&gt;資料來源：yfinance（免費）或 FMP（Financial Modeling Prep，月限 250 次）。&lt;br&gt;快取後同日不再重複請求，節省 API 配額。"
+      >Fundamentals <i class="bi bi-info-circle" style="font-size:10px"></i>:</span>
       <span id="cacheFundamentals" class="ms-1 badge bg-secondary">checking…</span>
     </div>
     <div class="col-md-3">
-      <span class="text-secondary">Est. Time:</span>
+      <span class="text-secondary"
+        data-bs-toggle="tooltip" data-bs-html="true"
+        title="&lt;b&gt;預估掃描時間&lt;/b&gt;&lt;br&gt;根據當前快取狀態預估本次掃描所需時間：&lt;br&gt;• ~2-5 分鐘：RS 排名 + 股價資料均已快取（最佳情況）&lt;br&gt;• ~5-12 分鐘：RS 已快取但股價需重新下載&lt;br&gt;• ~10-20 分鐘：首次掃描，所有資料均需下載&lt;br&gt;使用 NASDAQ FTP（推薦）比 Finviz 快約 3-5 倍。"
+      >Est. Time <i class="bi bi-info-circle" style="font-size:10px"></i>:</span>
       <span id="cacheEstimate" class="ms-1 badge bg-secondary">checking…</span>
     </div>
   </div>
@@ -127,11 +139,12 @@
         </ul>
       </div>
       <div class="col-md-4">
-        <strong class="text-warning">Finviz Screener</strong>
+        <strong class="text-warning">Stage 1 來源選擇</strong>
         <ul class="list-unstyled mt-1 mb-0 text-secondary">
-          <li>• 爬蟲限制 ~100 requests/day</li>
-          <li>• 建議使用 NASDAQ FTP 取代</li>
-          <li>• Finviz Elite 可提高上限</li>
+          <li>• <span class="text-success fw-bold">NASDAQ FTP</span>（推薦）：免費、穩定、快速</li>
+          <li>• <span class="text-warning">Finviz</span>：備用方案，有爬蟲限制 ~100次/天</li>
+          <li>• 兩種來源可在控制列中切換</li>
+          <li>• FTP 模式自動過濾 OTC/粉單股</li>
         </ul>
       </div>
       <div class="col-md-4">
@@ -516,16 +529,56 @@
         <thead>
           <tr>
             <th style="width:36px">#</th>
-            <th>Ticker</th>
-            <th>SEPA Score</th>
-            <th>Trend</th>
-            <th>Fund</th>
-            <th>RS</th>
-            <th>VCP</th>
-            <th>Pivot</th>
-            <th>Price</th>
-            <th>TT</th>
-            <th>Sector</th>
+            <th data-bs-toggle="tooltip"
+              title="點擊股票代號可進入 SEPA 個股深度分析頁面（BUY/WATCH/AVOID 建議）">
+              Ticker
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="SEPA 5 柱總分（0-100）。計算為：趨勢(35%) + 基本面(30%) + 入場時機(20%) + 催化劑(10%) + 風險回報(5%)。≥75 為優質設置（綠色），≥55 為值得觀察（黃色），&lt;55 為弱勢（紅色）。">
+              SEPA Score
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="趨勢分數（0-100）。衡量股票是否處於 Stage 2 上升趨勢，基於趨勢模板（TT1-TT10）通過數量、均線排列與 52 周位置計算。分數越高表示趨勢越强。">
+              Trend
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="基本面分數（0-100）。評估 EPS 季增長（≥25%）、營收增長（≥20%）、ROE（≥17%）、機構持股變化、盈利加速等 9 項財報指標。Minervini 要求上市公司有强勁基本面支撐。">
+              Fund
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="IBD 風格相對強度排名（0-99 百分位）。比較過去 3/6/12 個月漲幅與全市場股票。RS ≥ 70 為 TT9 通過條件，RS ≥ 90 為最頂尖強勢股。RS 越高表示該股比市場上大多數股票強。">
+              RS
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="VCP（波動收縮形態 Volatility Contraction Pattern）等級：A=高質量 VCP（3+次收縮、成交量乾涸）、B=標準 VCP、C=弱 VCP、D/橫線=未發現 VCP。點擊 VCP 標籤進入 VCP 詳細分析頁面。">
+              VCP
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="樞紐點價格（Pivot Point）：VCP 突破的理想入場價位。通常為整固底部最高點上方 0-5%。價格突破樞紐點且成交量放大 ≥1.5x 平均量為 Minervini 標準入場訊號。">
+              Pivot
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="當前股價（最新收盤價）。對比樞紐點可判斷是否仍在合理追買範圍內（Minervini 要求追買空間 ≤ 5%）。">
+              Price
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="趨勢模板（Trend Template）TT1-TT10 通過情況。✓ X/10 = X 個條件通過，≥8/10 為通過。TT9 = RS排名達標，TT10 = 板塊動力達標。Minervini 要求至少 8/10 通過才進入評分。">
+              TT
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="所屬板塊（Sector）。相同板塊個股往往同漲同跌。Minervini 建議同板塊持股不超過 3 隻，以避免板塊集中風險。">
+              Sector
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
             <th></th>
           </tr>
         </thead>
@@ -753,7 +806,7 @@ function onTabChange(tab) {
 document.addEventListener('DOMContentLoaded', function() {
   // Bootstrap tooltips
   document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
-    new bootstrap.Tooltip(el, {trigger: 'hover', html: false});
+    new bootstrap.Tooltip(el, {trigger: 'hover', html: true});
   });
 
   // Restore from localStorage
@@ -939,6 +992,16 @@ function onDone(result) {
 
   setStatus('Done — SEPA: ' + sepaRows.length + '/' + sepaAll.length + ' | QM: ' + _qmAllData.length);
   document.getElementById('btnLoadLast').classList.remove('d-none');
+
+  // ── Completion popup notification ─────────────────────────────────
+  var csvHint = '';
+  if (result.sepa_csv) csvHint += '<br><small class="text-muted">SEPA CSV: ' + result.sepa_csv + '</small>';
+  if (result.qm_csv)   csvHint += '<br><small class="text-muted">QM CSV: '   + result.qm_csv   + '</small>';
+  var logHint = result.log_path ? '<br><small class="text-muted">日誌: ' + result.log_path + '</small>' : '';
+  toastCompletion(
+    '✅ Combined 掃描完成！<br>SEPA: <strong>' + sepaRows.length + '</strong> 個股票 | QM: <strong>' + _qmAllData.length + '</strong> 個設置' + csvHint + logHint,
+    true
+  );
 
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({
@@ -1549,18 +1612,25 @@ function loadCacheInfo() {
 
       var hints = [];
       if (!info.rs_cached)
-        hints.push('💡 首次掃描需建立 RS 排名快取（~200 檔股票），約 5 分鐘');
+        hints.push('💡 首次掃描需建立 RS 排名快取（約 500-600 個股票），約 5 分鐘。建立後同日掃描無需重建。');
+      else
+        hints.push('✅ RS 排名快取有效（' + info.rs_count + ' 個股票），Stage 2 RS 評分將直接讀取本地快取。');
       if (info.price_cached_today > 100)
-        hints.push('⚡ 已快取 ' + info.price_cached_today + ' 檔股價資料，Stage 2 將快速完成 (&lt;2 分鐘)');
+        hints.push('⚡ 已快取 ' + info.price_cached_today + ' 檔今日股價，Stage 2 批量下載將主要讀取本地快取（速度快 10x）。');
+      else if (info.price_cached_today > 0)
+        hints.push('🔄 部分股價已快取（' + info.price_cached_today + ' 檔），其餘將從 yfinance 下載（批量模式，每批 40 檔）。');
+      else
+        hints.push('📥 股價快取為空，Stage 2 將透過 yfinance 批量下載所有候選股票的 2 年 OHLCV 資料。');
       if (info.fund_cached_today > 0)
-        hints.push('📊 已快取 ' + info.fund_cached_today + ' 檔基本面資料，避免重複 API 調用');
+        hints.push('📊 已快取 ' + info.fund_cached_today + ' 檔基本面資料（EPS/ROE/營收），SEPA Stage 3 評分將直接使用。');
+      else
+        hints.push('📈 基本面快取為空；SEPA 評分時將從 yfinance/FMP 獲取財報數據（每次掃描只調用一次）。');
       if (info.finviz_cached)
-        hints.push('🔄 Finviz 篩選結果快取中（' + info.finviz_ttl_hours + ' 小時 TTL）');
-      if (!hints.length)
-        hints.push('💡 最佳實踐: 掃描完成後同日再次掃描，利用快取縮短時間至 2-5 分鐘');
-      hints.push('ℹ️ 詳細 API 限制，請展開上方「API Rate Limits」');
+        hints.push('🌐 Finviz 篩選結果已快取（' + info.finviz_ttl_hours + ' 小時 TTL）。若選擇 Finviz 模式，本次掃描將直接使用快取結果。');
+      hints.push('ℹ️ Stage 1 來源：<b>NASDAQ FTP</b>（推薦，免費、快速、約覆蓋 5,000+ 上市股票）或 <b>Finviz</b>（備用，較慢，有日請求限制）。可在上方下拉選單切換。');
+      hints.push('⏱️ 詳細 API 限制及最佳實踐，請展開上方「API Rate Limits」面板。');
       document.getElementById('cacheHints').innerHTML =
-        hints.map(function(h) { return '<div>' + h + '</div>'; }).join('');
+        hints.map(function(h) { return '<div style="margin-bottom:2px">' + h + '</div>'; }).join('');
     })
     .catch(function() {
       document.getElementById('cacheHints').innerHTML =

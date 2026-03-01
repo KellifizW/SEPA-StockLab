@@ -110,29 +110,75 @@
   </div>
 </div>
 
-<!-- Persistent Signals -->
+<!-- Combined Scan Highlights -->
 <div class="row g-3 mt-1">
   <div class="col-12">
     <div class="card">
-      <div class="card-header"><i class="bi bi-arrow-repeat me-2"></i>Persistent Signals (Last 30 days, ≥3 appearances)</div>
-      <div class="card-body p-0">
-        <div id="persistentLoading" class="p-4 text-center text-muted">
-          <div class="spinner-border spinner-border-sm text-info"></div>
-          <div class="small mt-2">Loading signals…</div>
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>
+          <i class="bi bi-layers me-2" style="color:var(--accent)"></i>上次 Combined 掃描摘要
+          <span id="combinedRegimeBadge" class="badge ms-2" style="font-size:10px;display:none"></span>
+        </span>
+        <div class="d-flex align-items-center gap-2">
+          <span id="combinedLastTs" class="text-muted" style="font-size:11px"></span>
+          <a href="/combined" class="btn btn-sm btn-accent"><i class="bi bi-play-fill me-1"></i>立即掃描</a>
         </div>
-        <div id="persistentTable" style="display:none">
-          <div class="table-responsive">
-            <table class="table table-hover mb-0">
-              <thead><tr>
-                <th>Ticker</th><th>Appearances</th><th>Avg Score</th><th>Max Score</th><th>Best VCP</th><th>Last Seen</th>
-              </tr></thead>
-              <tbody id="persistentBody"></tbody>
-            </table>
+      </div>
+      <!-- Stats mini-row -->
+      <div id="combinedStatsRow" style="display:none" class="border-bottom px-3 py-2 d-flex flex-wrap gap-4">
+        <span class="small text-muted">SEPA 通過: <strong id="combinedSepaCount" class="text-info">—</strong></span>
+        <span class="small text-muted">QM 通過: <strong id="combinedQmCount" style="color:#e3b341">—</strong></span>
+        <span class="small text-muted" id="combinedTimingInfo"></span>
+      </div>
+      <div class="card-body p-0">
+        <div id="combinedHighlightLoading" class="p-3 text-center text-muted small">
+          <div class="spinner-border spinner-border-sm text-secondary"></div>
+        </div>
+        <div id="combinedHighlightContent" style="display:none">
+          <div class="row g-0">
+            <!-- SEPA Top 5 -->
+            <div class="col-12 col-lg-6" style="border-right:1px solid rgba(255,255,255,.08)">
+              <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
+                <i class="bi bi-funnel" style="color:var(--accent)"></i>
+                <span class="small fw-bold text-muted">SEPA Top 5</span>
+              </div>
+              <table class="table table-hover mb-0" style="font-size:13px">
+                <thead><tr>
+                  <th style="width:26px">#</th>
+                  <th>Ticker</th>
+                  <th>Score</th>
+                  <th>RS</th>
+                  <th>VCP</th>
+                </tr></thead>
+                <tbody id="combinedSepaBody"></tbody>
+              </table>
+            </div>
+            <!-- QM Top 5 -->
+            <div class="col-12 col-lg-6">
+              <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
+                <i class="bi bi-lightning-charge" style="color:#e3b341"></i>
+                <span class="small fw-bold text-muted">QM Top 5</span>
+              </div>
+              <table class="table table-hover mb-0" style="font-size:13px">
+                <thead><tr>
+                  <th style="width:26px">#</th>
+                  <th>Ticker</th>
+                  <th>Stars</th>
+                  <th>ADR%</th>
+                  <th>Setup</th>
+                </tr></thead>
+                <tbody id="combinedQmBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="px-3 pb-2 pt-1 text-end border-top">
+            <a href="/combined" class="text-secondary small">查看 / 重新執行 Combined 掃描 →</a>
           </div>
         </div>
-        <div id="persistentEmpty" style="display:none" class="p-4 text-center text-muted">
-          <i class="bi bi-inbox fs-2 d-block mb-2"></i>
-          No persistent signals yet. Run a few scans first.
+        <div id="combinedHighlightEmpty" style="display:none" class="p-4 text-center text-muted">
+          <i class="bi bi-layers d-block mb-2 fs-3"></i>
+          尚無 Combined 掃描記錄。<br>
+          <a href="/combined" class="mt-2 d-inline-block">立即執行 Combined 掃描 →</a>
         </div>
       </div>
     </div>
@@ -145,14 +191,15 @@
     <div class="card">
       <div class="card-header"><i class="bi bi-lightning me-2"></i>Quick Actions</div>
       <div class="card-body d-flex flex-wrap gap-2">
-        <a href="/scan" class="btn btn-accent"><i class="bi bi-funnel me-1"></i>Run SEPA Scan</a>
+        <a href="/combined" class="btn btn-accent"><i class="bi bi-layers me-1"></i>Combined Scan</a>
         <a href="/market" class="btn btn-outline-info"><i class="bi bi-bar-chart-line me-1"></i>Market Check</a>
         <a href="/analyze" class="btn btn-outline-secondary"><i class="bi bi-search me-1"></i>Analyze Stock</a>
-        <a href="/vcp" class="btn btn-outline-secondary"><i class="bi bi-activity me-1"></i>VCP Check</a>
+        <a href="/vcp" class="btn btn-outline-secondary"><i class="bi bi-activity me-1"></i>VCP Scanner</a>
+        <a href="/watchlist" class="btn btn-outline-secondary"><i class="bi bi-bookmark-star me-1"></i>Watchlist</a>
         <button class="btn btn-outline-warning" onclick="generateReport()">
           <i class="bi bi-file-earmark-text me-1"></i>Generate Report
         </button>
-        <button class="btn btn-outline-danger" onclick="restartServer()" title="Restart Flask server to apply code changes">
+        <button class="btn btn-sm btn-outline-danger" onclick="restartServer()" title="重啟 Flask 伺服器以套用程式碼更改">
           <i class="bi bi-arrow-clockwise me-1"></i>Restart Server
         </button>
       </div>
@@ -163,44 +210,101 @@
 
 {% block extra_js %}
 <script>
-async function loadPersistentSignals() {
+/* ── Combined scan highlights ──────────────────────────────────── */
+async function loadCombinedHighlights() {
   try {
-    document.getElementById('persistentLoading').style.display = 'block';
-    document.getElementById('persistentTable').style.display = 'none';
-    document.getElementById('persistentEmpty').style.display = 'none';
+    const r = await fetch('/api/combined/scan/last').then(x => x.json());
+    document.getElementById('combinedHighlightLoading').style.display = 'none';
 
-    const r = await fetch('/api/db/watchlist-history').then(x => x.json());
-    const rows = r.rows || [];
+    const sepaRows = (r.sepa_rows || []).slice(0, 5);
+    const qmRows   = (r.qm_rows   || []).slice(0, 5);
 
-    if (!rows.length) {
-      document.getElementById('persistentLoading').style.display = 'none';
-      document.getElementById('persistentEmpty').style.display = 'block';
+    if (!r.saved_at && !sepaRows.length && !qmRows.length) {
+      document.getElementById('combinedHighlightEmpty').style.display = 'block';
       return;
     }
 
-    const html = rows.map(row => `<tr onclick="window.location='/analyze?ticker=${row.ticker}'" style="cursor:pointer">
-      <td><strong style="color:var(--accent)">${row.ticker}</strong></td>
-      <td>${Math.round(row.appearances)}</td>
-      <td>${Number(row.avg_score||0).toFixed(1)}</td>
-      <td><span class="score-high">${Number(row.max_score||0).toFixed(1)}</span></td>
-      <td><span class="tag-vcp">${row.best_vcp||'—'}</span></td>
-      <td class="text-muted small">${row.last_seen}</td>
-    </tr>`).join('');
+    // ── Header: timestamp + regime badge ──────────────────────────
+    if (r.saved_at) {
+      document.getElementById('combinedLastTs').textContent =
+        r.saved_at.slice(0, 16).replace('T', ' ');
+    }
+    const m = r.market_env || {};
+    if (m.regime) {
+      const badge = document.getElementById('combinedRegimeBadge');
+      const rc = m.regime === 'CONFIRMED_UPTREND'       ? ['bg-success',  m.regime]
+               : m.regime === 'UPTREND_UNDER_PRESSURE'  ? ['bg-warning text-dark', m.regime]
+               : m.regime === 'MARKET_IN_CORRECTION'    ? ['bg-orange',   m.regime]
+               : ['bg-danger', m.regime];
+      badge.className = `badge ms-2 ${rc[0]}`;
+      badge.textContent = rc[1].replace(/_/g, ' ');
+      badge.style.display = '';
+    }
 
-    document.getElementById('persistentBody').innerHTML = html;
-    document.getElementById('persistentLoading').style.display = 'none';
-    document.getElementById('persistentTable').style.display = 'block';
-  } catch (e) {
-    console.error('Error loading persistent signals:', e);
-    document.getElementById('persistentLoading').style.display = 'none';
-    document.getElementById('persistentEmpty').style.display = 'block';
+    // ── Stats row ─────────────────────────────────────────────────
+    document.getElementById('combinedSepaCount').textContent = r.sepa_count ?? sepaRows.length;
+    document.getElementById('combinedQmCount').textContent   = r.qm_count   ?? qmRows.length;
+    const t = r.timing || {};
+    if (t.total_secs) {
+      document.getElementById('combinedTimingInfo').textContent =
+        `掃描用時: ${Number(t.total_secs).toFixed(0)}s`;
+    }
+    document.getElementById('combinedStatsRow').style.display = '';
+
+    // ── SEPA rows ─────────────────────────────────────────────────
+    if (sepaRows.length) {
+      document.getElementById('combinedSepaBody').innerHTML = sepaRows.map((s, i) => {
+        const score = s.total_score != null ? Number(s.total_score).toFixed(1) : '—';
+        const sCls  = s.total_score >= 75 ? 'score-high' : s.total_score >= 55 ? 'score-mid' : 'score-low';
+        const rs    = s.rs_rank != null ? Number(s.rs_rank).toFixed(0) : '—';
+        const vcp   = s.vcp_grade && s.vcp_grade !== 'D'
+          ? `<span class="tag-vcp" style="font-size:10px">VCP ${s.vcp_grade}</span>` : '—';
+        return `<tr onclick="window.location='/analyze?ticker=${s.ticker}'" style="cursor:pointer">
+          <td class="text-muted small">${i+1}</td>
+          <td><a href="/analyze?ticker=${s.ticker}" class="fw-bold" style="color:var(--accent)">${s.ticker}</a>
+            <div class="text-muted" style="font-size:10px">${s.sector||''}</div></td>
+          <td class="${sCls} fw-bold">${score}</td>
+          <td class="text-muted small">${rs}</td>
+          <td>${vcp}</td>
+        </tr>`;
+      }).join('');
+    } else {
+      document.getElementById('combinedSepaBody').innerHTML =
+        '<tr><td colspan="5" class="text-muted text-center small py-3">無 SEPA 結果</td></tr>';
+    }
+
+    // ── QM rows ───────────────────────────────────────────────────
+    const setupLabel = {'HTF':'HTF','EP':'EP','LADDER':'LADDER','SURF_50':'SURF50',
+                        'SURF_20':'SURF20','SURF_10':'SURF10','RPL':'RPL','FLAG':'FLAG'};
+    if (qmRows.length) {
+      document.getElementById('combinedQmBody').innerHTML = qmRows.map((q, i) => {
+        const star  = parseFloat(q.qm_star != null ? q.qm_star : (q.stars || 0));
+        const sClr  = star >= 5 ? '#3fb950' : star >= 4 ? '#e3b341' : '#8b949e';
+        const stars = '★'.repeat(Math.floor(star)) + (star - Math.floor(star) >= 0.5 ? '½' : '');
+        const adr   = q.adr != null ? Number(q.adr).toFixed(1) + '%' : '—';
+        const slbl  = setupLabel[q.setup_type] || q.setup_type || '—';
+        return `<tr onclick="window.location='/qm/analyze?ticker=${q.ticker}'" style="cursor:pointer">
+          <td class="text-muted small">${i+1}</td>
+          <td><a href="/qm/analyze?ticker=${q.ticker}" class="fw-bold" style="color:#e3b341">${q.ticker}</a></td>
+          <td class="fw-bold" style="color:${sClr}">${stars} <small>(${star.toFixed(1)})</small></td>
+          <td class="text-muted small">${adr}</td>
+          <td><span class="badge bg-secondary" style="font-size:10px">${slbl}</span></td>
+        </tr>`;
+      }).join('');
+    } else {
+      document.getElementById('combinedQmBody').innerHTML =
+        '<tr><td colspan="5" class="text-muted text-center small py-3">無 QM 結果</td></tr>';
+    }
+
+    document.getElementById('combinedHighlightContent').style.display = 'block';
+  } catch(e) {
+    document.getElementById('combinedHighlightLoading').style.display = 'none';
+    document.getElementById('combinedHighlightEmpty').style.display = 'block';
   }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  // Load persistent signals asynchronously after page render
-  // Don't block page display - give DOM time to render first
-  setTimeout(() => loadPersistentSignals(), 50);
+  setTimeout(() => loadCombinedHighlights(), 50);
 });
 
 async function generateReport() {
