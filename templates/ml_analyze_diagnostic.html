@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}ML 分析 - 診斷頁面{% endblock %}
+
+{% block content %}
+<div style="max-width: 800px; margin: 0 auto; padding: 20px;">
+  <h1 style="color: #3fb950;">🔍 ML 分析頁面 - 診斷工具</h1>
+  <p>使用此工具來診斷為什麼 ML 分析頁面顯示為空白。</p>
+
+  <div style="background: #161b22; padding: 20px; border: 1px solid #30363d; border-radius: 8px; margin-bottom: 20px;">
+    <h2>📋 檢查清單</h2>
+    
+    <div style="margin-bottom: 15px;">
+      <strong>✅ Step 1: 驗證服務器連接</strong>
+      <p style="color: #8b949e;">服務器已經回應此頁面,所以:
+        <ul style="margin: 10px 0;">
+          <li>✓ Flask 服務器運行</li>
+          <li>✓ 網路連接正常</li>
+        </ul>
+      </p>
+    </div>
+
+    <div style="margin-bottom: 15px;">
+      <strong>✅ Step 2: 檢查 Bootstrap CSS</strong>
+      <p style="color: #8b949e;">
+        <button onclick="testBootstrap()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+          測試 Bootstrap 加載
+        </button>
+      </p>
+      <div id="bootstrapTest" style="margin-top: 10px; color: #3fb950; display: none;">
+        ✓ Bootstrap CSS 已正確加載
+      </div>
+    </div>
+
+    <div style="margin-bottom: 15px;">
+      <strong>✅ Step 3: 檢查 JavaScript</strong>
+      <p style="color: #8b949e;">
+        <button onclick="testJavaScript()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+          測試 JavaScript
+        </button>
+      </p>
+      <div id="jsTest" style="margin-top: 10px; color: #3fb950; display: none;">
+        ✓ JavaScript 已正確執行
+      </div>
+    </div>
+
+    <div style="margin-bottom: 15px;">
+      <strong>✅ Step 4: 測試 ML 分析頁面</strong>
+      <p style="color: #8b949e;">
+        <a href="/ml/analyze" target="_blank" style="background: #238636; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none; display: inline-block;">
+          打開 ML 分析頁面 (新標籤頁)
+        </a>
+      </p>
+      <p style="color: #8b949e; font-size: 12px; margin-top: 10px;">
+        如果看到空白頁面,請:
+        <ol>
+          <li>按 F12 打開 DevTools</li>
+          <li>檢查 Console 標籤是否有紅色錯誤</li>
+          <li>檢查 Network 標籤是否有失敗的資源</li>
+          <li>將錯誤信息分享給開發者</li>
+        </ol>
+      </p>
+    </div>
+  </div>
+
+  <div style="background: #1a0a0a; padding: 20px; border: 1px solid #f85149; border-radius: 8px;">
+    <h2 style="color: #f85149;">🆘 如果仍然看到空白頁面</h2>
+    <ol style="color: #c9d1d9;">
+      <li><strong>清除瀏覽器快取:</strong>
+        <ul>
+          <li>Chrome/Edge: Ctrl+Shift+Delete</li>
+          <li>Firefox: Ctrl+Shift+Delete</li>
+          <li>Safari: 偏好設定 > 隱私 > 管理網站資料</li>
+        </ul>
+      </li>
+      <li><strong>嘗試不同的瀏覽器</strong>(例如 Chrome, Firefox, Edge)</li>
+      <li><strong>禁用瀏覽器擴充程式</strong>(可能干擾 CSS/JS)</li>
+      <li><strong>檢查互聯網連接</strong>(CDN 資源加載)</li>
+      <li><strong>重啟 Flask 服務器</strong></li>
+    </ol>
+  </div>
+
+  <div style="margin-top: 20px; padding: 20px; background: #0a1a0a; border: 1px solid #3fb950; border-radius: 8px; color: #3fb950;">
+    <strong>💡 提示:</strong> 即使 Bootstrap CDN 加載失敗,頁面現在也應該能顯示基本的搜尋框和輸入欄位。如果看不到任何東西,可能是網路問題。
+  </div>
+</div>
+
+<script>
+function testBootstrap() {
+  const btn = event.target;
+  // Check if Bootstrap is loaded by looking for a Bootstrap class
+  const testEl = document.createElement('div');
+  testEl.className = 'card';
+  document.body.appendChild(testEl);
+  const style = window.getComputedStyle(testEl);
+  const bgColor = style.backgroundColor;
+  document.body.removeChild(testEl);
+  
+  if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)') {
+    document.getElementById('bootstrapTest').style.display = 'block';
+  } else {
+    document.getElementById('bootstrapTest').innerHTML = '✗ Bootstrap CSS 未加載 (CDN 可能失敗)';
+    document.getElementById('bootstrapTest').style.color = '#f85149';
+    document.getElementById('bootstrapTest').style.display = 'block';
+  }
+}
+
+function testJavaScript() {
+  const result = document.getElementById('jsTest');
+  result.style.display = 'block';
+  
+  const checks = {
+    'LightweightCharts': typeof LightweightCharts !== 'undefined',
+    'Bootstrap object': typeof bootstrap !== 'undefined'
+  };
+  
+  let html = '✓ JavaScript 已正確執行<br>';
+  for (const [name, loaded] of Object.entries(checks)) {
+    html += `  • ${name}: ${loaded ? '✓' : '✗'}<br>`;
+  }
+  result.innerHTML = html;
+  result.style.color = Object.values(checks).every(v => v) ? '#3fb950' : '#e3b341';
+}
+</script>
+{% endblock %}

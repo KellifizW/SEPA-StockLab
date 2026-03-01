@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}ML 個股分析 (最小化測試){% endblock %}
+
+{% block content %}
+<div style="padding: 20px; background: white; color: black;">
+  <h1>✅ 页面加载成功!</h1>
+  <p>如果你看到这个消息，说明:</p>
+  <ul>
+    <li>✓ Flask 服务器正常</li>
+    <li>✓ 模板继承工作</li>
+    <li>✓ HTML 可以渲染</li>
+  </ul>
+  
+  <h2>现在测试原始 ml_analyze.html</h2>
+  <p><a href="/ml/analyze" style="color: blue;">点击此处打开原始 ML 分析页面</a></p>
+  
+  <hr style="margin:20px 0;">
+  
+  <h3>诊断信息:</h3>
+  <pre style="background: #f0f0f0; padding: 10px; overflow-x: auto;">
+- Browser: {{ request.headers.get('User-Agent', 'Unknown') }}
+- Path: {{ request.path }}
+- URL: {{ request.base_url }}
+  </pre>
+</div>
+{% endblock %}

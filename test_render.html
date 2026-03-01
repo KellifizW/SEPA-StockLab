@@ -1,7 +1,70 @@
-{% extends "base.html" %}
-{% block title %}ML 個股分析{% endblock %}
-
-{% block extra_head %}
+<!DOCTYPE html>
+<html lang="zh-HK" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ML 個股分析 — StockLab</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <style>
+    :root {
+      --bs-body-bg: #0d1117;
+      --bs-body-color: #c9d1d9;
+      --accent: #00d4ff;
+      --accent2: #58a6ff;
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+    }
+    body { background: var(--bs-body-bg); color: var(--bs-body-color); font-size: 14px; }
+    .navbar-brand { color: var(--accent) !important; font-weight: 700; letter-spacing: 1px; }
+    .nav-link { color: #8b949e !important; transition: color .2s; }
+    .nav-link:hover, .nav-link.active { color: var(--accent) !important; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; }
+    .card-header { background: #1c2128; border-bottom: 1px solid #30363d; font-weight: 600; }
+    .table { --bs-table-bg: transparent; --bs-table-color: #c9d1d9;
+             --bs-table-striped-bg: #1a2030; --bs-table-hover-bg: #253060; }
+    .table th { color: var(--accent); border-color: #30363d; font-size: 12px; text-transform: uppercase; }
+    .table td { border-color: #21262d; vertical-align: middle; }
+    .badge-A { background: #1b6e2e; color: #3fb950; }
+    .badge-B { background: #4a3800; color: #e3b341; }
+    .badge-C { background: #1a3060; color: #58a6ff; }
+    .score-high { color: #3fb950; font-weight: 700; }
+    .score-mid  { color: #e3b341; font-weight: 600; }
+    .score-low  { color: #f85149; }
+    .regime-bull  { background: #0a2e1a; border-left: 4px solid #3fb950; }
+    .regime-trans { background: #2e2500; border-left: 4px solid #e3b341; }
+    .regime-bear  { background: #2e0a0a; border-left: 4px solid #f85149; }
+    .regime-bottom{ background: #0a1a2e; border-left: 4px solid #58a6ff; }
+    .spinner-glow { animation: glow 1.2s ease-in-out infinite alternate; }
+    @keyframes glow { from { opacity: .5; } to { opacity: 1; } }
+    .metric-card { background: #161b22; border: 1px solid #30363d;
+                   border-radius: 8px; padding: 16px; text-align: center; }
+    .metric-val  { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .metric-lbl  { font-size: 11px; color: #8b949e; text-transform: uppercase; margin-top: 2px; }
+    pre.result-pre { background: #0d1117; border: 1px solid #30363d;
+                     border-radius: 6px; padding: 14px; font-size: 12px;
+                     color: #c9d1d9; max-height: 500px; overflow-y: auto; }
+    .tag-vcp { background: #004d40; color: #64ffda; border-radius: 4px;
+               padding: 2px 7px; font-size: 11px; white-space: nowrap; }
+    .btn-accent { background: var(--accent); color: #000; border: none; font-weight: 600; }
+    .btn-accent:hover { background: #00b8d9; color: #000; }
+    #toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; }
+    .toast-msg { background: #1c2128; border: 1px solid #30363d; color: #c9d1d9;
+                 border-radius: 6px; padding: 12px 18px; margin-top: 8px;
+                 box-shadow: 0 4px 12px rgba(0,0,0,.5); animation: fadein .3s; }
+    .toast-msg.ok   { border-left: 4px solid #3fb950; }
+    .toast-msg.err  { border-left: 4px solid #f85149; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    .sidebar-sticky { position: sticky; top: 68px; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1117; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- TradingView Lightweight Charts — professional K-line candlestick rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  
 <!-- Fallback styles for CSS CDN failure - Ensure visibility -->
 <style>
   /* ════ Critical: Make content visible even if Bootstrap fails ════ */
@@ -138,9 +201,91 @@
   .closed-notice { background:#1a0a0a; border:1px solid #f85149; border-radius:6px; padding:16px; text-align:center; color:#f85149; font-size:13px; }
 </style>
 
-{% endblock %}
 
-{% block content %}
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark sticky-top" style="background:#161b22;border-bottom:1px solid #30363d">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/"><i class="bi bi-graph-up-arrow me-2"></i>SEPA&nbsp;Lab</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="nav">
+      <ul class="navbar-nav me-auto gap-1">
+        <li class="nav-item"><a class="nav-link " href="/"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a></li>
+        <li class="nav-item"><a class="nav-link " href="/combined"><i class="bi bi-lightning-fill me-1" style="color:#00d4ff"></i>Combined Scan 組合掃描</a></li>
+        <!-- ── SEPA dropdown ───────────────────────────────────── -->
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle "
+             href="#" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-funnel me-1"></i>SEPA
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark" style="background:#161b22;border-color:#30363d">
+            <li><h6 class="dropdown-header" style="color:#8b949e;font-size:10px">MINERVINI SEPA</h6></li>
+            <li><a class="dropdown-item " href="/scan">
+              <i class="bi bi-funnel me-2"></i>Scan 掃描</a></li>
+            <li><a class="dropdown-item " href="/analyze">
+              <i class="bi bi-search me-2"></i>Analyze 分析</a></li>
+            <li><a class="dropdown-item " href="/watchlist">
+              <i class="bi bi-bookmark-star me-2"></i>Watchlist 觀察名單</a></li>
+            <li><a class="dropdown-item " href="/positions">
+              <i class="bi bi-briefcase me-2"></i>Positions 持倉</a></li>
+            <li><a class="dropdown-item " href="/market">
+              <i class="bi bi-bar-chart-line me-2"></i>Market 市場環境</a></li>
+            <li><a class="dropdown-item " href="/vcp">
+              <i class="bi bi-activity me-2"></i>VCP 波動收縮</a></li>
+            <li><a class="dropdown-item " href="/backtest">
+              <i class="bi bi-clock-history me-2"></i>Backtest 回測</a></li>
+            <li><hr class="dropdown-divider" style="border-color:#30363d"></li>
+            <li><a class="dropdown-item " href="/guide">
+              <i class="bi bi-book me-2"></i>SEPA 教學 Guide</a></li>
+          </ul>
+        </li>
+        <!-- ── Qullamaggie dropdown ─────────────────────────────── -->
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle "
+             href="#" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-lightning-charge me-1" style="color:#e3b341"></i>QM
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark" style="background:#161b22;border-color:#30363d">
+            <li><h6 class="dropdown-header" style="color:#8b949e;font-size:10px">QULLAMAGGIE 突破波段</h6></li>
+            <li><a class="dropdown-item " href="/qm/scan">
+              <i class="bi bi-lightning-charge me-2" style="color:#e3b341"></i>QM Scan 掃描</a></li>
+            <li><a class="dropdown-item " href="/qm/analyze">
+              <i class="bi bi-search me-2"></i>QM Analyze 分析</a></li>
+            <li><hr class="dropdown-divider" style="border-color:#30363d"></li>
+            <li><a class="dropdown-item " href="/qm/guide">
+              <i class="bi bi-book me-2"></i>QM 教學 Guide</a></li>
+          </ul>
+        </li>
+        <!-- ── Martin Luk dropdown ──────────────────────────────── -->
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle active"
+             href="#" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-graph-up-arrow me-1" style="color:#3fb950"></i>ML
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark" style="background:#161b22;border-color:#30363d">
+            <li><h6 class="dropdown-header" style="color:#8b949e;font-size:10px">MARTIN LUK 回調波段</h6></li>
+            <li><a class="dropdown-item " href="/ml/scan">
+              <i class="bi bi-graph-up-arrow me-2" style="color:#3fb950"></i>ML Scan 掃描</a></li>
+            <li><a class="dropdown-item text-info" href="/ml/analyze">
+              <i class="bi bi-search me-2"></i>ML Analyze 分析</a></li>
+            <li><hr class="dropdown-divider" style="border-color:#30363d"></li>
+            <li><a class="dropdown-item " href="/ml/guide">
+              <i class="bi bi-book me-2"></i>ML 教學 Guide</a></li>
+          </ul>
+        </li>
+      </ul>
+      <ul class="navbar-nav gap-1">
+        <li class="nav-item"><a class="nav-link" href="/latest-report" target="_blank"><i class="bi bi-file-earmark-text me-1"></i>Report</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid py-3 px-4">
+  
 <!-- Search bar -->
 <div class="row g-3 mb-4">
   <div class="col-12">
@@ -152,7 +297,7 @@
       <div class="input-group ms-auto" style="max-width:300px">
         <input type="text" class="form-control form-control-sm"
                id="tickerInput" placeholder="輸入股票代號…  e.g. AAPL"
-               value="{{ prefill }}" style="background:#0d1117;color:#c9d1d9;border-color:#30363d"
+               value="False" style="background:#0d1117;color:#c9d1d9;border-color:#30363d"
                onkeydown="if(event.key==='Enter') analyzeStock()">
         <button class="btn btn-sm" onclick="analyzeStock()"
                 style="background:#238636;color:#fff;border:1px solid #2ea043">
@@ -170,7 +315,7 @@
 </div>
 
 <!-- Empty state -->
-<div id="emptyState" class="{{ 'd-none' if prefill else '' }}">
+<div id="emptyState" class="">
   <div class="text-center py-5 text-secondary">
     <i class="bi bi-graph-up-arrow" style="font-size:3rem;opacity:0.3;color:#3fb950"></i>
     <div class="mt-3">輸入股票代號並點擊「分析」</div>
@@ -416,7 +561,7 @@
           <span><span style="display:inline-block;width:14px;height:2px;background:#f85149;border-top:1px dashed #f85149"></span>&nbsp;LOD</span>
           <span style="margin-left:auto; font-size:10px; color:#6e7681">📍 灰色 = 盤前 Pre-Market</span>
         </div>
-        <div id="intradayChartContainer" style="width:100%;height:450px">
+        <div id="intradayChartContainer" style="height:450px">
           <div class="text-center py-5 text-secondary">
             <div class="spinner-border spinner-border-sm" style="color:#3fb950"></div>
             <div class="mt-2" style="font-size:12px">載入盤中圖表…</div>
@@ -449,15 +594,93 @@
   </div>
 
 </div>
-{% endblock %}
 
-{% block extra_js %}
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── Global settings for toast behavior ─────────────────────────────────────
+const TOAST_PERSIST_ALL = true; // Set to true to make all toasts persistent (don't auto-close)
+const TOAST_SHOW_TIMESTAMP = true; // Set to true to show timestamp on all toasts
+const TOAST_AUTO_CLOSE_MS = 0; // 0 = never auto-close; set to ms if you want auto-close (e.g., 4000)
+
+// ── Unified toast helper ───────────────────────────────────────────────────────
+// All toasts now support persistent mode with timestamp by default
+function toast(msg, ok=true, persist=null) {
+  // Use global setting if persist not explicitly specified
+  const isPersistent = persist !== null ? persist : TOAST_PERSIST_ALL;
+  
+  const el = document.createElement('div');
+  el.className = 'toast-msg ' + (ok ? 'ok' : 'err');
+  
+  // Format timestamp
+  let timestampHtml = '';
+  if (TOAST_SHOW_TIMESTAMP) {
+    const now = new Date();
+    const timeStr = now.toLocaleString('zh-HK', { 
+      hour:'2-digit', minute:'2-digit', second:'2-digit'
+    });
+    timestampHtml = '<small style="color:#8b949e; margin-top:4px; display:block; opacity:0.8;">時間: ' + timeStr + '</small>';
+  }
+  
+  el.style.cssText = 'display:flex; align-items:flex-start; gap:8px; max-width:420px; padding:12px 16px;';
+  
+  const body = document.createElement('span');
+  body.style.flex = '1';
+  body.innerHTML = msg + timestampHtml;
+  
+  const btn = document.createElement('button');
+  btn.innerHTML = '&times;';
+  btn.style.cssText = 'background:none; border:none; color:#8b949e; font-size:1.2rem; cursor:pointer; padding:0; line-height:1; flex-shrink:0; margin-top:2px';
+  btn.onclick = () => el.remove();
+  btn.title = '關閉通知 (Close)';
+  
+  el.appendChild(body);
+  el.appendChild(btn);
+  document.getElementById('toast-container').appendChild(el);
+  
+  // Auto-close only if TOAST_AUTO_CLOSE_MS > 0 AND not persistent
+  if (TOAST_AUTO_CLOSE_MS > 0 && !isPersistent) {
+    setTimeout(() => { if (el.parentNode) el.remove(); }, TOAST_AUTO_CLOSE_MS);
+  }
+}
+
+// ── Alias for backward compatibility ──────────────────────────────────────────
+function toastCompletion(msg, ok=true) {
+  // Always persistent with explicit completion-style message
+  toast(msg, ok, true);
+}
+
+// ── Generic job poller ────────────────────────────────────────────────────────
+function pollJob(statusUrl, onDone, onError, intervalMs=2500) {
+  const id = setInterval(async () => {
+    const r = await fetch(statusUrl).then(x => x.json()).catch(() => ({status:'error',error:'network'}));
+    if (r.status === 'done') { clearInterval(id); onDone(r.result); }
+    else if (r.status === 'error') { clearInterval(id); onError(r.error || 'Unknown error'); }
+  }, intervalMs);
+}
+
+// ── Score colour helper ───────────────────────────────────────────────────────
+function scoreClass(v) {
+  if (v >= 75) return 'score-high';
+  if (v >= 55) return 'score-mid';
+  return 'score-low';
+}
+
+// ── Format number helpers ─────────────────────────────────────────────────────
+function fmt2(v) { return (v == null) ? '—' : Number(v).toFixed(2); }
+function fmtPct(v) { return (v == null) ? '—' : Number(v).toFixed(1) + '%'; }
+function fmtInt(v) { return (v == null) ? '—' : Math.round(Number(v)); }
+</script>
+
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el =>
     new bootstrap.Tooltip(el, { placement: 'top' })
   );
-  const prefill = '{{ prefill }}';
+  const prefill = 'False';
   if (prefill) analyzeStock();
 });
 
@@ -1144,8 +1367,6 @@ function switchMlMode(mode) {
   const watchPanel = document.getElementById('watchPanel');
   const modeBtns = document.querySelectorAll('.mode-btn');
   
-  console.log('🔄 switchMlMode:', mode);
-  
   if (mode === 'review') {
     reviewPanel.classList.remove('d-none');
     watchPanel.classList.add('d-none');
@@ -1153,25 +1374,16 @@ function switchMlMode(mode) {
     modeBtns[1].classList.remove('active');
     if (_mlWatchInterval) clearInterval(_mlWatchInterval);
     if (_mlCountdownInterval) clearInterval(_mlCountdownInterval);
-    console.log('✅ Switched to review mode');
   } else {
     reviewPanel.classList.add('d-none');
     watchPanel.classList.remove('d-none');
     modeBtns[0].classList.remove('active');
     modeBtns[1].classList.add('active');
-    console.log('✅ Switched to watch mode, watchPanel d-none removed');
-    
     // Initialize watch mode if we have a ticker
-    // Use requestAnimationFrame to ensure DOM has updated and container is visible
-    requestAnimationFrame(() => {
-      const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
-      console.log('📌 RequestAnimFrame - ticker:', ticker);
-      if (ticker) {
-        initWatchMode(ticker);
-      } else {
-        console.warn('⚠️  No ticker found');
-      }
-    });
+    const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
+    if (ticker) {
+      initWatchMode(ticker);
+    }
   }
 }
 
@@ -1182,11 +1394,8 @@ function initWatchMode(ticker) {
   // Update market status
   updateMarketStatus();
   
-  // Load intraday chart - increase delay to ensure container is properly sized
-  setTimeout(() => {
-    console.log('⏱️  setTimeout triggering loadIntradayChart, container width:', document.getElementById('intradayChartContainer')?.clientWidth);
-    loadIntradayChart(ticker, '5m');
-  }, 200);
+  // Load intraday chart
+  loadIntradayChart(ticker, '5m');
   
   // Start auto-refresh every 5 minutes
   if (_mlWatchInterval) clearInterval(_mlWatchInterval);
@@ -1239,12 +1448,7 @@ function startCountdownTimer() {
 
 async function loadIntradayChart(ticker, interval) {
   const container = document.getElementById('intradayChartContainer');
-  if (!container) {
-    console.error('❌ intradayChartContainer not found');
-    return;
-  }
-  
-  console.log('🔄 loadIntradayChart called:', {ticker, interval});
+  if (!container) return;
   
   // Update active button based on interval parameter (not event.target)
   document.querySelectorAll('.intraday-btn').forEach((btn) => {
@@ -1273,52 +1477,12 @@ async function loadIntradayChart(ticker, interval) {
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || 'No data');
     
-    console.log('✅ API data received:', {candles: data.candles?.length, ema9: data.ema9?.length});
-    
     _mlWatchData = data;
     container.innerHTML = '';
     
-    // Force reflow and recalculate dimensions
-    void container.offsetHeight;
-    
-    // Get accurate container dimensions - check multiple levels
-    let containerWidth = container.clientWidth;
-    console.log('📐 Container clientWidth:', containerWidth);
-    
-    if (containerWidth <= 0) {
-      // Check parent (card-body)
-      const parent = container.parentElement;
-      if (parent?.clientWidth > 0) {
-        containerWidth = parent.clientWidth - 20;
-        console.log('📐 Using parent width:', containerWidth);
-      } else {
-        // Check grandparent (card)
-        const gp = parent?.parentElement;
-        if (gp?.clientWidth > 0) {
-          containerWidth = gp.clientWidth - 40;
-          console.log('📐 Using grandparent width:', containerWidth);
-        } else {
-          containerWidth = window.innerWidth - 60;
-          console.log('📐 Using window width:', containerWidth);
-        }
-      }
-    }
-    
-    // Safety: ensure we have a positive width
-    if (containerWidth <= 0) {
-      containerWidth = 800;
-      console.warn('⚠️  Width still 0, using fallback');
-    }
-    
-    console.log('📐 Final width for chart:', containerWidth);
-    
-    const LWC = window.LightweightCharts;
-    if (!LWC) {
-      throw new Error('LightweightCharts library not loaded');
-    }
-    
+    const LWC = LightweightCharts;
     _mlWatchChart = LWC.createChart(container, {
-      width: containerWidth,
+      width: container.clientWidth || window.innerWidth - 40,
       height: 450,
       layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
       grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
@@ -1327,8 +1491,6 @@ async function loadIntradayChart(ticker, interval) {
       timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
       handleScroll: true, handleScale: true,
     });
-    
-    console.log('✅ Chart created successfully');
     
     // Candlestick (separate colors for premarket)
     const candleSeries = _mlWatchChart.addCandlestickSeries({
@@ -1502,7 +1664,7 @@ function renderIntradayCommentary(signals, status) {
   const advice = signals.setup_advice || 'no_data';
   
   if (status.status === 'closed') {
-    html += `<div class=\"cmt-info\" style=\"border-color:#f85149;background:#1a0a0a\"><i class=\"bi bi-x-circle me-1\" style=\"color:#f85149\"></i><strong>美股現已收盤</strong> — 切換至<button class=\"btn btn-link p-0\" style=\"color:#3fb950\" onclick="switchMlMode('review')">複盤模式</button>查看完整分析</div>`;
+    html += '<div class=\"cmt-info\" style=\"border-color:#f85149;background:#1a0a0a\"><i class=\"bi bi-x-circle me-1\" style=\"color:#f85149\"></i><strong>美股現已收盤</strong> — 切換至<button class=\"btn btn-link p-0\" style=\"color:#3fb950\" onclick=\"switchMlMode(\\'review\\')\">複盤模式</button>查看完整分析</div>';
   } else if (status.status === 'premarket') {
     html += '<div class=\"cmt-warn\"><i class=\"bi bi-clock me-1\"></i><strong>盤前時段</strong> — 股票未開盤，數據行為不代表盤中表現</div>';
   } else {
@@ -1566,4 +1728,6 @@ document.addEventListener('DOMContentLoaded', () => {
   請在瀏覽器設置中啟用 JavaScript。
 </noscript>
 
-{% endblock %}
+
+</body>
+</html>

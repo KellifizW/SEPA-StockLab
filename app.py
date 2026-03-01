@@ -621,6 +621,18 @@ def ml_scan_page():
     return render_template("ml_scan.html")
 
 
+@app.route("/ml/test-minimal")
+def ml_analyze_minimal():
+    """Minimal test page to verify template rendering works"""
+    return render_template("ml_analyze_minimal.html")
+
+
+@app.route("/ml/diagnostic")
+def ml_analyze_diagnostic():
+    """Diagnostic page for debugging blank page issues"""
+    return render_template("ml_analyze_diagnostic.html")
+
+
 @app.route("/ml/analyze")
 def ml_analyze_page():
     ticker = request.args.get("ticker", "")
@@ -2345,8 +2357,30 @@ def api_chart_enriched(ticker: str):
 
         candles, volume = [], []
         sma50, sma150, sma200 = [], [], []
+        ema9, ema21, ema50, ema150 = [], [], [], []
         rsi_pts, bbl_pts, bbm_pts, bbu_pts = [], [], [], []
         atr_pts, bbw_pts, vol_ratio_pts = [], [], []
+        avwap_high_pts, avwap_low_pts = [], []
+
+        # ── AVWAP series for ML (Martin Luk) charts ──────────────────────
+        avwap_h_series = None
+        avwap_l_series = None
+        avwap_h_anchor = None
+        avwap_l_anchor = None
+        try:
+            from modules.data_pipeline import get_avwap_from_swing_high, get_avwap_from_swing_low
+            full_df = get_enriched(ticker_upper, period="2y", use_cache=True)
+            if not full_df.empty:
+                ah = get_avwap_from_swing_high(full_df)
+                al = get_avwap_from_swing_low(full_df)
+                if ah.get("avwap_series") is not None and not ah["avwap_series"].dropna().empty:
+                    avwap_h_series = ah["avwap_series"]
+                    avwap_h_anchor = {"date": ah.get("anchor_date"), "price": ah.get("anchor_price")}
+                if al.get("avwap_series") is not None and not al["avwap_series"].dropna().empty:
+                    avwap_l_series = al["avwap_series"]
+                    avwap_l_anchor = {"date": al.get("anchor_date"), "price": al.get("anchor_price")}
+        except Exception:
+            pass
 
         # Historical signal tracking (for learning / validation overlays)
         atr_raw = pd.to_numeric(df.get("ATR_14"), errors="coerce") if "ATR_14" in df.columns else None
@@ -2409,6 +2443,33 @@ def api_chart_enriched(ticker: str):
                 if val is not None:
                     series.append({"time": ts, "value": val})
 
+            # EMA series for ML charts
+            for series, colname in [
+                (ema9,   "EMA_9"),
+                (ema21,  "EMA_21"),
+                (ema50,  "EMA_50"),
+                (ema150, "EMA_150"),
+            ]:
+                val = _sf(row.get(colname))
+                if val is not None:
+                    series.append({"time": ts, "value": val})
+
+            # AVWAP series for ML charts
+            if avwap_h_series is not None:
+                try:
+                    av = _sf(avwap_h_series.loc[idx])
+                    if av is not None:
+                        avwap_high_pts.append({"time": ts, "value": av})
+                except Exception:
+                    pass
+            if avwap_l_series is not None:
+                try:
+                    av = _sf(avwap_l_series.loc[idx])
+                    if av is not None:
+                        avwap_low_pts.append({"time": ts, "value": av})
+                except Exception:
+                    pass
+
             rsi_v = _sf(row.get("RSI_14"))
             if rsi_v is not None:
                 rsi_pts.append({"time": ts, "value": rsi_v})
@@ -2462,12 +2523,331 @@ def api_chart_enriched(ticker: str):
             "ok": True, "ticker": ticker_upper,
             "candles": candles, "volume": volume,
             "sma50": sma50, "sma150": sma150, "sma200": sma200,
+            "ema9": ema9, "ema21": ema21, "ema50": ema50, "ema150": ema150,
+            "avwap_high": avwap_high_pts, "avwap_low": avwap_low_pts,
+            "avwap_high_anchor": avwap_h_anchor,
+            "avwap_low_anchor": avwap_l_anchor,
             "rsi": rsi_pts,
             "bbl": bbl_pts, "bbm": bbm_pts, "bbu": bbu_pts,
             "atr14": atr_pts,
             "bb_width_pct": bbw_pts,
             "vol_ratio_50d": vol_ratio_pts,
             "vcp_signal_events": vcp_signal_events,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/chart/weekly/<ticker>", methods=["GET"])
+def api_chart_weekly(ticker: str):
+    """
+    Weekly OHLCV + EMA overlays for Martin Luk multi-timeframe analysis.
+    Returns: candles, volume, ema9w, ema21w, ema50w  (Unix-second timestamps).
+    """
+    import math as _math
+    import pandas as pd
+
+    weeks = int(request.args.get("weeks", 156))  # 3 years
+    ticker_upper = ticker.upper()
+
+    def _sf(v, digits: int = 2):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (_math.isnan(f) or _math.isinf(f)) else round(f, digits)
+        except Exception:
+            return None
+
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker_upper)
+        df = t.history(period="5y", interval="1wk")
+        if df.empty:
+            return jsonify({"ok": False, "error": "No weekly data"})
+
+        # Trim to requested weeks
+        df = df.tail(weeks).copy()
+
+        # Compute weekly EMAs
+        for n in (9, 21, 50):
+            df[f"EMA_{n}"] = df["Close"].ewm(span=n, adjust=False).mean()
+
+        candles, volume = [], []
+        ema9w, ema21w, ema50w = [], [], []
+
+        for idx, row in df.iterrows():
+            try:
+                ts = int(pd.Timestamp(idx).timestamp())
+            except Exception:
+                continue
+            o = _sf(row.get("Open"))
+            h = _sf(row.get("High"))
+            lo = _sf(row.get("Low"))
+            c = _sf(row.get("Close"))
+            v = int(row.get("Volume") or 0)
+            if None in (o, h, lo, c):
+                continue
+
+            candles.append({"time": ts, "open": o, "high": h, "low": lo, "close": c})
+            volume.append({"time": ts, "value": v,
+                           "color": "#3fb950" if c >= o else "#f85149"})
+
+            for series, colname in [
+                (ema9w,  "EMA_9"),
+                (ema21w, "EMA_21"),
+                (ema50w, "EMA_50"),
+            ]:
+                val = _sf(row.get(colname))
+                if val is not None:
+                    series.append({"time": ts, "value": val})
+
+        return jsonify({
+            "ok": True, "ticker": ticker_upper,
+            "candles": candles, "volume": volume,
+            "ema9w": ema9w, "ema21w": ema21w, "ema50w": ema50w,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Intraday Chart — 5分, 15分, 1小時 K線 (Martin Luk 盯盤模式)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_intraday_signals(candles: list, orh: float, orl: float, lod: float, hod: float, 
+                          ema9_val: float, ema21_val: float, vwap_val: float, 
+                          premarket_end_candle_count: int) -> dict:
+    """
+    Extract real-time signals for intraday trading per Martin Luk method.
+    
+    premarket_end_candle_count: index of first post-market candle (e.g., 2 for 5m means 10 mins of premarket)
+    """
+    import math as _math
+    
+    if not candles or len(candles) == 0:
+        return {"setup_advice": "no_data"}
+    
+    # Current price (last candle close)
+    curr_close = candles[-1].get("close", 0)
+    curr_time_unix = candles[-1].get("time", 0)
+    
+    # Chase %: how far from LOD
+    chase_pct = 0.0
+    if lod > 0:
+        chase_pct = ((curr_close - lod) / lod) * 100.0
+    
+    # Check if ORH broken (opening range high breached after first 15-min candle group)
+    orh_broken = False
+    for i, candle in enumerate(candles):
+        if i > premarket_end_candle_count and candle.get("high", 0) >= orh:
+            orh_broken = True
+            break
+    
+    # Check for V-shaped recovery (price touched ema21 or below, then recovered)
+    min_price_in_first_hour = min([c.get("low", float('inf')) for c in candles[:12]])  # 12 * 5min = 1hour
+    flush_recovery = (min_price_in_first_hour <= ema21_val <= (min_price_in_first_hour + ema21_val) * 0.02) and curr_close > ema21_val
+    
+    # Position of price vs EMAs
+    ema9_diff = ((curr_close - ema9_val) / ema9_val * 100.0) if ema9_val > 0 else 0
+    ema21_diff = ((curr_close - ema21_val) / ema21_val * 100.0) if ema21_val > 0 else 0
+    vwap_diff = ((curr_close - vwap_val) / vwap_val * 100.0) if vwap_val > 0 else 0
+    
+    # Volume pace: estimate %of daily avg
+    vol_pace_pct = 0  # Will be calculated in endpoint if needed
+    
+    # Determine setup_advice based on time and signals
+    if len(candles) <= premarket_end_candle_count:
+        setup_advice = "premarket_plan"
+    elif premarket_end_candle_count < len(candles) <= 3:  # First 15 min post-market
+        setup_advice = "early_entry_watch"
+    elif 3 < len(candles) <= 12 and flush_recovery:  # Up to 60 min, with V-recovery
+        setup_advice = "mid_entry_breakout"
+    elif chase_pct > 3.0:
+        setup_advice = "avoid_chase"
+    elif len(candles) > 80:  # After hours
+        setup_advice = "closed"
+    else:
+        setup_advice = "mid_entry_hold"
+    
+    return {
+        "curr_close": round(curr_close, 2),
+        "chase_pct": round(chase_pct, 2),
+        "orh_broken": orh_broken,
+        "flush_recovery": flush_recovery,
+        "ema9_diff": round(ema9_diff, 2),
+        "ema21_diff": round(ema21_diff, 2),
+        "vwap_diff": round(vwap_diff, 2),
+        "setup_advice": setup_advice,
+    }
+
+
+@app.route("/api/chart/intraday/<ticker>", methods=["GET"])
+def api_chart_intraday(ticker: str):
+    """
+    Intraday OHLCV + EMA + VWAP for 5m, 15m, 1h charts.
+    Martin Luk: Opening Range breakout, flush recovery, 5-min vs 15-min confirmation.
+    
+    Params:
+        interval: "5m" (default), "15m", "1h"
+        days: 2 (5m/15m) or 60 (1h)
+    
+    Returns:
+        {ok, ticker, interval, candles, volume, ema9, ema21, vwap,
+         orh, orl, lod, hod, chase_pct, signals, market_date}
+    """
+    import math as _math
+    import pandas as pd
+    import pytz
+    
+    interval = request.args.get("interval", "5m")
+    days = int(request.args.get("days", 2 if interval in ("5m", "15m") else 60))
+    ticker_upper = ticker.upper()
+    
+    def _sf(v, digits: int = 2):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (_math.isnan(f) or _math.isinf(f)) else round(f, digits)
+        except Exception:
+            return None
+    
+    def _is_premarket(ts_unix: int) -> bool:
+        """Check if timestamp is before 9:30 ET."""
+        try:
+            dt = pd.Timestamp(ts_unix, unit='s', tz='UTC').astimezone(pytz.timezone('US/Eastern'))
+            h = dt.hour
+            m = dt.minute
+            return (h < 9) or (h == 9 and m < 30)
+        except Exception:
+            return False
+    
+    try:
+        import yfinance as yf
+        
+        t = yf.Ticker(ticker_upper)
+        df = t.history(period=f"{days}d", interval=interval, prepost=True)
+        
+        if df.empty:
+            return jsonify({"ok": False, "error": f"No {interval} data"})
+        
+        # Compute intraday EMAs
+        for n in (9, 21):
+            df[f"EMA_{n}"] = df["Close"].ewm(span=n, adjust=False).mean()
+        
+        # Compute intraday VWAP (reset daily, reset at market open 9:30)
+        df['typical_price'] = (df['High'] + df['Low'] + df['Close']) / 3
+        df['tp_x_vol'] = df['typical_price'] * df['Volume']
+        df['cumul_tp_vol'] = df['tp_x_vol'].cumsum()
+        df['cumul_vol'] = df['Volume'].cumsum()
+        
+        # Reset VWAP daily at ET 9:30
+        et_tz = pytz.timezone('US/Eastern')
+        df['date_et'] = df.index.tz_convert(et_tz).normalize()
+        for date in df['date_et'].unique():
+            date_mask = (df['date_et'] == date)
+            date_df = df[date_mask]
+            if len(date_df) > 0:
+                # Find opening time (9:30 ET)
+                first_post_idx = None
+                for i, ts in enumerate(date_df.index):
+                    dt_et = ts.tz_convert(et_tz)
+                    if dt_et.hour >= 9 and dt_et.minute >= 30:
+                        first_post_idx = i
+                        break
+                
+                if first_post_idx is not None:
+                    # Reset cumulative at first post market bar
+                    start_idx = date_df.index[0]
+                    start_pos = df.index.get_loc(start_idx)
+                    
+                    df.loc[df['date_et'] == date, 'cumul_tp_vol'] = \
+                        df.loc[df['date_et'] == date, 'tp_x_vol'].cumsum()
+                    df.loc[df['date_et'] == date, 'cumul_vol'] = \
+                        df.loc[df['date_et'] == date, 'Volume'].cumsum()
+        
+        df['vwap'] = df['cumul_tp_vol'] / df['cumul_vol'].replace(0, 1)
+        
+        # Calculate ORH, ORL, LOD, HOD for current day
+        et_tz = pytz.timezone('US/Eastern')
+        today_et = pd.Timestamp.now(tz=et_tz).normalize()
+        
+        today_mask = (df['date_et'] == today_et)
+        today_df = df[today_mask]
+        
+        orh = orl = lod = hod = None
+        if len(today_df) > 0:
+            # ORH/ORL: first 3 candles for 5m (15 min), 3 candles for 15m (45 min), 3 candles for 1h
+            orh = _sf(today_df.head(3)['High'].max())
+            orl = _sf(today_df.head(3)['Low'].min())
+            lod = _sf(today_df['Low'].min())
+            hod = _sf(today_df['High'].max())
+        
+        candles, volume = [], []
+        ema9, ema21, vwap_pts = [], [], []
+        premarket_count = 0
+        
+        for idx, row in df.iterrows():
+            try:
+                ts = int(pd.Timestamp(idx).timestamp())
+            except Exception:
+                continue
+            
+            o = _sf(row.get("Open"))
+            h = _sf(row.get("High"))
+            lo = _sf(row.get("Low"))
+            c = _sf(row.get("Close"))
+            v = int(row.get("Volume") or 0)
+            
+            if None in (o, h, lo, c):
+                continue
+            
+            is_pm = _is_premarket(ts)
+            if is_pm:
+                premarket_count += 1
+            
+            candles.append({
+                "time": ts, "open": o, "high": h, "low": lo, "close": c,
+                "is_premarket": is_pm
+            })
+            
+            volume.append({
+                "time": ts, "value": v,
+                "color": "#3fb95033" if is_pm else ("#3fb950" if c >= o else "#f85149")
+            })
+            
+            # EMA values
+            e9 = _sf(row.get("EMA_9"))
+            if e9 is not None:
+                ema9.append({"time": ts, "value": e9})
+            
+            e21 = _sf(row.get("EMA_21"))
+            if e21 is not None:
+                ema21.append({"time": ts, "value": e21})
+            
+            vwap_v = _sf(row.get("vwap"))
+            if vwap_v is not None:
+                vwap_pts.append({"time": ts, "value": vwap_v})
+        
+        # Compute signals
+        curr_ema9 = ema9[-1]["value"] if ema9 else 0
+        curr_ema21 = ema21[-1]["value"] if ema21 else 0
+        curr_vwap = vwap_pts[-1]["value"] if vwap_pts else 0
+        
+        signals = _get_intraday_signals(
+            candles, orh or 0, orl or 0, lod or 0, hod or 0,
+            curr_ema9, curr_ema21, curr_vwap, premarket_count
+        )
+        
+        return jsonify({
+            "ok": True, "ticker": ticker_upper, "interval": interval,
+            "candles": candles, "volume": volume,
+            "ema9": ema9, "ema21": ema21, "vwap": vwap_pts,
+            "orh": orh, "orl": orl, "lod": lod, "hod": hod,
+            "chase_pct": signals.get("chase_pct", 0),
+            "signals": signals,
+            "market_date": pd.Timestamp.now(tz=et_tz).strftime("%Y-%m-%d"),
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})
