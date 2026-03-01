@@ -80,23 +80,50 @@ def _is_cancelled() -> bool:
 def run_qm_stage1(min_price: float = 5.0,
                   min_avg_vol: int = 300_000,
                   verbose: bool = True,
-                  timeout_sec: float = 30.0) -> list[str]:
+                  timeout_sec: float = 30.0,
+                  stage1_source: str = None) -> list[str]:
     """
-    Stage 1 — Fast coarse filter using finvizfinance.
-    Returns a list of candidate ticker strings.
+    Stage 1 — Coarse filter.  Returns a list of candidate ticker strings.
+
+    Source is controlled by C.STAGE1_SOURCE:
+      "nasdaq_ftp"  — Free NASDAQ FTP + yfinance price/vol filter (~2-4 min)  [recommended]
+      "finviz"      — finvizfinance (slow, ~15 min full scan)
 
     Qullamaggie's universe:
       • Listed stocks only (no OTC)
       • Price ≥ $5 (liquidity floor)
       • Avg volume ≥ 300K shares (for position-building)
       • No explicit fundamental filter — this is a pure tech system
-    
-    Note: finvizfinance pagination is slow. We allow generous timeout (45s)
-    and show detailed progress to user, even during long downloads.
     """
     from modules.data_pipeline import get_universe
     import time as time_module
 
+    stage1_source = (stage1_source or getattr(C, "STAGE1_SOURCE", "finviz")).lower()
+
+    # ── NASDAQ FTP route ───────────────────────────────────────────────────
+    if stage1_source == "nasdaq_ftp":
+        _progress("Stage 1", 2, "連接 NASDAQ FTP 中… Connecting to NASDAQ FTP…")
+        logger.info("[QM Stage1] Source: NASDAQ FTP + yfinance filter (price>%.0f, vol>%d)",
+                    min_price, min_avg_vol)
+        try:
+            from modules.nasdaq_universe import get_universe_nasdaq
+            t0 = time_module.time()
+            _progress("Stage 1", 3, "下載 NASDAQ 股票清單… Downloading NASDAQ ticker list…")
+            df_nasdaq = get_universe_nasdaq(price_min=min_price, vol_min=float(min_avg_vol))
+            elapsed = time_module.time() - t0
+            if df_nasdaq is not None and not df_nasdaq.empty and "Ticker" in df_nasdaq.columns:
+                tickers = [str(t).strip().upper() for t in df_nasdaq["Ticker"].dropna()
+                           if str(t).strip() and 1 <= len(str(t).strip()) <= 5
+                           and str(t).strip().replace("-", "").isalpha()]
+                _progress("Stage 1", 10, f"✓ Stage 1 完成 (NASDAQ FTP): {len(tickers):,} 個候選股票")
+                logger.info("[QM Stage1] ✓ NASDAQ FTP: %d candidates in %.1fs", len(tickers), elapsed)
+                return tickers
+            else:
+                logger.warning("[QM Stage1] NASDAQ FTP returned empty, falling back to finvizfinance")
+        except Exception as exc:
+            logger.error("[QM Stage1] NASDAQ FTP failed (%s), falling back to finvizfinance", exc)
+
+    # ── finvizfinance route (default / fallback) ───────────────────────────
     _progress("Stage 1", 2, "連接 finvizfinance 中… Connecting to finvizfinance…")
     logger.info("[QM Stage1] Starting coarse filter with patient timeout")
 
@@ -210,6 +237,19 @@ def run_qm_stage1(min_price: float = 5.0,
         logger.error("[QM Stage1] All fallback attempts exhausted, returning empty list")
         tickers = []
 
+    # ── OTC filter — strip Pink-Sheet / unlisted stocks ──────────────────
+    if tickers:
+        try:
+            from modules.nasdaq_universe import filter_otc
+            before = len(tickers)
+            tickers = filter_otc(tickers)
+            removed = before - len(tickers)
+            if removed:
+                _progress("Stage 1", 9,
+                          f"移除 {removed} 個 OTC/場外股票 Removed {removed} OTC/unlisted tickers")
+        except Exception as exc:
+            logger.warning("[QM Stage1] OTC filter skipped: %s", exc)
+
     # Final status message
     if tickers:
         _progress("Stage 1", 10, f"✓ Stage 1 完成: {len(tickers):,} 個候選股票準備進入 Stage 2")
@@ -217,7 +257,7 @@ def run_qm_stage1(min_price: float = 5.0,
     else:
         _progress("Stage 1", 10, "⚠ Stage 1 未找到任何符合條件的股票。請檢查市場或調整篩選條件。")
         logger.warning("[QM Stage1] ⚠ ⚠ ⚠ FAILURE: No candidates found from any finvizfinance view")
-    
+
     return tickers
 
 
@@ -583,8 +623,45 @@ def run_qm_stage3(stage2_rows: list[dict],
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _save_scan_results_csv(df_passed: pd.DataFrame, df_all: pd.DataFrame,
+                            scan_start: "datetime") -> None:
+    """
+    Auto-save QM scan results to scan_results/ for debugging.
+
+    Creates two files per run:
+      scan_results/qm_passed_YYYYMMDD_HHMMSS.csv  — stocks that met min_star
+      scan_results/qm_all_YYYYMMDD_HHMMSS.csv     — all Stage-3 evaluated rows
+
+    Keeps the last QM_SCAN_RESULTS_KEEP (default 30) runs per file type to
+    avoid unbounded disk growth.
+    """
+    out_dir = ROOT / "scan_results"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = scan_start.strftime("%Y%m%d_%H%M%S")
+    keep = getattr(C, "QM_SCAN_RESULTS_KEEP", 30)
+
+    for label, df in [("qm_passed", df_passed), ("qm_all", df_all)]:
+        fpath = out_dir / f"{label}_{ts}.csv"
+        if df is not None and not df.empty:
+            df.to_csv(fpath, index=False)
+            logger.info("[QM Scan] Saved %d rows → %s", len(df), fpath.name)
+        else:
+            # Write empty file so the timestamp slot is still visible
+            fpath.write_text("(no results)\n")
+            logger.info("[QM Scan] No data for %s — wrote empty placeholder", fpath.name)
+
+        # Rotate: keep only most recent N files of this label type
+        existing = sorted(out_dir.glob(f"{label}_*.csv"), reverse=True)
+        for old in existing[keep:]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+
+
 def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None,
-                strict_rs: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+                strict_rs: bool = False, stage1_source: str = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Full 3-stage Qullamaggie breakout scan.
 
@@ -629,7 +706,7 @@ def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None,
             logger.warning("[QM Scan] Could not check market environment: %s", exc)
 
     # ── Stage 1 ───────────────────────────────────────────────────────────
-    candidates = run_qm_stage1(verbose=verbose)
+    candidates = run_qm_stage1(verbose=verbose, stage1_source=stage1_source)
     if _is_cancelled():
         return pd.DataFrame(), pd.DataFrame()
     if not candidates:
@@ -684,6 +761,12 @@ def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None,
     elapsed = (datetime.now() - scan_start).total_seconds()
     logger.info("[QM Scan] FINAL: %d passed | %d scored total | %.0fs elapsed",
                 len(df_passed), len(df_all), elapsed)
+
+    # ── Auto-save CSV to scan_results/ for debugging ───────────────────────
+    try:
+        _save_scan_results_csv(df_passed, df_all, scan_start)
+    except Exception as _csv_exc:
+        logger.warning("[QM Scan] CSV auto-save failed: %s", _csv_exc)
 
     if verbose:
         print()

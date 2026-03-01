@@ -180,6 +180,23 @@ TREND_RIDER_MIN_GAIN_PCT = 10.0  # Trend-Rider mode: if unrealized gain >= this 
                                  # Set to 10.0 to align with TRAILING_STOP_TABLE tier-2 threshold.
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STAGE 1 SOURCE SELECTION
+# ─────────────────────────────────────────────────────────────────────────────
+# Controls which data source powers the Stage 1 coarse screener.
+# Options:
+#   "nasdaq_ftp"  — Free NASDAQ FTP ticker list + yfinance price/vol filter
+#                   (~2-4 min, fully free, no API key needed)  [recommended]
+#   "finviz"      — finvizfinance (~10-15 min, OTC stocks auto-removed, fewer listed stocks)
+STAGE1_SOURCE = "nasdaq_ftp"   # Switch to "finviz" to use finvizfinance
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NASDAQ FTP Universe  — used when STAGE1_SOURCE = "nasdaq_ftp"
+# ─────────────────────────────────────────────────────────────────────────────
+NASDAQ_TICKER_CACHE_DAYS = 1    # Re-download full ticker list every N days
+NASDAQ_BATCH_SIZE        = 100  # Tickers per yfinance batch download
+NASDAQ_BATCH_SLEEP       = 0.5  # Seconds between batches (be polite to yfinance)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # REPORTING
 # ─────────────────────────────────────────────────────────────────────────────
 REPORTS_DIR   = "reports"
@@ -300,6 +317,7 @@ QM_STAR_DIM_F_WEIGHT       = 0.05 # F: Market timing / macro environment
 QM_SCAN_TOP_N              = 50   # Max candidates to return from QM scan
 QM_SCAN_MIN_STAR           = 3.0  # Minimum star rating to appear in results
 QM_SCAN_MIN_DOLLAR_VOL     = 5_000_000  # Min $Volume gate for scan output
+QM_SCAN_RESULTS_KEEP       = 30   # Max CSV files to keep per label in scan_results/
 
 # ── QM scan performance tuning ─────────────────────────────────────────────────
 # Stage 2: Historical data and batch download optimization

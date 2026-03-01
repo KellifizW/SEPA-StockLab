@@ -55,6 +55,27 @@
           </select>
         </div>
         <div class="col-auto">
+          <label class="form-label text-secondary" style="font-size:12px">股票來源 Stage 1 Source</label>
+          <select id="stage1Source" class="form-select form-select-sm" style="width:155px;background:#0d1117;color:#c9d1d9;border-color:#30363d" title="選擇第一階段篩選來源 Choose Stage 1 data source" onchange="onSourceChange(this.value)">
+            <option value="nasdaq_ftp" selected>NASDAQ FTP (快速 Fast)</option>
+            <option value="finviz">Finviz (慢 Slow ~15m)</option>
+          </select>
+          <!-- Per-source limitation notes -->
+          <div id="srcNote_nasdaq_ftp" class="mt-1" style="font-size:11px;color:#8b949e;max-width:360px">
+            <i class="bi bi-check-circle me-1" style="color:#3fb950"></i>
+            <strong style="color:#c9d1d9">推薦 Recommended</strong> —
+            涵蓋最完整的 NASDAQ/NYSE/AMEX 官方掛牌股票，OTC 場外股票自動排除。<br>
+            <span style="color:#6e7681">Covers more listed stocks than Finviz (~24 vs ~22 in testing). OTC stocks are automatically excluded by design.</span>
+          </div>
+          <div id="srcNote_finviz" class="mt-1 d-none" style="font-size:11px;color:#8b949e;max-width:360px">
+            <i class="bi bi-exclamation-triangle me-1" style="color:#e3b341"></i>
+            掃描速度慢（約 10–15 分鐘）。OTC 場外股票已自動過濾。<br>
+            注意：Finviz 自身的掛牌股票覆蓋率比 NASDAQ FTP 少約 2 隻，結果不一定更多。<br>
+            <span style="color:#6e7681">Slow (~10–15 min). OTC stocks auto-removed. Finviz's listed-stock coverage is slightly less complete than NASDAQ FTP — expect ~22 results vs ~24 from NASDAQ FTP.</span>
+          </div>
+
+        </div>
+        <div class="col-auto">
           <button class="btn btn-accent px-4" id="btnScan" onclick="startScan()">
             <i class="bi bi-lightning-charge me-1"></i>開始掃描 Run Scan
           </button>
@@ -238,9 +259,17 @@ document.addEventListener('DOMContentLoaded', () => {
   loadLast();
 });
 
+function onSourceChange(val) {
+  ['nasdaq_ftp', 'finviz'].forEach(src => {
+    const el = document.getElementById('srcNote_' + src);
+    if (el) el.classList.toggle('d-none', src !== val);
+  });
+}
+
 async function startScan() {
   const minStar = parseFloat(document.getElementById('minStar').value);
   const topN    = parseInt(document.getElementById('topN').value);
+  const stage1Source = document.getElementById('stage1Source').value;
 
   document.getElementById('btnScan').disabled = true;
   document.getElementById('btnCancel').classList.remove('d-none');
@@ -254,7 +283,7 @@ async function startScan() {
     const resp = await fetch('/api/qm/scan/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ min_star: minStar, top_n: topN })
+      body: JSON.stringify({ min_star: minStar, top_n: topN, stage1_source: stage1Source })
     });
     const data = await resp.json();
     _jobId = data.job_id;

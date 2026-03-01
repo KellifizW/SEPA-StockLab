@@ -433,8 +433,9 @@ def qm_guide_page():
 @app.route("/api/scan/run", methods=["POST"])
 def api_scan_run():
     data        = request.get_json(silent=True) or {}
-    refresh_rs  = data.get("refresh_rs", False)
-    jid         = _new_job()
+    refresh_rs    = data.get("refresh_rs", False)
+    stage1_source = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
+    jid           = _new_job()
 
     cancel_ev = _get_cancel(jid)
 
@@ -457,7 +458,7 @@ def api_scan_run():
         try:
             from modules.screener import run_scan, set_scan_cancel
             set_scan_cancel(cancel_ev)
-            scan_result = run_scan(refresh_rs=refresh_rs)
+            scan_result = run_scan(refresh_rs=refresh_rs, stage1_source=stage1_source)
             # run_scan returns (df_passed, df_all) tuple
             if isinstance(scan_result, tuple):
                 df_passed, df_all = scan_result
@@ -621,6 +622,7 @@ def api_qm_scan_run():
     data     = request.get_json(silent=True) or {}
     min_star = float(data.get("min_star", getattr(C, "QM_MIN_STAR_DISPLAY", 3.0)))
     top_n    = int(data.get("top_n", getattr(C, "QM_SCAN_TOP_N", 50)))
+    stage1_source = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
     jid      = _new_job()
     cancel_ev = _get_cancel(jid)
     _qm_job_ids.add(jid)
@@ -642,7 +644,7 @@ def api_qm_scan_run():
         try:
             from modules.qm_screener import run_qm_scan, set_qm_scan_cancel
             set_qm_scan_cancel(cancel_ev)
-            result = run_qm_scan(min_star=min_star, top_n=top_n)
+            result = run_qm_scan(min_star=min_star, top_n=top_n, stage1_source=stage1_source)
             if isinstance(result, tuple):
                 df_passed, df_all = result
             else:
@@ -1850,6 +1852,7 @@ def api_backtest_status(jid):
     })
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════════

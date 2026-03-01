@@ -93,11 +93,39 @@ MIN_STAGE1_CANDIDATES = 50
 
 
 def run_stage1(custom_filters: dict = None,
-               verbose: bool = True) -> list:
+               verbose: bool = True,
+               stage1_source: str = None) -> list:
     """
-    Stage 1: Coarse finvizfinance screener.
-    Returns list of ticker strings.
+    Stage 1: Coarse screener.  Returns list of ticker strings.
+
+    Source is controlled by C.STAGE1_SOURCE (or overridden by stage1_source param):
+      "finviz"      — finvizfinance (default; slow, ~15 min full scan)
+      "nasdaq_ftp"  — Free NASDAQ FTP + yfinance price/vol filter (~2-4 min)
     """
+    stage1_source = (stage1_source or getattr(C, "STAGE1_SOURCE", "finviz")).lower()
+
+    # ── NASDAQ FTP route ───────────────────────────────────────────────────
+    if stage1_source == "nasdaq_ftp":
+        if verbose:
+            print("\n[Stage 1] Source: NASDAQ FTP + yfinance filter")
+            print(f"          Filters: price>${C.MIN_STOCK_PRICE:.0f}, "
+                  f"volume>{C.MIN_AVG_VOLUME:,}")
+        try:
+            from modules.nasdaq_universe import get_universe_nasdaq
+            df_nasdaq = get_universe_nasdaq()
+            if not df_nasdaq.empty and "Ticker" in df_nasdaq.columns:
+                tickers = df_nasdaq["Ticker"].dropna().str.strip().tolist()
+                tickers = [t for t in tickers
+                           if t and 1 <= len(t) <= 5
+                           and t.replace("-", "").isalpha()]
+                if verbose:
+                    logger.info("[Stage 1] NASDAQ FTP: %d candidates", len(tickers))
+                return tickers
+        except Exception as e:
+            logger.error("[Stage 1] NASDAQ FTP failed (%s), falling back to finvizfinance", e)
+        # Fall through to finvizfinance below
+
+    # ── finvizfinance route (default) ──────────────────────────────────────
     filters = {**COARSE_FILTERS}
     if custom_filters:
         filters.update(custom_filters)
@@ -146,6 +174,17 @@ def run_stage1(custom_filters: dict = None,
     tickers = [t for t in tickers
                if t and 1 <= len(t) <= 5
                and t.replace("-", "").isalpha()]
+
+    # ── OTC filter — strip Pink-Sheet / unlisted stocks ──────────────────
+    try:
+        from modules.nasdaq_universe import filter_otc
+        before = len(tickers)
+        tickers = filter_otc(tickers)
+        removed = before - len(tickers)
+        if removed and verbose:
+            logger.info("[Stage 1] Removed %d OTC/unlisted tickers via NASDAQ FTP whitelist", removed)
+    except Exception as exc:
+        logger.warning("[Stage 1] OTC filter skipped: %s", exc)
 
     if verbose:
         logger.info("[Stage 1] %d candidates pass coarse filter", len(tickers))
@@ -657,7 +696,8 @@ def _parse_pct(val) -> Optional[float]:
 
 def run_scan(custom_filters: dict = None,
              refresh_rs: bool = False,
-             verbose: bool = True) -> pd.DataFrame:
+             verbose: bool = True,
+             stage1_source: str = None) -> pd.DataFrame:
     """
     Run the full 3-stage SEPA scan.
     Returns a ranked DataFrame of candidates with SEPA scores.
@@ -692,7 +732,7 @@ def run_scan(custom_filters: dict = None,
     # -- Stage 1 ---------------------------------------------------------------
     _progress("Stage 1 -- Coarse Filter", 15, "Querying finvizfinance screener...")
     _t1 = _time.perf_counter()
-    s1_tickers = run_stage1(custom_filters, verbose=verbose)
+    s1_tickers = run_stage1(custom_filters, verbose=verbose, stage1_source=stage1_source)
     logger.info("[Timing] Stage 1: %.1fs -> %d candidates", _elapsed(_t1), len(s1_tickers))
     if _cancelled():
         return pd.DataFrame()

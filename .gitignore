@@ -1,3 +1,6 @@
+# API Keys & Credentials — NEVER commit
+credentials/
+
 # Python
 __pycache__/
 *.pyc
@@ -8,6 +11,11 @@ data/price_cache/
 data/rs_cache.csv
 data/last_scan.json
 data/sepa_scan_*.csv
+data/nasdaq_universe_cache.json
+data/nasdaq_ticker_list.json
+
+# Scan result CSVs — auto-generated, not for version control
+scan_results/
 
 # DuckDB database — local development only
 data/sepa_stock.duckdb

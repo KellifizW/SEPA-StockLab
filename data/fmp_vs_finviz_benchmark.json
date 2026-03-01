@@ -1,0 +1,253 @@
+{
+  "benchmark_date": "2026-03-01 13:27:23",
+  "fmp": {
+    "elapsed_sec": 1.407,
+    "rows": 0,
+    "columns": [],
+    "error": null
+  },
+  "finvizfinance": {
+    "elapsed_sec": 95.129,
+    "rows": 0,
+    "columns": [],
+    "error": null,
+    "note": "90s timeout — full scan requires ~900s"
+  },
+  "field_comparison": [
+    {
+      "field": "Ticker",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Company",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Sector",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Industry",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Country",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Market Cap",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "P/E",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "not in FMP screener"
+    },
+    {
+      "field": "Price",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Change",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "not in FMP screener"
+    },
+    {
+      "field": "Volume",
+      "finvizfinance": "YES",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Perf Week",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc from price history"
+    },
+    {
+      "field": "Perf Month",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc from price history"
+    },
+    {
+      "field": "Perf Quart",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc from price history"
+    },
+    {
+      "field": "Perf Half",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc from price history"
+    },
+    {
+      "field": "Perf Year",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc from price history"
+    },
+    {
+      "field": "Perf YTD",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc from price history"
+    },
+    {
+      "field": "Volatility W",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "not in FMP screener"
+    },
+    {
+      "field": "Volatility M",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "not in FMP screener"
+    },
+    {
+      "field": "Recom",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "use yfinance/pandas_ta"
+    },
+    {
+      "field": "Avg Volume",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "use yfinance/pandas_ta"
+    },
+    {
+      "field": "Rel Volume",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "use yfinance/pandas_ta"
+    },
+    {
+      "field": "RSI (14)",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "use yfinance/pandas_ta"
+    },
+    {
+      "field": "Gap",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc from open vs prev close"
+    },
+    {
+      "field": "52W High",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "from yfinance OHLCV"
+    },
+    {
+      "field": "52W Low",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "from yfinance OHLCV"
+    },
+    {
+      "field": "20-Day Simple Moving Average",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc via pandas_ta"
+    },
+    {
+      "field": "50-Day Simple Moving Average",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc via pandas_ta"
+    },
+    {
+      "field": "200-Day Simple Moving Average",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "calc via pandas_ta"
+    },
+    {
+      "field": "EPS (ttm)",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "from FMP fundamentals API"
+    },
+    {
+      "field": "EPS Q/Q",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "from FMP fundamentals API"
+    },
+    {
+      "field": "Insider Own",
+      "finvizfinance": "YES",
+      "fmp": "no",
+      "notes": "from FMP fundamentals API"
+    },
+    {
+      "field": "Beta",
+      "finvizfinance": "no",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Dividend",
+      "finvizfinance": "no",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Exchange",
+      "finvizfinance": "no",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Exchange Short",
+      "finvizfinance": "no",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Is ETF",
+      "finvizfinance": "no",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Is Fund",
+      "finvizfinance": "no",
+      "fmp": "YES",
+      "notes": ""
+    },
+    {
+      "field": "Active",
+      "finvizfinance": "no",
+      "fmp": "YES",
+      "notes": ""
+    }
+  ],
+  "summary": {
+    "both_have": 8,
+    "finvizfinance_only": 23,
+    "fmp_extra": 7,
+    "fmp_replaces_stage1": true,
+    "reason": "Stage 1 only needs ticker list with price/volume filter"
+  }
+}

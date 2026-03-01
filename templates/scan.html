@@ -17,10 +17,26 @@
     <div class="card">
       <div class="card-body">
         <p class="text-muted small mb-3">
-          <strong>Stage 1</strong> — finvizfinance coarse filter (USA stocks only, EPS/ROE/Sales growth)&emsp;
+          <strong>Stage 1</strong> — NASDAQ FTP / Finviz coarse filter (USA listed stocks, price/volume/EPS/ROE)&emsp;
           <strong>Stage 2</strong> — Minervini TT1-TT10 exact validation (batch download + parallel)&emsp;
           <strong>Stage 3</strong> — 5-pillar SEPA scoring + VCP detection (parallel)
         </p>
+        <!-- Stage 1 Source selector -->
+        <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+          <label class="text-muted small mb-0" for="sepaStage1Source">Stage 1 來源 / Source:</label>
+          <select class="form-select form-select-sm w-auto" id="sepaStage1Source" onchange="onSepaSourceChange()">
+            <option value="nasdaq_ftp" selected>NASDAQ FTP (推薦 / Recommended)</option>
+            <option value="finviz">Finviz</option>
+          </select>
+          <div id="sepaNote_nasdaq_ftp" class="text-muted small">
+            <i class="bi bi-info-circle me-1"></i>免費靜態檔案，約 2-4 分鐘，僅上市股票。
+            Free static file, ~2-4 min, listed stocks only.
+          </div>
+          <div id="sepaNote_finviz" class="text-muted small d-none">
+            <i class="bi bi-info-circle me-1"></i>finvizfinance 篩選，約 10-15 分鐘，OTC 股票已自動過濾。
+            finvizfinance filter, ~10-15 min, OTC stocks auto-removed.
+          </div>
+        </div>
         <div class="d-flex gap-2 align-items-center flex-wrap">
           <button class="btn btn-accent px-4" id="btnScan" onclick="startScan()">
             <i class="bi bi-play-fill me-1"></i>Run Scan
@@ -433,8 +449,17 @@ function showBadge(txt) {
 }
 
 /* ─── Start scan ──────────────────────────────────────────────────────── */
+function onSepaSourceChange() {
+  const src = document.getElementById('sepaStage1Source').value;
+  ['nasdaq_ftp', 'finviz'].forEach(s => {
+    const el = document.getElementById('sepaNote_' + s);
+    if (el) el.classList.toggle('d-none', s !== src);
+  });
+}
+
 async function startScan() {
-  const refreshRs = document.getElementById('chkRefresh').checked;
+  const refreshRs    = document.getElementById('chkRefresh').checked;
+  const stage1Source = document.getElementById('sepaStage1Source').value;
   document.getElementById('btnScan').disabled = true;
   document.getElementById('btnStop').classList.remove('d-none');
   document.getElementById('btnStop').disabled = false;
@@ -450,7 +475,7 @@ async function startScan() {
   try {
     r = await fetch('/api/scan/run', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({refresh_rs: refreshRs})
+      body: JSON.stringify({refresh_rs: refreshRs, stage1_source: stage1Source})
     }).then(x => x.json());
   } catch(e) { onScanError(e.message); return; }
 
