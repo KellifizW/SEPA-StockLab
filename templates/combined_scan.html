@@ -1,0 +1,1580 @@
+{% extends "base.html" %}
+{% block title %}Combined SEPA + QM Scan{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  /* ── Star colours ── */
+  .star-5p  { color: #3fb950; font-weight: 700; }
+  .star-5   { color: #3fb950; }
+  .star-4   { color: #e3b341; }
+  .star-3   { color: #8b949e; }
+  .star-low { color: #f85149; }
+  /* ── Setup badge colours ── */
+  .badge-htf  { background: #1b6e2e; color: #3fb950; }
+  .badge-ep   { background: #4a3800; color: #e3b341; }
+  .badge-lad  { background: #1a3060; color: #58a6ff; }
+  .badge-surf { background: #003040; color: #00d4ff; }
+  .badge-rpl  { background: #3a0060; color: #d49fff; }
+  .badge-flag { background: #301020; color: #ff8fa3; }
+  .badge-uk   { background: #1c2128; color: #8b949e; }
+  .veto-badge { background: #3a0a0a; color: #f85149; font-size: 10px; border-radius: 3px; padding: 1px 5px; }
+  /* ── SEPA score colours ── */
+  .score-high { color: #3fb950; font-weight: 700; }
+  .score-mid  { color: #e3b341; font-weight: 600; }
+  .score-low  { color: #f85149; }
+  .row-below-threshold { opacity: 0.5; }
+  .row-below-threshold:hover { opacity: 0.75; }
+  .tag-vcp { background: #004d40; color: #64ffda; border-radius: 4px; padding: 2px 7px; font-size: 11px; white-space: nowrap; text-decoration: none; display: inline-block; }
+  /* ── Layout ── */
+  .combined-tabs .nav-link { color: #8b949e; border-color: transparent; }
+  .combined-tabs .nav-link.active { color: var(--accent); border-color: #30363d #30363d #161b22; background: #161b22; }
+  .filter-bar { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .filter-panel { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-top: 12px; }
+  .qm-row:hover { background: #1a2030 !important; cursor: pointer; }
+  .sepa-row:hover { background: #1a2030 !important; }
+  .timing-pill { background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 6px 14px; display: inline-block; font-size: 12px; }
+  .regime-bull  { background: #1b3a2e; color: #3fb950; }
+  .regime-trans { background: #3a3000; color: #e3b341; }
+  .regime-bear  { background: #3a1010; color: #f85149; }
+  .metric-card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center; }
+  .metric-val  { font-weight: 700; color: var(--accent); }
+  .metric-lbl  { font-size: 11px; color: #8b949e; margin-top: 4px; }
+  .info-panel  { background: #0d1b2a; border: 1px solid #1c2f42; border-radius: 6px; padding: 12px; }
+  .cache-info-panel { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+  /* ── Step indicators ── */
+  .step-dot { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: #21262d; border: 2px solid #30363d; color: #8b949e; font-size: 11px; font-weight: 700; transition: all .3s; }
+  .step-dot.active { background: var(--accent); border-color: var(--accent); color: #000; }
+  .step-dot.done   { background: #1b6e2e; border-color: #3fb950; color: #3fb950; }
+  .step-label { font-size: 10px; color: #8b949e; text-align: center; white-space: nowrap; }
+  .step-connector { flex: 1; height: 2px; background: #30363d; margin: 0 4px; align-self: center; }
+  .step-connector.done { background: #3fb950; }
+  /* ── Live log ── */
+  #liveLogWrap { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; max-height: 120px; overflow-y: auto; font-family: monospace; font-size: 11px; }
+  #liveLog .log-line      { color: #8b949e; }
+  #liveLog .log-line.info { color: #58a6ff; }
+  #liveLog .log-line.ok   { color: #3fb950; }
+  #liveLog .log-line.warn { color: #e3b341; }
+  #liveLog .log-line.err  { color: #f85149; }
+  /* ── 未通過 badge ── */
+  .not-passed-badge { font-size: 10px; background: #3a1010; color: #f85149; border-radius: 3px; padding: 1px 5px; margin-left: 4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- ─── Header ─────────────────────────────────────────────────────── -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">
+    <i class="bi bi-lightning-fill me-2" style="color:var(--accent)"></i>
+    Combined Scan — SEPA <span style="color:#8b949e">+</span> QM
+    <small class="text-secondary ms-2" style="font-size:13px">完整功能掃描 Full Parity</small>
+  </h4>
+  <div class="d-flex align-items-center gap-2">
+    <span id="tradingDateBadge" class="badge bg-dark border border-secondary small"></span>
+    <span id="clockHK"  class="badge bg-dark border border-secondary small"></span>
+    <span id="clockUS"  class="badge bg-dark border border-secondary small"></span>
+  </div>
+</div>
+
+<!-- ─── Speed & Cache Status ──────────────────────────────────────── -->
+<div class="cache-info-panel" id="cacheInfoPanel">
+  <div class="d-flex justify-content-between align-items-start mb-2">
+    <span class="fw-bold small">
+      <i class="bi bi-speedometer2 me-1" style="color:var(--accent)"></i>
+      快取 &amp; 速度預估 Cache Speed
+    </span>
+    <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="loadCacheInfo()" title="Refresh">
+      <i class="bi bi-arrow-clockwise"></i>
+    </button>
+  </div>
+  <div class="row g-2 small">
+    <div class="col-md-3">
+      <span class="text-secondary">RS Rankings:</span>
+      <span id="cacheRS" class="ms-1 badge bg-secondary">checking…</span>
+    </div>
+    <div class="col-md-3">
+      <span class="text-secondary">Price Cache:</span>
+      <span id="cachePrice" class="ms-1 badge bg-secondary">checking…</span>
+    </div>
+    <div class="col-md-3">
+      <span class="text-secondary">Fundamentals:</span>
+      <span id="cacheFundamentals" class="ms-1 badge bg-secondary">checking…</span>
+    </div>
+    <div class="col-md-3">
+      <span class="text-secondary">Est. Time:</span>
+      <span id="cacheEstimate" class="ms-1 badge bg-secondary">checking…</span>
+    </div>
+  </div>
+  <div id="cacheHints" class="mt-2 small text-muted"></div>
+</div>
+
+<!-- ─── API Rate Limits (collapsible) ────────────────────────────── -->
+<div class="mb-3">
+  <button class="btn btn-sm btn-link text-secondary p-0 text-decoration-none"
+    onclick="toggleRateLimitInfo()" style="font-size:12px">
+    <i class="bi bi-chevron-right me-1" id="rateLimitToggle"></i>
+    API Rate Limits &amp; Best Practices
+  </button>
+  <div id="rateLimitInfo" class="d-none mt-2 info-panel small">
+    <div class="row g-2">
+      <div class="col-md-4">
+        <strong class="text-warning">yfinance (Yahoo Finance)</strong>
+        <ul class="list-unstyled mt-1 mb-0 text-secondary">
+          <li>• 無官方限制，非官方 ~2000 calls/hour</li>
+          <li>• 批量下載 (multi-ticker) 效率最高</li>
+          <li>• 建議每 50 檔延遲 0.5s</li>
+        </ul>
+      </div>
+      <div class="col-md-4">
+        <strong class="text-warning">Finviz Screener</strong>
+        <ul class="list-unstyled mt-1 mb-0 text-secondary">
+          <li>• 爬蟲限制 ~100 requests/day</li>
+          <li>• 建議使用 NASDAQ FTP 取代</li>
+          <li>• Finviz Elite 可提高上限</li>
+        </ul>
+      </div>
+      <div class="col-md-4">
+        <strong class="text-success">最佳實踐 Best Practices</strong>
+        <ul class="list-unstyled mt-1 mb-0 text-secondary">
+          <li>• 每日首次掃描較慢（建立快取）</li>
+          <li>• 同日第二次掃描 2-5 分鐘</li>
+          <li>• 使用 NASDAQ FTP（最快、最穩）</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Controls bar ──────────────────────────────────────────────── -->
+<div class="filter-bar">
+  <div class="row g-3 align-items-end">
+    <!-- Stage 1 Source -->
+    <div class="col-auto">
+      <label class="form-label text-secondary mb-1" style="font-size:12px">Stage 1 來源</label>
+      <select class="form-select form-select-sm" id="combinedSource"
+        style="width:185px;background:#0d1117;color:#c9d1d9;border-color:#30363d"
+        onchange="onSourceChange(this.value)">
+        <option value="nasdaq_ftp" selected>NASDAQ FTP (推薦)</option>
+        <option value="finviz">Finviz (慢)</option>
+      </select>
+    </div>
+
+    <!-- QM Filters (shown on QM tab only) -->
+    <div class="col-auto d-none" id="qmFilterContainer">
+      <label class="form-label text-secondary mb-1" style="font-size:12px">最低星級 Min Stars</label>
+      <select class="form-select form-select-sm" id="minStar"
+        style="width:130px;background:#0d1117;color:#c9d1d9;border-color:#30363d"
+        onchange="filterQmTable()">
+        <option value="3">★★★ 3+</option>
+        <option value="3.5">★★★½ 3.5+</option>
+        <option value="4" selected>★★★★ 4+</option>
+        <option value="4.5">★★★★½ 4.5+</option>
+        <option value="5">★★★★★ 5+</option>
+      </select>
+    </div>
+    <div class="col-auto d-none" id="qmFilterContainer2">
+      <label class="form-label text-secondary mb-1" style="font-size:12px">Top N</label>
+      <select class="form-select form-select-sm" id="topN"
+        style="width:90px;background:#0d1117;color:#c9d1d9;border-color:#30363d"
+        onchange="filterQmTable()">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="9999">全部</option>
+      </select>
+    </div>
+
+    <!-- Refresh RS checkbox -->
+    <div class="col-auto">
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" id="chkRefreshRS">
+        <label class="form-check-label text-muted small" for="chkRefreshRS">Refresh RS</label>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="col-auto">
+      <button class="btn btn-accent px-4" id="btnRun" onclick="startScan()">
+        <i class="bi bi-play-fill me-1"></i>Scan
+      </button>
+      <button class="btn btn-outline-danger btn-sm ms-2 d-none" id="btnStop" onclick="stopScan()">
+        <i class="bi bi-stop-fill me-1"></i>取消
+      </button>
+      <button class="btn btn-outline-secondary btn-sm ms-2 d-none" id="btnLoadLast" onclick="loadLastResults()">
+        <i class="bi bi-clock-history me-1"></i>上次結果
+      </button>
+    </div>
+
+    <div class="col ms-auto text-end">
+      <span id="combinedStatus" class="text-muted small">Ready</span>
+    </div>
+  </div>
+
+  <!-- Source notes -->
+  <div id="srcNote_nasdaq_ftp" class="mt-2 small text-muted">
+    <i class="bi bi-check-circle me-1" style="color:#3fb950"></i>
+    NASDAQ/NYSE/AMEX 上市股票，約 2-4 分鐘
+  </div>
+  <div id="srcNote_finviz" class="d-none mt-2 small text-muted">
+    <i class="bi bi-exclamation-triangle me-1" style="color:#e3b341"></i>
+    較慢（約 10-15 分鐘），OTC 自動過濾
+  </div>
+</div>
+
+<!-- ─── Progress panel ─────────────────────────────────────────────── -->
+<div id="progressArea" class="d-none mt-3">
+  <!-- Step indicators -->
+  <div class="d-flex align-items-start mb-3">
+    <div class="d-flex flex-column align-items-center">
+      <div class="step-dot" id="step1">1</div>
+      <div class="step-label mt-1">Stage 1</div>
+    </div>
+    <div class="step-connector" id="conn1"></div>
+    <div class="d-flex flex-column align-items-center">
+      <div class="step-dot" id="step2">2</div>
+      <div class="step-label mt-1">下載</div>
+    </div>
+    <div class="step-connector" id="conn2"></div>
+    <div class="d-flex flex-column align-items-center">
+      <div class="step-dot" id="step3">3</div>
+      <div class="step-label mt-1">TT驗證</div>
+    </div>
+    <div class="step-connector" id="conn3"></div>
+    <div class="d-flex flex-column align-items-center">
+      <div class="step-dot" id="step4">4</div>
+      <div class="step-label mt-1">評分</div>
+    </div>
+    <div class="step-connector" id="conn4"></div>
+    <div class="d-flex flex-column align-items-center">
+      <div class="step-dot" id="step5">5</div>
+      <div class="step-label mt-1">完成</div>
+    </div>
+  </div>
+
+  <!-- Progress bar + messages -->
+  <div class="progress mb-2" style="height:5px;background:#21262d">
+    <div id="progressBar" class="progress-bar"
+      style="background:var(--accent);width:0%;transition:width .4s"></div>
+  </div>
+  <div class="d-flex justify-content-between align-items-center mb-1">
+    <span id="progressMsg" class="text-muted small">Starting…</span>
+    <span id="progressTicker" class="text-muted small font-monospace"></span>
+  </div>
+
+  <!-- Live log -->
+  <div id="liveLogWrap" class="d-none">
+    <div id="liveLog"></div>
+  </div>
+  <button class="btn btn-link btn-sm text-secondary p-0 mt-1" id="btnToggleLog"
+    onclick="toggleLiveLog()" style="font-size:11px">
+    <i class="bi bi-terminal me-1"></i>Show Live Log
+  </button>
+</div>
+
+<!-- ─── Timing row ──────────────────────────────────────────────────── -->
+<div id="timingRow" class="d-none my-3 d-flex flex-wrap gap-2">
+  <span class="timing-pill"><i class="bi bi-cloud-download me-1 text-secondary"></i>S1: <strong id="tS1">—</strong>s</span>
+  <span class="timing-pill"><i class="bi bi-hdd me-1 text-secondary"></i>DL: <strong id="tDL">—</strong>s</span>
+  <span class="timing-pill"><i class="bi bi-cpu me-1 text-secondary"></i>Par: <strong id="tPar">—</strong>s</span>
+  <span class="timing-pill" style="border-color:var(--accent);color:var(--accent)">
+    <i class="bi bi-clock-fill me-1"></i>Total: <strong id="tTot">—</strong>s
+  </span>
+</div>
+
+<!-- ─── Tabs ────────────────────────────────────────────────────────── -->
+<ul class="nav nav-tabs combined-tabs mb-0" id="combinedTabs" role="tablist"
+  style="border-color:#30363d">
+  <li class="nav-item">
+    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#paneSepa"
+      type="button" onclick="onTabChange('sepa')">
+      <i class="bi bi-funnel me-1"></i>SEPA
+      <span class="badge bg-secondary ms-1" id="sepaBadge">—</span>
+    </button>
+  </li>
+  <li class="nav-item">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#paneQm"
+      type="button" onclick="onTabChange('qm')">
+      <i class="bi bi-lightning-charge me-1" style="color:#e3b341"></i>QM
+      <span class="badge bg-secondary ms-1" id="qmBadge">—</span>
+    </button>
+  </li>
+  <li class="nav-item">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#paneMkt"
+      type="button" onclick="onTabChange('market')">
+      <i class="bi bi-bar-chart-line me-1"></i>Market
+    </button>
+  </li>
+</ul>
+
+<div class="tab-content" style="border:1px solid #30363d;border-top:none;border-radius:0 0 8px 8px">
+
+  <!-- ═══════════════ SEPA TAB ═══════════════ -->
+  <div class="tab-pane fade show active p-3" id="paneSepa" role="tabpanel">
+
+    <!-- Summary stat cards -->
+    <div class="row g-3 mb-3" id="sepaSummaryRow" style="display:none">
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="sepaPassCount">—</div>
+          <div class="metric-lbl">通過 Passed</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="sepaAllCount" style="color:#8b949e">—</div>
+          <div class="metric-lbl">全部評分 All Scored</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="sepaAvgScore" style="color:#e3b341">—</div>
+          <div class="metric-lbl">平均分 Avg Score</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="sepaScanTime" style="color:#8b949e">—</div>
+          <div class="metric-lbl">掃描時間 Scan Time</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts row -->
+    <div class="row g-3 mb-3" id="scanSummaryCharts" style="display:none">
+      <div class="col-md-5">
+        <div class="metric-card p-2">
+          <div class="small text-secondary mb-2 text-center">板塊分佈 Sector Distribution</div>
+          <div style="position:relative;height:180px">
+            <canvas id="sectorDonutChart"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-7">
+        <div class="metric-card p-2">
+          <div class="small text-secondary mb-2 text-center">SEPA 分數分佈 Score Distribution</div>
+          <div style="position:relative;height:180px">
+            <canvas id="scoreHistChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log bar -->
+    <div id="scanLogBar" class="d-none mb-2 small text-muted">
+      <i class="bi bi-file-text me-1"></i>Log: <span id="scanLogPath">—</span>
+    </div>
+
+    <!-- Results toolbar -->
+    <div class="d-flex align-items-center gap-2 mb-2 flex-wrap" id="sepaToolbar">
+      <!-- Text search -->
+      <input type="text" class="form-control form-control-sm" id="filterInput"
+        placeholder="Search ticker / sector…"
+        style="width:200px;background:#0d1117;color:#c9d1d9;border-color:#30363d"
+        oninput="filterSepaTable()">
+
+      <!-- Show All toggle -->
+      <button class="btn btn-sm btn-outline-secondary d-none" id="btnShowAll" onclick="toggleShowAll()">
+        <i class="bi bi-eye me-1"></i>Show All Scored
+        (<span id="allScoredCount">0</span>)
+      </button>
+
+      <!-- Filters button -->
+      <button class="btn btn-sm btn-outline-secondary" onclick="toggleSepaFilters()">
+        <i class="bi bi-funnel me-1"></i>篩選 Filters
+        <span class="badge bg-warning text-dark ms-1 d-none" id="filterBadge"></span>
+      </button>
+
+      <span class="text-muted small ms-auto" id="resultCount"></span>
+
+      <!-- CSV -->
+      <button class="btn btn-sm btn-outline-secondary" onclick="exportSepaCSV()">
+        <i class="bi bi-download me-1"></i>CSV
+      </button>
+    </div>
+
+    <!-- Advanced filter panel -->
+    <div id="sepaFilterPanel" class="filter-panel d-none">
+      <div class="row g-3 small mb-2">
+        <div class="col-6 col-md-4 col-lg-2">
+          <label class="form-label small mb-1 text-secondary">SEPA Score</label>
+          <div class="d-flex align-items-center gap-1">
+            <input type="number" class="form-control form-control-sm" id="sepaMin"
+              placeholder="Min" min="0" max="100" oninput="filterSepaTable()" style="width:55px">
+            <span class="text-muted">–</span>
+            <input type="number" class="form-control form-control-sm" id="sepaMax"
+              placeholder="Max" min="0" max="100" oninput="filterSepaTable()" style="width:55px">
+          </div>
+        </div>
+        <div class="col-6 col-md-4 col-lg-2">
+          <label class="form-label small mb-1 text-secondary">Trend (0-100)</label>
+          <div class="d-flex align-items-center gap-1">
+            <input type="number" class="form-control form-control-sm" id="trendMin"
+              placeholder="Min" min="0" max="100" oninput="filterSepaTable()" style="width:55px">
+            <span class="text-muted">–</span>
+            <input type="number" class="form-control form-control-sm" id="trendMax"
+              placeholder="Max" min="0" max="100" oninput="filterSepaTable()" style="width:55px">
+          </div>
+        </div>
+        <div class="col-6 col-md-4 col-lg-2">
+          <label class="form-label small mb-1 text-secondary">Fundamentals (0-100)</label>
+          <div class="d-flex align-items-center gap-1">
+            <input type="number" class="form-control form-control-sm" id="fundMin"
+              placeholder="Min" min="0" max="100" oninput="filterSepaTable()" style="width:55px">
+            <span class="text-muted">–</span>
+            <input type="number" class="form-control form-control-sm" id="fundMax"
+              placeholder="Max" min="0" max="100" oninput="filterSepaTable()" style="width:55px">
+          </div>
+        </div>
+        <div class="col-6 col-md-4 col-lg-2">
+          <label class="form-label small mb-1 text-secondary">RS Rank (0-99)</label>
+          <div class="d-flex align-items-center gap-1">
+            <input type="number" class="form-control form-control-sm" id="rsMin"
+              placeholder="Min" min="0" max="99" oninput="filterSepaTable()" style="width:55px">
+            <span class="text-muted">–</span>
+            <input type="number" class="form-control form-control-sm" id="rsMax"
+              placeholder="Max" min="0" max="99" oninput="filterSepaTable()" style="width:55px">
+          </div>
+        </div>
+        <div class="col-6 col-md-4 col-lg-2">
+          <label class="form-label small mb-1 text-secondary">Price $</label>
+          <div class="d-flex align-items-center gap-1">
+            <input type="number" class="form-control form-control-sm" id="priceMin"
+              placeholder="Min" min="0" oninput="filterSepaTable()" style="width:55px">
+            <span class="text-muted">–</span>
+            <input type="number" class="form-control form-control-sm" id="priceMax"
+              placeholder="Max" min="0" oninput="filterSepaTable()" style="width:55px">
+          </div>
+        </div>
+        <div class="col-6 col-md-4 col-lg-2">
+          <label class="form-label small mb-1 text-secondary">Pivot $</label>
+          <div class="d-flex align-items-center gap-1">
+            <input type="number" class="form-control form-control-sm" id="pivotMin"
+              placeholder="Min" min="0" oninput="filterSepaTable()" style="width:55px">
+            <span class="text-muted">–</span>
+            <input type="number" class="form-control form-control-sm" id="pivotMax"
+              placeholder="Max" min="0" oninput="filterSepaTable()" style="width:55px">
+          </div>
+        </div>
+      </div>
+      <div class="row g-3 small align-items-end">
+        <!-- VCP Grade -->
+        <div class="col-md-3">
+          <label class="form-label small mb-1 text-secondary">VCP Grade</label>
+          <div class="d-flex gap-2 flex-wrap">
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="checkbox" id="vcpA" onchange="filterSepaTable()">
+              <label class="form-check-label" for="vcpA">A</label>
+            </div>
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="checkbox" id="vcpB" onchange="filterSepaTable()">
+              <label class="form-check-label" for="vcpB">B</label>
+            </div>
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="checkbox" id="vcpC" onchange="filterSepaTable()">
+              <label class="form-check-label" for="vcpC">C</label>
+            </div>
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="checkbox" id="vcpNone" onchange="filterSepaTable()">
+              <label class="form-check-label text-secondary" for="vcpNone">None</label>
+            </div>
+          </div>
+        </div>
+        <!-- TT Status -->
+        <div class="col-md-2">
+          <label class="form-label small mb-1 text-secondary">Trend Template</label>
+          <div class="d-flex gap-2">
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="checkbox" id="ttPass" checked onchange="filterSepaTable()">
+              <label class="form-check-label text-success" for="ttPass">Pass</label>
+            </div>
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="checkbox" id="ttFail" onchange="filterSepaTable()">
+              <label class="form-check-label text-danger" for="ttFail">Fail</label>
+            </div>
+          </div>
+        </div>
+        <!-- Sector multiselect -->
+        <div class="col-md-5">
+          <label class="form-label small mb-1 text-secondary">Sector (Ctrl+click multi-select)</label>
+          <select class="form-select form-select-sm" id="sectorFilter" multiple size="3"
+            onchange="filterSepaTable()"
+            style="background:#0d1117;color:#c9d1d9;border-color:#30363d"></select>
+        </div>
+        <!-- Reset -->
+        <div class="col-md-2">
+          <button class="btn btn-sm btn-outline-secondary w-100" onclick="resetSepaFilters()">
+            <i class="bi bi-x-circle me-1"></i>Reset
+          </button>
+        </div>
+      </div>
+    </div><!-- /sepaFilterPanel -->
+
+    <!-- SEPA table -->
+    <div class="table-responsive mt-2">
+      <table class="table table-hover mb-0 align-middle" id="sepaTable" style="font-size:13px">
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th>Ticker</th>
+            <th>SEPA Score</th>
+            <th>Trend</th>
+            <th>Fund</th>
+            <th>RS</th>
+            <th>VCP</th>
+            <th>Pivot</th>
+            <th>Price</th>
+            <th>TT</th>
+            <th>Sector</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="sepaBody">
+          <tr><td colspan="12" class="text-center text-muted py-5">
+            掃描後顯示結果 Run scan to see results
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div><!-- /paneSepa -->
+
+  <!-- ═══════════════ QM TAB ═══════════════ -->
+  <div class="tab-pane fade p-3" id="paneQm" role="tabpanel">
+
+    <!-- QM Summary cards -->
+    <div class="row g-3 mb-3" id="qmSummaryRow" style="display:none">
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="metPassCount">—</div>
+          <div class="metric-lbl">通過 Passed</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="met5Star" style="color:#3fb950">—</div>
+          <div class="metric-lbl">5★+ 頂尖</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="metAvgStar" style="color:#e3b341">—</div>
+          <div class="metric-lbl">平均星級 Avg Stars</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="metScanTime" style="color:#8b949e">—</div>
+          <div class="metric-lbl">掃描時間 Time</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- QM Diagnostics (collapsible) -->
+    <div class="mb-2">
+      <button class="btn btn-sm btn-link text-secondary p-0 text-decoration-none"
+        onclick="toggleQmDiag()" style="font-size:12px">
+        <i class="bi bi-chevron-right me-1" id="qmDiagToggle"></i>QM 診斷 Diagnostics
+      </button>
+      <div id="qmDiagPanel" class="d-none mt-2 info-panel small">
+        <div id="qmDiagContent" class="text-muted">掃描完成後顯示診斷資訊</div>
+      </div>
+    </div>
+
+    <!-- QM table -->
+    <div class="table-responsive">
+      <table class="table table-hover mb-0" id="qmTable" style="font-size:12.5px">
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th data-bs-toggle="tooltip"
+              title="點擊股票代號可進入QM個股分析頁面，查看詳細技術分析與交易建議">
+              股票 Ticker
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="6維評分系統：ADR波動(20%)+成交額(20%)+動能(30%)+形態(10%)+均線(10%)+基本面(10%) | 5★+=頂尖機會 4★=值得關注 3★=觀察清單">
+              ⭐ 星級 Stars
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="平均日波動幅度（ATR/Price×100%）| 理想範圍：5-15%，低於5%流動性不足，高於15%波動過大">
+              ADR%
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="20日平均日成交金額（百萬美元）| 建議最低$10M，$50M+流動性佳，確保足夠交易量進出">
+              日均成交額 $Vol
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="過去1個月價格變動率 | Qullamaggie策略偏好強勢股，1M>20%為佳，代表短期動能強勁">
+              1M%
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="過去3個月價格變動率 | 中期動能指標，3M>50%代表股票處於強勢上升趨勢">
+              3M%
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="過去6個月動能，最重要的中長期動能指標 | 6M>100%代表極強動能，Qullamaggie策略核心指標">
+              6M%
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="HTF=高緊旗形 EP=突破點 LADDER=階梯上升 SURF=均線衝浪 RPL=回調至支撐 FLAG=旗形整理">
+              形態類型 Setup
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="正在衝浪的均線（10/20/50MA），表示股價在該均線附近呈現多次彈升形態，均線充當動態支撐">
+              均線 MA Surf
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="Higher Lows（較高低點）：每次回調低點高於前次，代表買盤持續支撐，趨勢健康">
+              較高低點 HL
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="Price Tightness：近期5日最高最低價差小於3%，代表股價波動收緊，常為突破前的蓄力整理">
+              波動收緊 Tight
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+          </tr>
+        </thead>
+        <tbody id="qmBody">
+          <tr><td colspan="12" class="text-center text-secondary py-5">
+            掃描後顯示結果 Run scan to see results
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Qullamaggie info footer -->
+    <div class="mt-4 p-3 info-panel small text-secondary">
+      <i class="bi bi-info-circle me-2" style="color:var(--accent)"></i>
+      <strong>Kristjan Qullamaggie 策略說明：</strong>
+      本掃描器實現 Qullamaggie 的動能突破策略，專注於高 ADR、強動能、形成特定技術形態的股票。
+      核心理念：找出具備 HTF、EP 或 SURF 形態的強勢股，在低風險位置進場，目標 3-10 倍回報。
+      建議使用 4★ 以上作為觀察清單，5★ 以上為優先考慮標的。
+    </div>
+  </div><!-- /paneQm -->
+
+  <!-- ═══════════════ MARKET TAB ═══════════════ -->
+  <div class="tab-pane fade p-3" id="paneMkt" role="tabpanel">
+    <div id="mktContent">
+      <div class="text-muted py-5 text-center">
+        <i class="bi bi-bar-chart-line" style="font-size:2.5rem;opacity:.3"></i>
+        <div class="mt-3">掃描完成後顯示市場環境 Market data shown after scan completes</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /tab-content -->
+{% endblock %}
+
+{% block extra_js %}
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   Combined Scan — Full Parity JavaScript
+   SEPA parity: scan.html  |  QM parity: qm_scan.html
+═══════════════════════════════════════════════════════════════════ */
+const CACHE_KEY = 'combined_scan_v3';
+const CACHE_VER = '3';
+
+// ── State ──────────────────────────────────────────────────────────
+let _jid          = null;
+let _sepaData     = [];   // SEPA passed rows
+let _sepaAllData  = [];   // SEPA all scored rows
+let _qmAllData    = [];   // QM all rows from backend (before min_star filter)
+let _sepaShowAll  = false;
+let _currentTab   = 'sepa';
+let _liveLogVis   = false;
+
+/* ─── Clocks & Trading Date ──────────────────────────────────────── */
+function updateClocks() {
+  const now  = new Date();
+  const fmt  = tz => new Intl.DateTimeFormat('en', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: tz
+  }).format(now);
+
+  // Last US trading day
+  const usEast = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
+  let d = new Date(usEast);
+  if (d.getHours() < 9 || (d.getHours() === 9 && d.getMinutes() < 30)) d.setDate(d.getDate() - 1);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  const yy  = d.getFullYear();
+  const mm  = String(d.getMonth() + 1).padStart(2, '0');
+  const dd  = String(d.getDate()).padStart(2, '0');
+  const dn  = d.toLocaleDateString('en-US', {weekday: 'short', timeZone: 'America/New_York'});
+  document.getElementById('tradingDateBadge').innerHTML =
+    '<i class="bi bi-calendar3 me-1"></i>' + yy + '-' + mm + '-' + dd + ' (' + dn + ')';
+
+  // Market open dot
+  const h    = usEast.getHours(), m = usEast.getMinutes(), day = usEast.getDay();
+  let dot = '🔴';
+  if (day >= 1 && day <= 5) {
+    const mins = h * 60 + m;
+    if (mins >= 570 && mins < 960) dot = '🟢';
+    else if ((mins >= 240 && mins < 570) || (mins >= 960 && mins < 1200)) dot = '🟡';
+  }
+  document.getElementById('clockHK').innerHTML =
+    '<i class="bi bi-clock me-1"></i>HK ' + fmt('Asia/Hong_Kong');
+  document.getElementById('clockUS').innerHTML =
+    '<i class="bi bi-clock me-1"></i>ET ' + fmt('America/New_York') + ' ' + dot;
+}
+updateClocks();
+setInterval(updateClocks, 1000);
+
+/* ─── Source note ────────────────────────────────────────────────── */
+function onSourceChange(val) {
+  ['nasdaq_ftp', 'finviz'].forEach(function(s) {
+    var el = document.getElementById('srcNote_' + s);
+    if (el) el.classList.toggle('d-none', s !== val);
+  });
+}
+
+/* ─── Tab change ─────────────────────────────────────────────────── */
+function onTabChange(tab) {
+  _currentTab = tab;
+  var qmF1 = document.getElementById('qmFilterContainer');
+  var qmF2 = document.getElementById('qmFilterContainer2');
+  if (tab === 'qm') {
+    qmF1.classList.remove('d-none');
+    qmF2.classList.remove('d-none');
+  } else {
+    qmF1.classList.add('d-none');
+    qmF2.classList.add('d-none');
+  }
+}
+
+/* ─── DOMContentLoaded ───────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', function() {
+  // Bootstrap tooltips
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
+    new bootstrap.Tooltip(el, {trigger: 'hover', html: false});
+  });
+
+  // Restore from localStorage
+  try {
+    var raw = localStorage.getItem(CACHE_KEY);
+    if (raw) {
+      var cached = JSON.parse(raw);
+      if (cached._ver === CACHE_VER) {
+        var sepa = cached.sepa || [], sepaAll = cached.sepaAll || sepa;
+        var qm   = cached.qm  || [];
+        if (sepa.length) {
+          _sepaData = sepa; _sepaAllData = sepaAll;
+          renderSepaTable(_sepaShowAll ? _sepaAllData : _sepaData);
+          populateSectorFilter();
+          renderScanCharts(_sepaShowAll ? _sepaAllData : _sepaData);
+          updateSepaSummary(_sepaData, _sepaAllData);
+          if (_sepaAllData.length > _sepaData.length) {
+            document.getElementById('allScoredCount').textContent = _sepaAllData.length;
+            document.getElementById('btnShowAll').classList.remove('d-none');
+          }
+          document.getElementById('sepaBadge').textContent = _sepaData.length;
+        }
+        if (qm.length) {
+          _qmAllData = qm;
+          filterQmTable();
+          updateQmSummary(qm);
+        }
+        if (cached.market) renderMarket(cached.market);
+        if (cached.timing)  renderTiming(cached.timing);
+        var ts = cached._ts ? ' (' + new Date(cached._ts).toLocaleTimeString('zh-HK') + ')' : '';
+        setStatus('Restored: SEPA ' + sepa.length + ' + QM ' + qm.length + ts);
+        document.getElementById('btnLoadLast').classList.remove('d-none');
+      }
+    }
+  } catch(e) { /* ignore */ }
+
+  // Load cache info after short delay
+  setTimeout(loadCacheInfo, 600);
+});
+
+/* ═══ SCAN CONTROL ══════════════════════════════════════════════════ */
+async function startScan() {
+  var refreshRs = document.getElementById('chkRefreshRS').checked;
+  var stage1Src = document.getElementById('combinedSource').value;
+
+  document.getElementById('btnRun').disabled = true;
+  document.getElementById('btnStop').classList.remove('d-none');
+  document.getElementById('progressArea').classList.remove('d-none');
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressMsg').textContent = 'Starting…';
+  document.getElementById('progressTicker').textContent = '';
+  document.getElementById('timingRow').classList.add('d-none');
+  _sepaShowAll = false;
+
+  // Reset step indicators
+  for (var i = 1; i <= 5; i++) document.getElementById('step' + i).className = 'step-dot';
+  for (var j = 1; j <= 4; j++) {
+    var c = document.getElementById('conn' + j);
+    if (c) c.className = 'step-connector';
+  }
+  setStatus('Scanning…');
+
+  try {
+    var resp = await fetch('/api/combined/scan/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({refresh_rs: refreshRs, stage1_source: stage1Src})
+    });
+    var r = await resp.json();
+    _jid = r.job_id;
+    pollScan();
+  } catch(e) { onError(e.message); }
+}
+
+function stopScan() {
+  if (_jid) fetch('/api/combined/scan/cancel/' + _jid, {method: 'POST'}).catch(function(){});
+  resetUI();
+  setStatus('Cancelled');
+}
+
+function pollScan() {
+  if (!_jid) return;
+  fetch('/api/combined/scan/status/' + _jid)
+    .then(function(r) { return r.json(); })
+    .then(function(job) {
+      if (job.status === 'done')       onDone(job.result || {});
+      else if (job.status === 'error') onError(job.error || 'Unknown error');
+      else { renderProgress(job.progress || {}); setTimeout(pollScan, 2000); }
+    })
+    .catch(function() { setTimeout(pollScan, 3000); });
+}
+
+function renderProgress(p) {
+  var pct = Math.min(100, p.pct || 0);
+  document.getElementById('progressBar').style.width = Math.max(pct, 2) + '%';
+  var stageText = p.stage || '', msg = p.msg || '';
+  document.getElementById('progressMsg').textContent =
+    [stageText, msg].filter(Boolean).join(' — ') || '…';
+  if (p.ticker) document.getElementById('progressTicker').textContent = p.ticker;
+
+  // Step indicator update
+  var stageMap = {stage1: 1, download: 2, validate: 3, score: 4, complete: 5};
+  var stepNum = stageMap[stageText] || (pct >= 90 ? 4 : pct >= 60 ? 3 : pct >= 30 ? 2 : 1);
+  for (var i = 1; i <= 5; i++) {
+    var s = document.getElementById('step' + i);
+    s.className = i < stepNum ? 'step-dot done' : i === stepNum ? 'step-dot active' : 'step-dot';
+  }
+  for (var j = 1; j <= 4; j++) {
+    var conn = document.getElementById('conn' + j);
+    if (conn) conn.className = j < stepNum ? 'step-connector done' : 'step-connector';
+  }
+
+  if (p.log_line) appendLog(p.log_line, p.log_level || 'info');
+  setStatus(pct + '%');
+}
+
+function appendLog(line, level) {
+  var logEl = document.getElementById('liveLog');
+  var div = document.createElement('div');
+  div.className = 'log-line ' + (level || '');
+  div.textContent = line;
+  logEl.appendChild(div);
+  logEl.parentElement.scrollTop = logEl.parentElement.scrollHeight;
+}
+
+function toggleLiveLog() {
+  _liveLogVis = !_liveLogVis;
+  document.getElementById('liveLogWrap').classList.toggle('d-none', !_liveLogVis);
+  document.getElementById('btnToggleLog').innerHTML = _liveLogVis
+    ? '<i class="bi bi-terminal me-1"></i>Hide Live Log'
+    : '<i class="bi bi-terminal me-1"></i>Show Live Log';
+}
+
+function onDone(result) {
+  resetUI();
+  document.getElementById('progressBar').style.width = '100%';
+  for (var i = 1; i <= 5; i++) document.getElementById('step' + i).className = 'step-dot done';
+  for (var j = 1; j <= 4; j++) {
+    var c = document.getElementById('conn' + j);
+    if (c) c.className = 'step-connector done';
+  }
+
+  var sepa   = result.sepa   || {};
+  var qm     = result.qm     || {};
+  var market = result.market || {};
+  var timing = result.timing || {};
+
+  var sepaRows = sepa.passed || sepa.rows || [];
+  var sepaAll  = sepa.all_scored || sepaRows;
+  _sepaData    = sepaRows;
+  _sepaAllData = sepaAll;
+
+  // Store ALL QM rows; filterQmTable() applies minStar + topN
+  _qmAllData = qm.passed || qm.rows || [];
+
+  renderSepaTable(_sepaShowAll ? _sepaAllData : _sepaData);
+  populateSectorFilter();
+  renderScanCharts(_sepaShowAll ? _sepaAllData : _sepaData);
+  filterQmTable();   // ← applies min_star filter immediately
+  renderMarket(market);
+  renderTiming(timing);
+  updateSepaSummary(sepaRows, sepaAll);
+  updateQmSummary(_qmAllData);
+
+  document.getElementById('sepaBadge').textContent = sepaRows.length;
+  // QM badge = filtered count
+  var filteredQmLen = _qmAllData.filter(function(r) {
+    return (r.qm_star || r.stars || 0) >= parseFloat(document.getElementById('minStar').value || 4);
+  }).length;
+  document.getElementById('qmBadge').textContent = filteredQmLen;
+
+  if (sepaAll.length > sepaRows.length) {
+    document.getElementById('allScoredCount').textContent = sepaAll.length;
+    document.getElementById('btnShowAll').classList.remove('d-none');
+  }
+
+  if (qm.diagnostics) document.getElementById('qmDiagContent').innerHTML = fmtDiag(qm.diagnostics);
+
+  if (result.log_path) {
+    document.getElementById('scanLogBar').classList.remove('d-none');
+    document.getElementById('scanLogPath').textContent = result.log_path;
+  }
+
+  setStatus('Done — SEPA: ' + sepaRows.length + '/' + sepaAll.length + ' | QM: ' + _qmAllData.length);
+  document.getElementById('btnLoadLast').classList.remove('d-none');
+
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _ver: CACHE_VER, sepa: sepaRows, sepaAll: sepaAll,
+      qm: _qmAllData, market: market, timing: timing,
+      _ts: new Date().toISOString()
+    }));
+  } catch(e) { /* ignore quota */ }
+}
+
+function onError(msg) {
+  resetUI();
+  setStatus('Error: ' + msg, true);
+}
+
+function resetUI() {
+  _jid = null;
+  document.getElementById('btnRun').disabled = false;
+  document.getElementById('btnStop').classList.add('d-none');
+}
+
+function setStatus(msg, isErr) {
+  var el = document.getElementById('combinedStatus');
+  el.textContent = msg;
+  el.className = 'small ' + (isErr ? 'text-danger' : 'text-muted');
+}
+
+async function loadLastResults() {
+  try {
+    var r = await fetch('/api/scan/last?include_all=1').then(function(x) { return x.json(); });
+    if (r.rows && r.rows.length) {
+      _sepaData    = r.rows.filter(function(x) { return x._passed !== false; });
+      _sepaAllData = r.rows;
+      renderSepaTable(_sepaShowAll ? _sepaAllData : _sepaData);
+      populateSectorFilter();
+      renderScanCharts(_sepaShowAll ? _sepaAllData : _sepaData);
+      updateSepaSummary(_sepaData, _sepaAllData);
+      document.getElementById('sepaBadge').textContent = _sepaData.length;
+      if (_sepaAllData.length > _sepaData.length) {
+        document.getElementById('allScoredCount').textContent = _sepaAllData.length;
+        document.getElementById('btnShowAll').classList.remove('d-none');
+      }
+      setStatus('Loaded last SEPA scan (' + (r.saved_at || '') + ')');
+    }
+  } catch(e) { setStatus('Failed to load: ' + e.message, true); }
+}
+
+/* ═══ SEPA RENDERING ════════════════════════════════════════════════ */
+function renderSepaTable(data) {
+  var body = document.getElementById('sepaBody');
+  body.innerHTML = '';
+  var rcEl = document.getElementById('resultCount');
+  rcEl.textContent = data.length ? data.length + ' result' + (data.length !== 1 ? 's' : '') : '';
+
+  if (!data.length) {
+    body.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-5">No results</td></tr>';
+    return;
+  }
+
+  var frag = document.createDocumentFragment();
+  data.forEach(function(r, i) {
+    var passed = r._passed !== false;
+    var total  = r.total_score != null ? Number(r.total_score).toFixed(1) : '—';
+    var tCls   = r.total_score >= 75 ? 'score-high' : r.total_score >= 55 ? 'score-mid' : 'score-low';
+    var trend  = r.trend_score != null ? Number(r.trend_score).toFixed(0) : '—';
+    var fund   = r.fundamental_score != null ? Number(r.fundamental_score).toFixed(0) : '—';
+    var rs     = r.rs_rank != null ? Number(r.rs_rank).toFixed(0) : '—';
+
+    // VCP with link to /vcp
+    var vcpGrade = r.vcp_grade && r.vcp_grade !== 'D' ? r.vcp_grade : null;
+    var vcpHtml  = vcpGrade
+      ? '<a href="/vcp?ticker=' + r.ticker + '" class="tag-vcp">VCP ' + vcpGrade + '</a>'
+      : '—';
+
+    var pivot  = r.pivot != null ? '$' + Number(r.pivot).toFixed(2)
+               : r.pivot_price != null ? '$' + Number(r.pivot_price).toFixed(2) : '—';
+    var price  = r.close != null ? '$' + Number(r.close).toFixed(2)
+               : r.price != null ? '$' + Number(r.price).toFixed(2) : '—';
+
+    // TT with TT9/TT10 extras
+    var ttOk   = (r.tt_score != null && r.tt_score >= 8) || r.tt_pass === true;
+    var ttIcon = ttOk
+      ? '<i class="bi bi-check-circle-fill text-success"></i>'
+      : '<i class="bi bi-x-circle text-danger"></i>';
+    var ttLabel = r.tt_score != null ? Number(r.tt_score).toFixed(0) + '/10' : (ttOk ? 'Pass' : 'Fail');
+    var tt9  = r.tt_checks && r.tt_checks.TT9  ? ' <small class="text-info">RS&#10003;</small>'  : '';
+    var tt10 = r.tt_checks && r.tt_checks.TT10 ? ' <small class="text-info">Sec&#10003;</small>' : '';
+
+    var notPassedBadge = passed ? '' : '<span class="not-passed-badge">未通過</span>';
+
+    var row = document.createElement('tr');
+    row.className = 'sepa-row' + (passed ? '' : ' row-below-threshold');
+    row.innerHTML =
+      '<td class="text-muted small">' + (i + 1) + '</td>' +
+      '<td><a href="/analyze?ticker=' + r.ticker + '" class="fw-bold" style="color:var(--accent)">' +
+        r.ticker + '</a>' + notPassedBadge +
+        '<div class="text-muted" style="font-size:11px">' + (r.company || '') + '</div></td>' +
+      '<td class="' + (passed ? tCls : 'text-muted') + ' fw-bold">' + total + '</td>' +
+      '<td class="text-muted small">' + trend + '</td>' +
+      '<td class="text-muted small">' + fund + '</td>' +
+      '<td class="text-muted small">' + rs + '</td>' +
+      '<td>' + vcpHtml + '</td>' +
+      '<td class="small">' + pivot + '</td>' +
+      '<td class="small">' + price + '</td>' +
+      '<td class="text-center small">' + ttIcon + ' ' + ttLabel + tt9 + tt10 + '</td>' +
+      '<td class="text-muted small">' + (r.sector || '—') + '</td>' +
+      '<td><button class="btn btn-sm btn-outline-info py-0 px-1" ' +
+        'onclick="addToWatchlist(\'' + r.ticker + '\')" title="Add to Watchlist">' +
+        '<i class="bi bi-bookmark-plus"></i></button></td>';
+    frag.appendChild(row);
+  });
+  body.appendChild(frag);
+}
+
+/* ─── SEPA Charts ────────────────────────────────────────────────── */
+var _PALETTE = ['#58a6ff','#3fb950','#e3b341','#f78166','#d49fff',
+                '#79c0ff','#56d364','#ffa657','#ff7b72','#bc8cff','#89d4f5'];
+
+function renderScanCharts(data) {
+  if (!data || !data.length) {
+    document.getElementById('scanSummaryCharts').style.display = 'none';
+    return;
+  }
+  document.getElementById('scanSummaryCharts').style.display = '';
+
+  // Sector donut
+  var sMap = {};
+  data.forEach(function(r) {
+    var s = r.sector || 'Unknown';
+    sMap[s] = (sMap[s] || 0) + 1;
+  });
+  var sLabels = Object.keys(sMap).sort(function(a, b) { return sMap[b] - sMap[a]; });
+  var sVals   = sLabels.map(function(s) { return sMap[s]; });
+
+  var donutEl = document.getElementById('sectorDonutChart');
+  if (donutEl._chart) donutEl._chart.destroy();
+  donutEl._chart = new Chart(donutEl, {
+    type: 'doughnut',
+    data: {
+      labels: sLabels,
+      datasets: [{data: sVals, backgroundColor: _PALETTE, borderColor: '#161b22', borderWidth: 2}]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: true, position: 'right',
+          labels: {color: '#8b949e', font: {size: 9}, boxWidth: 10, padding: 4}
+        }
+      }
+    }
+  });
+
+  // Score histogram
+  var bins   = ['0-20','20-40','40-60','60-70','70-80','80-90','90-100'];
+  var counts = [0, 0, 0, 0, 0, 0, 0];
+  data.forEach(function(r) {
+    var s = r.total_score || 0;
+    if      (s < 20) counts[0]++;
+    else if (s < 40) counts[1]++;
+    else if (s < 60) counts[2]++;
+    else if (s < 70) counts[3]++;
+    else if (s < 80) counts[4]++;
+    else if (s < 90) counts[5]++;
+    else             counts[6]++;
+  });
+
+  var histEl = document.getElementById('scoreHistChart');
+  if (histEl._chart) histEl._chart.destroy();
+  histEl._chart = new Chart(histEl, {
+    type: 'bar',
+    data: {
+      labels: bins,
+      datasets: [{
+        label: 'Stocks',
+        data: counts,
+        backgroundColor: bins.map(function(_, idx) {
+          return idx >= 4 ? '#3fb950' : idx >= 2 ? '#e3b341' : '#f85149';
+        }),
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {legend: {display: false}},
+      scales: {
+        x: {ticks: {color: '#8b949e', font: {size: 9}}, grid: {color: '#21262d'}},
+        y: {ticks: {color: '#8b949e', font: {size: 9}}, grid: {color: '#21262d'}}
+      }
+    }
+  });
+}
+
+/* ─── Sector filter population ───────────────────────────────────── */
+function populateSectorFilter() {
+  var src = _sepaShowAll ? _sepaAllData : _sepaData;
+  var sectors = [];
+  var seen = {};
+  src.forEach(function(r) {
+    if (r.sector && !seen[r.sector]) { seen[r.sector] = 1; sectors.push(r.sector); }
+  });
+  sectors.sort();
+  var sel = document.getElementById('sectorFilter');
+  var current = new Set(Array.from(sel.selectedOptions).map(function(o) { return o.value; }));
+  sel.innerHTML = sectors.map(function(s) {
+    return '<option value="' + s + '"' + (current.has(s) ? ' selected' : '') + '>' + s + '</option>';
+  }).join('');
+}
+
+/* ─── SEPA Filter ────────────────────────────────────────────────── */
+function filterSepaTable() {
+  var sepaMin  = parseFloat(document.getElementById('sepaMin').value  || 0);
+  var sepaMax  = parseFloat(document.getElementById('sepaMax').value  || 100);
+  var trendMin = parseFloat(document.getElementById('trendMin').value || 0);
+  var trendMax = parseFloat(document.getElementById('trendMax').value || 100);
+  var fundMin  = parseFloat(document.getElementById('fundMin').value  || 0);
+  var fundMax  = parseFloat(document.getElementById('fundMax').value  || 100);
+  var rsMin    = parseFloat(document.getElementById('rsMin').value    || 0);
+  var rsMax    = parseFloat(document.getElementById('rsMax').value    || 99);
+  var priceMin = parseFloat(document.getElementById('priceMin').value || 0);
+  var priceMax = parseFloat(document.getElementById('priceMax').value || 1e9);
+  var pivotMin = parseFloat(document.getElementById('pivotMin').value || 0);
+  var pivotMax = parseFloat(document.getElementById('pivotMax').value || 1e9);
+  var searchTxt = (document.getElementById('filterInput').value || '').toLowerCase();
+
+  var vcpGrades = new Set();
+  if (document.getElementById('vcpA').checked)    vcpGrades.add('A');
+  if (document.getElementById('vcpB').checked)    vcpGrades.add('B');
+  if (document.getElementById('vcpC').checked)    vcpGrades.add('C');
+  if (document.getElementById('vcpNone').checked) vcpGrades.add('None');
+
+  var ttFilters = new Set();
+  if (document.getElementById('ttPass').checked) ttFilters.add('pass');
+  if (document.getElementById('ttFail').checked) ttFilters.add('fail');
+
+  var selectedSectors = new Set(
+    Array.from(document.getElementById('sectorFilter').selectedOptions).map(function(o) { return o.value; })
+  );
+
+  var data = _sepaShowAll ? _sepaAllData : _sepaData;
+  var filtered = data.filter(function(r) {
+    var score      = r.total_score  || 0;
+    var trend      = r.trend_score  || 0;
+    var fund       = r.fundamental_score || 0;
+    var rs         = r.rs_rank      || 0;
+    var priceVal   = r.close || r.price || 0;
+    var pivotVal   = r.pivot != null ? parseFloat(r.pivot)
+                   : r.pivot_price != null ? parseFloat(r.pivot_price) : 0;
+
+    if (score    < sepaMin  || score    > sepaMax)  return false;
+    if (trend    < trendMin || trend    > trendMax) return false;
+    if (fund     < fundMin  || fund     > fundMax)  return false;
+    if (rs       < rsMin    || rs       > rsMax)    return false;
+    if (priceVal < priceMin || priceVal > priceMax) return false;
+    if (pivotVal < pivotMin || pivotVal > pivotMax) return false;
+
+    if (searchTxt) {
+      var hay = ((r.ticker || '') + ' ' + (r.sector || '') + ' ' + (r.company || '')).toLowerCase();
+      if (hay.indexOf(searchTxt) === -1) return false;
+    }
+
+    if (vcpGrades.size > 0) {
+      var grade = r.vcp_grade && r.vcp_grade !== 'D' ? r.vcp_grade : 'None';
+      if (!vcpGrades.has(grade)) return false;
+    }
+
+    if (ttFilters.size > 0) {
+      var ttOk = (r.tt_score != null && r.tt_score >= 8) || r.tt_pass === true;
+      var ttSt = ttOk ? 'pass' : 'fail';
+      if (!ttFilters.has(ttSt)) return false;
+    }
+
+    if (selectedSectors.size > 0 && !selectedSectors.has(r.sector)) return false;
+
+    return true;
+  });
+
+  renderSepaTable(filtered);
+  renderScanCharts(filtered);
+  updateFilterBadge();
+}
+
+function toggleSepaFilters() {
+  document.getElementById('sepaFilterPanel').classList.toggle('d-none');
+}
+
+function resetSepaFilters() {
+  ['sepaMin','sepaMax','trendMin','trendMax','fundMin','fundMax',
+   'rsMin','rsMax','priceMin','priceMax','pivotMin','pivotMax','filterInput'].forEach(function(id) {
+    document.getElementById(id).value = '';
+  });
+  ['vcpA','vcpB','vcpC','vcpNone','ttFail'].forEach(function(id) {
+    document.getElementById(id).checked = false;
+  });
+  document.getElementById('ttPass').checked = true;
+  document.getElementById('sectorFilter').selectedIndex = -1;
+  filterSepaTable();
+}
+
+function updateFilterBadge() {
+  var badge = document.getElementById('filterBadge');
+  var count = 0;
+  ['sepaMin','sepaMax','trendMin','trendMax','fundMin','fundMax',
+   'rsMin','rsMax','priceMin','priceMax','pivotMin','pivotMax','filterInput'].forEach(function(id) {
+    if (document.getElementById(id).value) count++;
+  });
+  var vcpCount = ['vcpA','vcpB','vcpC','vcpNone'].filter(function(id) {
+    return document.getElementById(id).checked;
+  }).length;
+  if (vcpCount > 0 && vcpCount < 4) count++;
+  var ttPass = document.getElementById('ttPass').checked;
+  var ttFail = document.getElementById('ttFail').checked;
+  if ((ttPass && !ttFail) || (!ttPass && ttFail)) count++;
+  if (document.getElementById('sectorFilter').selectedOptions.length > 0) count++;
+
+  if (count > 0) {
+    badge.textContent = count;
+    badge.classList.remove('d-none');
+  } else {
+    badge.classList.add('d-none');
+  }
+}
+
+function toggleShowAll() {
+  _sepaShowAll = !_sepaShowAll;
+  var btn = document.getElementById('btnShowAll');
+  if (_sepaShowAll) {
+    btn.innerHTML = '<i class="bi bi-eye-slash me-1"></i>Show Passed Only (' + _sepaData.length + ')';
+  } else {
+    btn.innerHTML = '<i class="bi bi-eye me-1"></i>Show All Scored (' + _sepaAllData.length + ')';
+  }
+  populateSectorFilter();
+  filterSepaTable();
+}
+
+function updateSepaSummary(passed, all) {
+  var row = document.getElementById('sepaSummaryRow');
+  row.style.display = '';
+  document.getElementById('sepaPassCount').textContent = passed.length;
+  document.getElementById('sepaAllCount').textContent  = all.length;
+  var avg = passed.length
+    ? (passed.reduce(function(s, r) { return s + (r.total_score || 0); }, 0) / passed.length).toFixed(1)
+    : '—';
+  document.getElementById('sepaAvgScore').textContent = avg;
+  document.getElementById('sepaScanTime').textContent = new Date().toLocaleTimeString('zh-HK');
+}
+
+/* ═══ QM RENDERING ══════════════════════════════════════════════════ */
+function filterQmTable() {
+  var minStar = parseFloat(document.getElementById('minStar').value || 4);
+  var topN    = parseInt(document.getElementById('topN').value || 50);
+  var filtered = _qmAllData
+    .filter(function(r) { return (r.qm_star || r.stars || 0) >= minStar; })
+    .slice(0, topN);
+  renderQmTable(filtered);
+  document.getElementById('qmBadge').textContent = filtered.length;
+}
+
+function renderQmTable(rows) {
+  var tbody = document.getElementById('qmBody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="text-center text-secondary py-5">No results</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(function(r, i) {
+    var star      = parseFloat(r.qm_star != null ? r.qm_star : (r.stars != null ? r.stars : 0));
+    var starClass = star >= 5 ? 'star-5p' : star >= 4.5 ? 'star-5' : star >= 4 ? 'star-4' : star >= 3 ? 'star-3' : 'star-low';
+    var starHtml  = renderStars(star);
+
+    var adrVal = r.adr != null ? parseFloat(r.adr) : null;
+    var adrTxt = adrVal != null ? adrVal.toFixed(1) + '%' : '—';
+    var adrCls = adrVal != null && adrVal < 5 ? 'text-danger' : '';
+
+    var dvol = r.dollar_volume_m != null ? '$' + parseFloat(r.dollar_volume_m).toFixed(1) + 'M' : '—';
+    var m1   = r.mom_1m != null ? fmtMom(r.mom_1m) : '—';
+    var m3   = r.mom_3m != null ? fmtMom(r.mom_3m) : '—';
+    var m6   = r.mom_6m != null ? fmtMom(r.mom_6m) : '—';
+
+    var setup      = (r.setup_type || '').toUpperCase();
+    var setupBadge = setupBadgeHtml(setup);
+
+    // Surf — coloured badge, not plain text
+    var surfHtml = r.surfing_ma
+      ? '<span class="badge" style="background:#003040;color:#00d4ff">' + r.surfing_ma + 'MA</span>'
+      : '<span class="text-secondary">—</span>';
+
+    // HL and Tight — check icons or dash
+    var hlHtml    = r.has_higher_lows
+      ? '<i class="bi bi-check-circle-fill text-success"></i>'
+      : '<span class="text-secondary">—</span>';
+    var tightHtml = r.is_tight
+      ? '<i class="bi bi-arrows-collapse text-info"></i>'
+      : '<span class="text-secondary">—</span>';
+
+    // VETO below ticker
+    var vetoHtml = r.veto
+      ? '<br><span class="veto-badge">VETO:' + r.veto + '</span>'
+      : '';
+
+    return '<tr class="qm-row" onclick="window.location=\'/qm/analyze?ticker=' + r.ticker + '\'">' +
+      '<td class="text-secondary">' + (i + 1) + '</td>' +
+      '<td><a href="/qm/analyze?ticker=' + r.ticker + '" class="fw-bold" ' +
+        'style="color:var(--accent2,#e3b341)" onclick="event.stopPropagation()">' +
+        r.ticker + '</a>' + vetoHtml + '</td>' +
+      '<td class="' + starClass + '">' + starHtml + '</td>' +
+      '<td class="' + adrCls + '">' + adrTxt + '</td>' +
+      '<td>' + dvol + '</td>' +
+      '<td>' + m1 + '</td>' +
+      '<td>' + m3 + '</td>' +
+      '<td class="fw-bold">' + m6 + '</td>' +
+      '<td>' + setupBadge + '</td>' +
+      '<td>' + surfHtml + '</td>' +
+      '<td>' + hlHtml + '</td>' +
+      '<td>' + tightHtml + '</td>' +
+      '</tr>';
+  }).join('');
+
+  // Re-init tooltips for dynamically created setup badges
+  tbody.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
+    new bootstrap.Tooltip(el, {trigger: 'hover'});
+  });
+}
+
+function updateQmSummary(rows) {
+  document.getElementById('qmSummaryRow').style.display = '';
+  document.getElementById('metPassCount').textContent = rows.length;
+  var n5 = rows.filter(function(r) { return (r.qm_star || r.stars || 0) >= 5; }).length;
+  document.getElementById('met5Star').textContent = n5;
+  var avg = rows.length
+    ? (rows.reduce(function(s, r) { return s + (r.qm_star || r.stars || 0); }, 0) / rows.length).toFixed(1)
+    : '—';
+  document.getElementById('metAvgStar').textContent = avg + '★';
+  document.getElementById('metScanTime').textContent = new Date().toLocaleTimeString('zh-HK');
+}
+
+/* ─── Star renderer ──────────────────────────────────────────────── */
+function renderStars(val) {
+  var full = Math.floor(val), half = (val - full) >= 0.5;
+  var s = '';
+  for (var i = 0; i < full; i++) s += '★';
+  if (half) s += '½';
+  return s + ' <small>(' + val.toFixed(1) + ')</small>';
+}
+
+/* ─── Setup badge ────────────────────────────────────────────────── */
+function setupBadgeHtml(code) {
+  var map = {
+    'HTF':     {cls: 'badge-htf',  label: 'HTF',       title: 'High Tight Flag 高緊旗形：極強動能形態，30天+50%漲幅後形成緊旗，突破成功率高'},
+    'EP':      {cls: 'badge-ep',   label: 'EP',         title: 'Episodic Pivot 爆發點：基本面催化劑（財報/新品/收購）引發的跳空突破，持倉到趨勢結束'},
+    'LADDER':  {cls: 'badge-lad',  label: 'LADDER',     title: 'Ladder Up 階梯上升：每次回調到均線支撐後繼續創高，形成階梯式上升'},
+    'SURF_50': {cls: 'badge-surf', label: 'SURF 50MA',  title: 'MA Surfing 均線衝浪(50MA)：股價多次在50日均線附近彈升，均線充當支撐'},
+    'SURF_20': {cls: 'badge-surf', label: 'SURF 20MA',  title: 'MA Surfing 均線衝浪(20MA)：股價多次在20日均線附近彈升'},
+    'SURF_10': {cls: 'badge-surf', label: 'SURF 10MA',  title: 'MA Surfing 均線衝浪(10MA)：股價多次在10日均線附近彈升'},
+    'RPL':     {cls: 'badge-rpl',  label: 'RPL',        title: 'Pullback to Support 回調至支撐：上升途中回調至均線或前高支撐位，低風險買入機會'},
+    'FLAG':    {cls: 'badge-flag', label: 'FLAG',       title: 'Flag/Pennant 旗形：上漲後小幅整理形成旗形，突破旗形阻力繼續上漲'}
+  };
+  var info = map[code] || {cls: 'badge-uk', label: code || '?', title: '未知形態類型'};
+  return '<span class="badge ' + info.cls + '" data-bs-toggle="tooltip" title="' +
+    info.title.replace(/"/g, '&quot;') + '">' + info.label + '</span>';
+}
+
+/* ─── Momentum formatter ─────────────────────────────────────────── */
+function fmtMom(v) {
+  var n = parseFloat(v);
+  var cls = n >= 50 ? 'text-success fw-bold' : n >= 0 ? 'text-success' : 'text-danger';
+  return '<span class="' + cls + '">' + (n >= 0 ? '+' : '') + n.toFixed(1) + '%</span>';
+}
+
+/* ─── QM Diagnostics ─────────────────────────────────────────────── */
+function toggleQmDiag() {
+  var panel = document.getElementById('qmDiagPanel');
+  var icon  = document.getElementById('qmDiagToggle');
+  panel.classList.toggle('d-none');
+  icon.style.transform  = panel.classList.contains('d-none') ? 'rotate(0deg)' : 'rotate(90deg)';
+  icon.style.transition = 'transform 0.2s';
+}
+
+function fmtDiag(diag) {
+  if (!diag || typeof diag !== 'object') return String(diag);
+  return Object.entries(diag).map(function(entry) {
+    return '<div><span class="text-secondary">' + entry[0] + ':</span> ' +
+           '<span class="text-info">' + entry[1] + '</span></div>';
+  }).join('');
+}
+
+/* ═══ MARKET ══════════════════════════════════════════════════════════ */
+function renderMarket(m) {
+  if (!m || !m.regime) return;
+  var rc = m.regime === 'CONFIRMED_UPTREND' ? 'regime-bull'
+         : m.regime === 'UPTREND_UNDER_PRESSURE' ? 'regime-trans' : 'regime-bear';
+  document.getElementById('mktContent').innerHTML =
+    '<div class="row g-3">' +
+    '<div class="col-12"><div class="p-3 rounded ' + rc + '">' +
+      '<h5 class="mb-1" style="font-size:15px">' + m.regime + '</h5>' +
+      '<small>' + (m.summary || '') + '</small>' +
+    '</div></div>' +
+    '<div class="col-6 col-md-3"><div class="metric-card">' +
+      '<div class="metric-val">' + (m.breadth_pct != null ? m.breadth_pct.toFixed(1) + '%' : '—') + '</div>' +
+      '<div class="metric-lbl">Breadth 市場廣度</div></div></div>' +
+    '<div class="col-6 col-md-3"><div class="metric-card">' +
+      '<div class="metric-val">' + (m.dist_days || '—') + '</div>' +
+      '<div class="metric-lbl">Distribution Days</div></div></div>' +
+    '<div class="col-6 col-md-3"><div class="metric-card">' +
+      '<div class="metric-val">' + (m.spy_pct != null ? m.spy_pct.toFixed(2) + '%' : '—') + '</div>' +
+      '<div class="metric-lbl">SPY</div></div></div>' +
+    '<div class="col-6 col-md-3"><div class="metric-card">' +
+      '<div class="metric-val">' + (m.qqq_pct != null ? m.qqq_pct.toFixed(2) + '%' : '—') + '</div>' +
+      '<div class="metric-lbl">QQQ</div></div></div>' +
+    '</div>';
+}
+
+/* ═══ TIMING ══════════════════════════════════════════════════════════ */
+function renderTiming(t) {
+  if (!t || !t.total) return;
+  document.getElementById('tS1').textContent  = (t.stage1         || 0).toFixed(1);
+  document.getElementById('tDL').textContent  = (t.batch_download || 0).toFixed(1);
+  document.getElementById('tPar').textContent = (t.parallel       || 0).toFixed(1);
+  document.getElementById('tTot').textContent = (t.total          || 0).toFixed(1);
+  document.getElementById('timingRow').classList.remove('d-none');
+}
+
+/* ═══ ACTIONS ═════════════════════════════════════════════════════════ */
+async function addToWatchlist(ticker) {
+  try {
+    await fetch('/api/watchlist/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticker: ticker})
+    });
+    if (typeof toast === 'function') toast(ticker + ' added to watchlist');
+  } catch(e) { /* silent */ }
+}
+
+function exportSepaCSV() {
+  var src = _sepaShowAll ? _sepaAllData : _sepaData;
+  if (!src.length) return;
+  var keys = ['ticker','company','total_score','trend_score','fundamental_score',
+              'rs_rank','vcp_grade','pivot','pivot_price','close','sector'];
+  var csv = [keys.join(',')].concat(src.map(function(r) {
+    return keys.map(function(k) { return '"' + (r[k] != null ? r[k] : '') + '"'; }).join(',');
+  })).join('\n');
+  _dlCsv(csv, 'sepa_scan');
+}
+
+function exportQmCSV() {
+  if (!_qmAllData.length) return;
+  var keys = ['ticker','qm_star','setup_type','adr','dollar_volume_m',
+              'mom_1m','mom_3m','mom_6m','surfing_ma','has_higher_lows','is_tight','veto'];
+  var csv = [keys.join(',')].concat(_qmAllData.map(function(r) {
+    return keys.map(function(k) { return '"' + (r[k] != null ? r[k] : '') + '"'; }).join(',');
+  })).join('\n');
+  _dlCsv(csv, 'qm_scan');
+}
+
+function _dlCsv(csv, prefix) {
+  var a = document.createElement('a');
+  a.href     = URL.createObjectURL(new Blob([csv], {type: 'text/csv'}));
+  a.download = prefix + '_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+}
+
+/* ═══ CACHE INFO ══════════════════════════════════════════════════════ */
+function loadCacheInfo() {
+  fetch('/api/scan/cache-info')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.ok) {
+        document.getElementById('cacheHints').innerHTML =
+          '<div class="text-warning">Cache check failed: ' + (d.error || 'unknown') + '</div>';
+        ['cacheRS','cachePrice','cacheFundamentals','cacheEstimate'].forEach(function(id) {
+          var el = document.getElementById(id);
+          el.textContent = 'N/A';
+          el.className = 'ms-1 badge bg-secondary';
+        });
+        return;
+      }
+      var info = d.cache;
+
+      var rsEl = document.getElementById('cacheRS');
+      if (info.rs_cached) {
+        rsEl.textContent = '✓ cached (' + info.rs_count + ' tickers)';
+        rsEl.className = 'ms-1 badge bg-success';
+      } else {
+        rsEl.textContent = '✗ needs rebuild (~5 min)';
+        rsEl.className = 'ms-1 badge bg-warning text-dark';
+      }
+
+      var priceEl = document.getElementById('cachePrice');
+      priceEl.textContent = info.price_cached_today + ' today';
+      priceEl.className = info.price_cached_today > 50 ? 'ms-1 badge bg-success' : 'ms-1 badge bg-info';
+
+      var fundEl = document.getElementById('cacheFundamentals');
+      fundEl.textContent = info.fund_cached_today + ' today';
+      fundEl.className = info.fund_cached_today > 10 ? 'ms-1 badge bg-success' : 'ms-1 badge bg-info';
+
+      var estEl = document.getElementById('cacheEstimate');
+      if (info.rs_cached && info.price_cached_today > 100) {
+        estEl.textContent = '~2-5 min (cached)';
+        estEl.className = 'ms-1 badge bg-success';
+      } else if (info.rs_cached) {
+        estEl.textContent = '~5-12 min';
+        estEl.className = 'ms-1 badge bg-info';
+      } else {
+        estEl.textContent = '~10-20 min (first run)';
+        estEl.className = 'ms-1 badge bg-warning text-dark';
+      }
+
+      var hints = [];
+      if (!info.rs_cached)
+        hints.push('💡 首次掃描需建立 RS 排名快取（~200 檔股票），約 5 分鐘');
+      if (info.price_cached_today > 100)
+        hints.push('⚡ 已快取 ' + info.price_cached_today + ' 檔股價資料，Stage 2 將快速完成 (&lt;2 分鐘)');
+      if (info.fund_cached_today > 0)
+        hints.push('📊 已快取 ' + info.fund_cached_today + ' 檔基本面資料，避免重複 API 調用');
+      if (info.finviz_cached)
+        hints.push('🔄 Finviz 篩選結果快取中（' + info.finviz_ttl_hours + ' 小時 TTL）');
+      if (!hints.length)
+        hints.push('💡 最佳實踐: 掃描完成後同日再次掃描，利用快取縮短時間至 2-5 分鐘');
+      hints.push('ℹ️ 詳細 API 限制，請展開上方「API Rate Limits」');
+      document.getElementById('cacheHints').innerHTML =
+        hints.map(function(h) { return '<div>' + h + '</div>'; }).join('');
+    })
+    .catch(function() {
+      document.getElementById('cacheHints').innerHTML =
+        '<div class="text-muted">Unable to load cache info</div>';
+    });
+}
+
+/* ═══ RATE LIMIT TOGGLE ═══════════════════════════════════════════════ */
+function toggleRateLimitInfo() {
+  var info   = document.getElementById('rateLimitInfo');
+  var toggle = document.getElementById('rateLimitToggle');
+  info.classList.toggle('d-none');
+  toggle.style.transform  = info.classList.contains('d-none') ? 'rotate(0deg)' : 'rotate(90deg)';
+  toggle.style.transition = 'transform 0.2s';
+}
+</script>
+{% endblock %}

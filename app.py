@@ -369,6 +369,11 @@ def scan_page():
     return render_template("scan.html")
 
 
+@app.route("/combined")
+def combined_scan_page():
+    return render_template("combined_scan.html")
+
+
 @app.route("/analyze")
 def analyze_page():
     ticker = request.args.get("ticker", "")
@@ -677,6 +682,115 @@ def api_qm_scan_run():
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"job_id": jid})
+
+
+@app.route("/api/combined/scan/run", methods=["POST"])
+def api_combined_scan_run():
+    """Run unified combined SEPA + QM scan with shared data pipeline."""
+    data       = request.get_json(silent=True) or {}
+    refresh_rs = data.get("refresh_rs", False)
+    stage1_source = data.get("stage1_source") or None
+    jid        = _new_job()
+    cancel_ev  = _get_cancel(jid)
+
+    # Create a unique log file for this combined scan
+    combined_log_file = _LOG_DIR / f"combined_scan_{jid}_{datetime.now().isoformat(timespec='seconds').replace(':', '-')}.log"
+    log_handler = logging.FileHandler(combined_log_file, encoding="utf-8")
+    log_handler.setLevel(logging.DEBUG)
+    log_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    # Attach to combined_scanner and related modules
+    _COMBINED_LOGGERS = ["modules.combined_scanner", "modules.screener", "modules.qm_screener", "modules.data_pipeline"]
+    for logger_name in _COMBINED_LOGGERS:
+        logging.getLogger(logger_name).addHandler(log_handler)
+    _scan_file_handlers[jid] = log_handler
+    _scan_log_paths[jid] = combined_log_file
+
+    def _run():
+        try:
+            from modules.combined_scanner import run_combined_scan, set_combined_cancel
+            set_combined_cancel(cancel_ev)
+
+            sepa_result, qm_result = run_combined_scan(
+                refresh_rs=refresh_rs,
+                stage1_source=stage1_source,
+                verbose=False
+            )
+
+            def _to_rows(df):
+                if df is not None and hasattr(df, "to_dict") and not df.empty:
+                    return _clean(df.where(df.notna(), other=None).to_dict(orient="records"))
+                return []
+
+            sepa_rows = _to_rows(sepa_result.get("passed"))
+            qm_rows = _to_rows(qm_result.get("passed"))
+            market_env = sepa_result.get("market_env", {})
+            timing = sepa_result.get("timing", {})
+
+            result = {
+                "sepa": {
+                    "passed": sepa_rows,
+                    "count": len(sepa_rows)
+                },
+                "qm": {
+                    "passed": qm_rows,
+                    "count": len(qm_rows)
+                },
+                "market": market_env,
+                "timing": timing,
+            }
+
+            log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
+            _finish_job(jid, result=result, log_file=log_rel)
+        except Exception as exc:
+            logging.exception("Combined scan thread error")
+            log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
+            _finish_job(jid, error=str(exc), log_file=log_rel)
+        finally:
+            if jid in _scan_file_handlers:
+                handler = _scan_file_handlers.pop(jid)
+                for logger_name in _COMBINED_LOGGERS:
+                    logging.getLogger(logger_name).removeHandler(handler)
+                handler.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"job_id": jid})
+
+
+@app.route("/api/combined/scan/status/<jid>", methods=["GET"])
+def api_combined_scan_status(jid):
+    """Poll combined scan job status."""
+    from modules.combined_scanner import get_combined_progress
+    job = _get_job(jid)
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+
+    status = job["status"]
+    if status == "pending":
+        progress = get_combined_progress()
+        return jsonify({
+            "status": "pending",
+            "progress": progress
+        })
+    elif status == "done":
+        return jsonify({"status": "done", "result": job.get("result")})
+    else:  # error
+        return jsonify({"status": "error", "error": job.get("error")})
+
+
+@app.route("/api/combined/scan/cancel/<jid>", methods=["POST"])
+def api_combined_scan_cancel(jid):
+    """Cancel an in-progress combined scan."""
+    ev = _cancel_events.get(jid)
+    if ev:
+        ev.set()
+        with _jobs_lock:
+            if jid in _jobs and _jobs[jid]["status"] == "pending":
+                _jobs[jid]["progress"] = {"stage": "Cancelling...",
+                                           "pct": 100, "msg": ""}
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Job not found"}), 404
 
 
 @app.route("/api/qm/scan/cancel/<jid>", methods=["POST"])

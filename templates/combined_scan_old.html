@@ -1,0 +1,461 @@
+{% extends "base.html" %}
+{% block title %}Combined SEPA + QM Scan{% endblock %}
+
+{% block extra_head %}
+<style>
+  /* __ shared with qm_scan __ */
+  .star-5p  { color: #3fb950; font-weight: 700; }
+  .star-5   { color: #3fb950; }
+  .star-4   { color: #e3b341; }
+  .star-3   { color: #8b949e; }
+  .star-low { color: #f85149; }
+  .badge-htf  { background: #1b6e2e; color: #3fb950; }
+  .badge-ep   { background: #4a3800; color: #e3b341; }
+  .badge-lad  { background: #1a3060; color: #58a6ff; }
+  .badge-surf { background: #003040; color: #00d4ff; }
+  .badge-rpl  { background: #3a0060; color: #d49fff; }
+  .badge-flag { background: #301020; color: #ff8fa3; }
+  .badge-uk   { background: #1c2128; color: #8b949e; }
+  .veto-badge { background: #3a0a0a; color: #f85149; font-size: 10px; border-radius: 3px; padding: 1px 5px; }
+  /* __ shared with scan __ */
+  .row-below-threshold { opacity: 0.5; }
+  .row-below-threshold:hover { opacity: 0.75; }
+  .score-high { color: #3fb950; font-weight: 700; }
+  .score-mid  { color: #e3b341; font-weight: 600; }
+  .score-low  { color: #f85149; }
+  .tag-vcp { background: #004d40; color: #64ffda; border-radius: 4px; padding: 2px 7px; font-size: 11px; white-space: nowrap; }
+  /* __ combined-specific __ */
+  .combined-tabs .nav-link { color:#8b949e; border-color: transparent; }
+  .combined-tabs .nav-link.active { color: var(--accent); border-color:#30363d #30363d #161b22; background:#161b22; }
+  .filter-bar { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .qm-row:hover { background: #1a2030 !important; cursor: pointer; }
+  .timing-pill { background:#1c2128; border:1px solid #30363d; border-radius:6px; padding:6px 14px; display:inline-block; font-size:12px; }
+  .regime-bull { background: #1b3a2e; color: #3fb950; }
+  .regime-trans { background: #3a3000; color: #e3b341; }
+  .regime-bear { background: #3a1010; color: #f85149; }
+  .metric-card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center; }
+  .metric-val  { font-weight: 700; color: var(--accent); }
+  .metric-lbl  { font-size: 11px; color: #8b949e; margin-top: 4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">
+    <i class="bi bi-lightning-fill me-2" style="color:var(--accent)"></i>
+    Combined Scan — SEPA <span style="color:#8b949e">+</span> QM
+    <small class="text-secondary ms-2" style="font-size:13px">共享數據管道 Shared Pipeline</small>
+  </h4>
+  <div class="d-flex align-items-center gap-2">
+    <span id="tradingDateBadge" class="badge bg-dark border border-secondary small"></span>
+    <span id="clockHK"  class="badge bg-dark border border-secondary small"></span>
+    <span id="clockUS"  class="badge bg-dark border border-secondary small"></span>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="filter-bar mb-3">
+  <div class="row g-3 align-items-end">
+    <div class="col-auto">
+      <label class="form-label text-secondary mb-1" style="font-size:12px">Stage 1 來源 / Source</label>
+      <select class="form-select form-select-sm" id="combinedSource" style="width:185px;background:#0d1117;color:#c9d1d9;border-color:#30363d" onchange="onSourceChange(this.value)">
+        <option value="nasdaq_ftp" selected>NASDAQ FTP (推薦 / Recommended)</option>
+        <option value="finviz">Finviz (慢 Slow ~15m)</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" id="chkRefreshRS">
+        <label class="form-check-label text-muted small" for="chkRefreshRS">
+          Force refresh RS rankings <span class="text-warning">(ignore cache)</span>
+        </label>
+      </div>
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-accent px-4" id="btnRun" onclick="startScan()">
+        <i class="bi bi-play-fill me-1"></i>Run Combined Scan
+      </button>
+      <button class="btn btn-outline-danger btn-sm ms-2 d-none" id="btnStop" onclick="stopScan()">
+        <i class="bi bi-stop-fill me-1"></i>Stop
+      </button>
+    </div>
+    <div class="col ms-auto text-end">
+      <span id="combinedStatus" class="text-muted small">
+        Ready — Results persist when you navigate away and return
+      </span>
+    </div>
+  </div>
+
+  <div id="srcNote_nasdaq_ftp" class="mt-2" style="font-size:11px;color:#8b949e">
+    <i class="bi bi-check-circle me-1" style="color:#3fb950"></i>
+    <strong style="color:#c9d1d9">Recommended</strong>：NASDAQ/NYSE/AMEX listed stocks, OTC auto-excluded, ~2-4 min
+  </div>
+  <div id="srcNote_finviz" class="mt-2 d-none" style="font-size:11px;color:#8b949e">
+    <i class="bi bi-exclamation-triangle me-1" style="color:#e3b341"></i>
+    <strong style="color:#c9d1d9">Finviz</strong>：Slower (~10-15 min), OTC auto-filtered, slightly less coverage
+  </div>
+
+  <div id="progressArea" class="mt-3 d-none">
+    <div class="progress mb-1" style="height:5px;background:#21262d">
+      <div id="progressBar" class="progress-bar" style="background:var(--accent);width:0%;transition:width .4s"></div>
+    </div>
+    <div id="progressMsg" class="text-muted" style="font-size:12px">Starting…</div>
+  </div>
+</div>
+
+<!-- Timing pills -->
+<div id="timingRow" class="d-none mb-3 d-flex flex-wrap gap-2 align-items-center">
+  <span class="timing-pill">
+    <i class="bi bi-cloud-download me-1 text-secondary"></i>Stage 1: <strong id="tS1">—</strong>s
+  </span>
+  <span class="timing-pill">
+    <i class="bi bi-hdd me-1 text-secondary"></i>Batch DL: <strong id="tDL">—</strong>s
+  </span>
+  <span class="timing-pill">
+    <i class="bi bi-cpu me-1 text-secondary"></i>Parallel: <strong id="tPar">—</strong>s
+  </span>
+  <span class="timing-pill" style="border-color:var(--accent);color:var(--accent)">
+    <i class="bi bi-clock-fill me-1"></i>Total: <strong id="tTot">—</strong>s
+  </span>
+</div>
+
+<!-- Tabs -->
+<ul class="nav nav-tabs combined-tabs mb-0" id="combinedTabs" role="tablist" style="border-color:#30363d">
+  <li class="nav-item">
+    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#paneSepa" type="button">
+      <i class="bi bi-funnel me-1"></i>SEPA
+      <span class="badge bg-secondary ms-1" id="sepaBadge">—</span>
+    </button>
+  </li>
+  <li class="nav-item">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#paneQm" type="button">
+      <i class="bi bi-lightning-charge me-1" style="color:#e3b341"></i>QM
+      <span class="badge bg-secondary ms-1" id="qmBadge">—</span>
+    </button>
+  </li>
+  <li class="nav-item">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#paneMkt" type="button">
+      <i class="bi bi-bar-chart-line me-1"></i>Market
+    </button>
+  </li>
+</ul>
+
+<div class="tab-content" style="border:1px solid #30363d;border-top:none;border-radius:0 0 8px 8px">
+
+  <!-- SEPA TAB -->
+  <div class="tab-pane fade show active p-0" id="paneSepa" role="tabpanel">
+    <div class="card" style="border:none;border-radius:0 0 8px 8px">
+      <div class="card-header d-flex justify-content-between align-items-center py-2">
+        <span class="small text-muted">Results Table</span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="exportSepaCSV()">
+          <i class="bi bi-download me-1"></i>CSV
+        </button>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle" id="sepaTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Ticker</th>
+              <th>SEPA Score</th>
+              <th>Trend</th>
+              <th>Fund.</th>
+              <th>RS</th>
+              <th>VCP</th>
+              <th>Pivot</th>
+              <th>Price</th>
+              <th>TT</th>
+              <th>Sector</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="sepaBody">
+            <tr><td colspan="12" class="text-center text-muted py-5">Run Combined Scan to see results</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- QM TAB -->
+  <div class="tab-pane fade p-0" id="paneQm" role="tabpanel">
+    <div class="card" style="border:none;border-radius:0 0 8px 8px">
+      <div class="card-header d-flex justify-content-between align-items-center py-2">
+        <span class="small text-muted">Results Table</span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="exportQmCSV()">
+          <i class="bi bi-download me-1"></i>CSV
+        </button>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0" id="qmTable">
+          <thead>
+            <tr>
+              <th style="width:40px">#</th>
+              <th>Ticker</th>
+              <th>⭐ Stars</th>
+              <th>ADR%</th>
+              <th>(M)</th>
+              <th>1M%</th>
+              <th>3M%</th>
+              <th>6M%</th>
+              <th>Setup</th>
+              <th>MA</th>
+              <th>HL</th>
+              <th>Tight</th>
+            </tr>
+          </thead>
+          <tbody id="qmBody">
+            <tr><td colspan="12" class="text-center text-secondary py-5">Run Combined Scan to see results</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- MARKET TAB -->
+  <div class="tab-pane fade p-3" id="paneMkt" role="tabpanel">
+    <div id="mktContent">
+      <div class="text-muted py-4 text-center">
+        <i class="bi bi-bar-chart-line" style="font-size:2rem;opacity:.3"></i>
+        <div class="mt-2">Market data shown after scan completes</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const CACHE_KEY = 'combined_scan_v2';
+const CACHE_VER = '2';
+let _jid = null, _sepaData = [], _qmData = [];
+
+function updateClocks() {
+  const now = new Date();
+  const fmt = tz => new Intl.DateTimeFormat('en', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false, timeZone:tz }).format(now);
+  document.getElementById('tradingDateBadge').textContent = now.toISOString().slice(0,10);
+  document.getElementById('clockHK').textContent = 'HK ' + fmt('Asia/Hong_Kong');
+  document.getElementById('clockUS').textContent = 'ET ' + fmt('America/New_York');
+}
+updateClocks();
+setInterval(updateClocks, 1000);
+
+function onSourceChange(val) {
+  ['nasdaq_ftp','finviz'].forEach(s => {
+    const el = document.getElementById('srcNote_' + s);
+    if (el) el.classList.toggle('d-none', s !== val);
+  });
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return;
+    const cached = JSON.parse(raw);
+    if (cached._ver !== CACHE_VER) return;
+    const { sepa, qm, market, timing } = cached;
+    if (sepa && sepa.length) { renderSepaTable(sepa); _sepaData = sepa; }
+    if (qm && qm.length) { renderQmTable(qm); _qmData = qm; }
+    if (market) renderMarket(market);
+    if (timing) renderTiming(timing);
+    const ts = cached._ts ? ' (' + new Date(cached._ts).toLocaleTimeString('en-GB') + ')' : '';
+    setStatus(`Restored: SEPA ${sepa?.length || 0} + QM ${qm?.length || 0}${ts}`);
+  } catch(e) {}
+});
+
+async function startScan() {
+  const refreshRs = document.getElementById('chkRefreshRS').checked;
+  const stage1Src = document.getElementById('combinedSource').value;
+  document.getElementById('btnRun').disabled = true;
+  document.getElementById('btnStop').classList.remove('d-none');
+  document.getElementById('progressArea').classList.remove('d-none');
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressMsg').textContent = 'Starting…';
+  setStatus('Scanning…');
+  try {
+    const r = await fetch('/api/combined/scan/run', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ refresh_rs: refreshRs, stage1_source: stage1Src }) }).then(x => x.json());
+    _jid = r.job_id;
+    pollScan();
+  } catch(e) { onError(e.message); }
+}
+
+function stopScan() {
+  if (_jid) fetch('/api/combined/scan/cancel/' + _jid, {method:'POST'}).catch(() => {});
+  resetUI();
+}
+
+function pollScan() {
+  if (!_jid) return;
+  fetch('/api/combined/scan/status/' + _jid)
+    .then(r => r.json())
+    .then(job => {
+      if (job.status === 'done') onDone(job.result || {});
+      else if (job.status === 'error') onError(job.error || 'Unknown error');
+      else { renderProgress(job.progress || {}); setTimeout(pollScan, 2000); }
+    })
+    .catch(() => setTimeout(pollScan, 3000));
+}
+
+function renderProgress(p) {
+  const pct = Math.min(100, p.pct || 0);
+  document.getElementById('progressBar').style.width = Math.max(pct, 2) + '%';
+  const msg = [p.stage, p.msg].filter(Boolean).join(' — ');
+  document.getElementById('progressMsg').textContent = msg || '…';
+  setStatus(pct + '%');
+}
+
+function onDone(result) {
+  resetUI();
+  document.getElementById('progressBar').style.width = '100%';
+  const sepa = result.sepa || {}, qm = result.qm || {}, market = result.market || {}, timing = result.timing || {};
+  const sepaRows = sepa.passed || sepa.rows || [], qmRows = qm.passed || qm.rows || [];
+  _sepaData = sepaRows;
+  _qmData = qmRows;
+  renderSepaTable(sepaRows);
+  renderQmTable(qmRows);
+  renderMarket(market);
+  renderTiming(timing);
+  document.getElementById('sepaBadge').textContent = sepaRows.length;
+  document.getElementById('qmBadge').textContent = qmRows.length;
+  setStatus(`Done — SEPA: ${sepaRows.length} | QM: ${qmRows.length}`);
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _ver: CACHE_VER, sepa: sepaRows, qm: qmRows, market, timing, _ts: new Date().toISOString()
+    }));
+  } catch(e) {}
+}
+
+function onError(msg) {
+  resetUI();
+  setStatus('Error: ' + msg, true);
+}
+
+function resetUI() {
+  _jid = null;
+  document.getElementById('btnRun').disabled = false;
+  document.getElementById('btnStop').classList.add('d-none');
+}
+
+function setStatus(msg, isErr=false) {
+  const el = document.getElementById('combinedStatus');
+  el.textContent = msg;
+  el.className = 'small ' + (isErr ? 'text-danger' : 'text-muted');
+}
+
+function renderSepaTable(data) {
+  const body = document.getElementById('sepaBody');
+  body.innerHTML = '';
+  if (!data.length) {
+    body.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-4">No results</td></tr>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  data.forEach((r, i) => {
+    const passed = r._passed !== false;
+    const total = r.total_score != null ? Number(r.total_score).toFixed(1) : '—';
+    const tCls = r.total_score >= 75 ? 'score-high' : r.total_score >= 55 ? 'score-mid' : 'score-low';
+    const trend = r.trend_score != null ? Number(r.trend_score).toFixed(0) : '—';
+    const fund = r.fundamental_score != null ? Number(r.fundamental_score).toFixed(0) : '—';
+    const rs = r.rs_rank != null ? Number(r.rs_rank).toFixed(0) : '—';
+    const vcpG = r.vcp_grade && r.vcp_grade !== 'D' ? `<span class="tag-vcp">VCP ${r.vcp_grade}</span>` : '—';
+    const pivot = r.pivot != null ? '$' + Number(r.pivot).toFixed(2) : (r.pivot_price != null ? '$' + Number(r.pivot_price).toFixed(2) : '—');
+    const price = r.close != null ? '$' + Number(r.close).toFixed(2) : r.price != null ? '$' + Number(r.price).toFixed(2) : '—';
+    const ttOk = (r.tt_score != null && r.tt_score >= 8) || r.tt_pass === true;
+    const ttIcon = ttOk ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>';
+    const ttLabel = r.tt_score != null ? Number(r.tt_score).toFixed(0) + '/10' : (ttOk ? 'Pass' : 'Fail');
+    const row = document.createElement('tr');
+    if (!passed) row.classList.add('row-below-threshold');
+    row.innerHTML = `<td class="text-muted small">${i + 1}</td><td><a href="/analyze?ticker=${r.ticker}" class="fw-bold" style="color:var(--accent)">${r.ticker}</a><div class="text-muted" style="font-size:.7rem">${r.company || ''}</div></td><td class="${passed ? tCls : 'text-muted'} fw-bold">${total}</td><td class="text-muted small">${trend}</td><td class="text-muted small">${fund}</td><td class="text-muted">${rs}</td><td>${vcpG}</td><td class="small">${pivot}</td><td class="small">${price}</td><td class="text-center small">${ttIcon} ${ttLabel}</td><td class="text-muted small">${r.sector || '—'}</td><td><button class="btn btn-sm btn-outline-info py-0 px-2" onclick="addToWatchlist('${r.ticker}')"><i class="bi bi-bookmark-plus"></i></button></td>`;
+    frag.appendChild(row);
+  });
+  body.appendChild(frag);
+}
+
+function renderQmTable(rows) {
+  const tbody = document.getElementById('qmBody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="text-center text-secondary py-4">No results</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((r, i) => {
+    const star = parseFloat(r.qm_star ?? r.stars ?? 0);
+    const starClass = star >= 5 ? 'star-5p' : star >= 4.5 ? 'star-5' : star >= 4 ? 'star-4' : star >= 3 ? 'star-3' : 'star-low';
+    const starStr = renderStars(star);
+    const setup = (r.setup_type || '').toUpperCase();
+    const setupBadge = setupBadgeHtml(setup);
+    const adr = r.adr != null ? parseFloat(r.adr).toFixed(1) + '%' : '—';
+    const dvol = r.dollar_volume_m != null ? '$' + parseFloat(r.dollar_volume_m).toFixed(1) + 'M' : '—';
+    const m1 = r.mom_1m != null ? fmtMom(r.mom_1m) : '—';
+    const m3 = r.mom_3m != null ? fmtMom(r.mom_3m) : '—';
+    const m6 = r.mom_6m != null ? fmtMom(r.mom_6m) : '—';
+    const ma = r.surfing_ma ? r.surfing_ma + 'MA' : '—';
+    const hl = r.has_higher_lows ? '<i class="bi bi-check-circle-fill text-success"></i>' : '—';
+    const tight = r.is_tight ? '<i class="bi bi-arrows-collapse text-info"></i>' : '—';
+    return `<tr onclick="window.location='/qm/analyze?ticker=${r.ticker}'"><td class="text-secondary">${i + 1}</td><td><a href="/qm/analyze?ticker=${r.ticker}" class="fw-bold" style="color:var(--accent2)" onclick="event.stopPropagation()">${r.ticker}</a></td><td class="${starClass}">${starStr}</td><td>${adr}</td><td>${dvol}</td><td>${m1}</td><td>${m3}</td><td class="fw-bold">${m6}</td><td>${setupBadge}</td><td>${ma}</td><td>${hl}</td><td>${tight}</td></tr>`;
+  }).join('');
+}
+
+function renderStars(val) {
+  const full = Math.floor(val), half = (val - full) >= 0.5;
+  let s = '';
+  for (let i = 0; i < full; i++) s += '★';
+  if (half) s += '½';
+  return s + ` <small>(${val.toFixed(1)})</small>`;
+}
+
+function setupBadgeHtml(code) {
+  const map = {'HTF':['badge-htf','HTF'],'EP':['badge-ep','EP'],'LADDER':['badge-lad','LADDER'],'SURF':['badge-surf','SURF'],'RPL':['badge-rpl','RPL'],'FLAG':['badge-flag','FLAG']};
+  const info = map[code] || ['badge-uk', code || '?'];
+  return `<span class="badge ${info[0]}">${info[1]}</span>`;
+}
+
+function fmtMom(v) {
+  const n = parseFloat(v);
+  const cls = n >= 50 ? 'text-success fw-bold' : n >= 0 ? 'text-success' : 'text-danger';
+  return `<span class="${cls}">${n >= 0 ? '+' : ''}${n.toFixed(1)}%</span>`;
+}
+
+function renderMarket(m) {
+  if (!m || !m.regime) return;
+  const rc = m.regime === 'CONFIRMED_UPTREND' ? 'regime-bull' : m.regime === 'UPTREND_UNDER_PRESSURE' ? 'regime-trans' : 'regime-bear';
+  document.getElementById('mktContent').innerHTML = `<div class="row g-3"><div class="col-12"><div class="p-3 rounded ${rc}"><h5 class="mb-1" style="font-size:15px">${m.regime}</h5></div></div><div class="col-6 col-md-3"><div class="metric-card"><div class="metric-val">${m.breadth_pct != null ? m.breadth_pct.toFixed(1) + '%' : '—'}</div><div class="metric-lbl">Breadth</div></div></div><div class="col-6 col-md-3"><div class="metric-card"><div class="metric-val">${m.dist_days || '—'}</div><div class="metric-lbl">Distribution</div></div></div></div>`;
+}
+
+function renderTiming(t) {
+  if (!t || !t.total) return;
+  document.getElementById('tS1').textContent = (t.stage1 || 0).toFixed(1);
+  document.getElementById('tDL').textContent = (t.batch_download || 0).toFixed(1);
+  document.getElementById('tPar').textContent = (t.parallel || 0).toFixed(1);
+  document.getElementById('tTot').textContent = (t.total || 0).toFixed(1);
+  document.getElementById('timingRow').classList.remove('d-none');
+}
+
+async function addToWatchlist(ticker) {
+  try {
+    const r = await fetch('/api/watchlist/add', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ticker}) }).then(x => x.json());
+  } catch(e) {}
+}
+
+function exportSepaCSV() {
+  if (!_sepaData.length) return;
+  const keys = ['ticker','total_score','trend_score','fundamental_score','rs_rank','vcp_grade','pivot','close','sector'];
+  const csv = keys.join(',') + '\n' + _sepaData.map(r => keys.map(k => r[k] ?? '').join(',')).join('\n');
+  downloadCSV(csv, 'sepa_scan');
+}
+
+function exportQmCSV() {
+  if (!_qmData.length) return;
+  const keys = ['ticker','qm_star','setup_type','adr','dollar_volume_m','mom_1m','mom_3m','mom_6m'];
+  const csv = keys.join(',') + '\n' + _qmData.map(r => keys.map(k => r[k] ?? '').join(',')).join('\n');
+  downloadCSV(csv, 'qm_scan');
+}
+
+function downloadCSV(csv, prefix) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}));
+  a.download = prefix + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+</script>
+{% endblock %}

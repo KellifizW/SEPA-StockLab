@@ -77,6 +77,7 @@
     <div class="collapse navbar-collapse" id="nav">
       <ul class="navbar-nav me-auto gap-1">
         <li class="nav-item"><a class="nav-link {% if request.path=='/' %}active{% endif %}" href="/"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a></li>
+        <li class="nav-item"><a class="nav-link {% if request.path=='/combined' %}active{% endif %}" href="/combined"><i class="bi bi-lightning-fill me-1" style="color:#00d4ff"></i>Combined Scan 組合掃描</a></li>
         <!-- ── SEPA dropdown ───────────────────────────────────── -->
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle {% if request.path in ['/scan','/analyze','/watchlist','/positions','/vcp','/backtest','/guide'] %}active{% endif %}"

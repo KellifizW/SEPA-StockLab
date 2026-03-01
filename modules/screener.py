@@ -344,10 +344,14 @@ def validate_trend_template(ticker: str,
 
 def run_stage2(tickers: list,
                sector_leaders: set = None,
-               verbose: bool = True) -> list:
+               verbose: bool = True,
+               enriched_map: dict = None,
+               shared: bool = False) -> list:
     """
     Stage 2: Run TT1-TT10 precise validation on each ticker.
     Uses batch download + parallel threads for speed.  Returns list of dicts (only passing).
+    
+    If enriched_map is provided, skip batch download (for combined scanning).
     """
     if verbose:
         print(f"\n[Stage 2] Validating Trend Template (TT1-TT10) "
@@ -363,15 +367,19 @@ def run_stage2(tickers: list,
     total = len(filtered_tickers)
 
     # ── Batch download all historical data first ─────────────────────────
-    _progress("Stage 2 -- Trend Template", 34, "Batch-downloading price data...")
-    enriched_map = batch_download_and_enrich(
-        filtered_tickers, period="2y",
-        progress_cb=lambda bi, bt, msg: _progress(
-            "Stage 2 -- Trend Template",
-            33 + int(bi / bt * 15),
-            msg,
-        ),
-    )
+    if enriched_map is None:
+        _progress("Stage 2 -- Trend Template", 34, "Batch-downloading price data...")
+        enriched_map = batch_download_and_enrich(
+            filtered_tickers, period="2y",
+            progress_cb=lambda bi, bt, msg: _progress(
+                "Stage 2 -- Trend Template",
+                33 + int(bi / bt * 15),
+                msg,
+            ),
+        )
+    else:
+        if verbose:
+            logger.info("[Stage 2] Using pre-downloaded enriched_map (%d records)", len(enriched_map))
 
     # ── Parallel TT validation using pre-downloaded data ─────────────────
     passing = []
@@ -760,7 +768,29 @@ def run_scan(custom_filters: dict = None,
         print(f"\n[Stage 3] SEPA 5-pillar scoring for {total3} qualifying stocks "
               f"(parallel, {getattr(C, 'STAGE3_MAX_WORKERS', 6)} workers)...")
 
-    _t3 = _time.perf_counter()
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 3 worker — extracted for reusability (combined scanning)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_stage3(s2_results: list,
+               verbose: bool = True,
+               shared: bool = False) -> pd.DataFrame:
+    """
+    Stage 3: Score all Stage 2 passing tickers using SEPA 5-pillar rubric.
+    Returns ranked DataFrame, filtered by min_score and top_n.
+    
+    shared=True: suppress progress updates (used in combined scanning).
+    """
+    if not s2_results:
+        return pd.DataFrame()
+    
+    total3 = len(s2_results)
+    if not shared:
+        _progress("Stage 3 -- SEPA Scoring", 66, f"Scoring {total3} qualifying stocks...")
+    if verbose:
+        print(f"\n[Stage 3] SEPA 5-pillar scoring for {total3} qualifying stocks "
+              f"(parallel, {getattr(C, 'STAGE3_MAX_WORKERS', 6)} workers)...")
+
     rows = []
     done3 = [0]
     _rows_lock = threading.Lock()
@@ -813,9 +843,10 @@ def run_scan(custom_filters: dict = None,
                 break
             done3[0] += 1
             ticker = futures[fut]
-            pct = 66 + int(done3[0] / total3 * 34)
-            _progress("Stage 3 -- SEPA Scoring", pct,
-                      f"[{done3[0]}/{total3}] Scoring {ticker}", ticker)
+            if not shared:
+                pct = 66 + int(done3[0] / total3 * 34)
+                _progress("Stage 3 -- SEPA Scoring", pct,
+                          f"[{done3[0]}/{total3}] Scoring {ticker}", ticker)
             if verbose:
                 print(f"  [{done3[0]}/{total3}] Scoring {ticker}...", end="\r")
             try:
@@ -827,8 +858,10 @@ def run_scan(custom_filters: dict = None,
                 logger.warning(f"Stage 3 future error for {ticker}: {exc}")
 
     if not rows:
-        print("[Stage 3] No stocks scored successfully")
-        _progress("Complete", 100, "No stocks passed all filters")
+        if verbose:
+            print("[Stage 3] No stocks scored successfully")
+        if not shared:
+            _progress("Complete", 100, "No stocks passed all filters")
         return pd.DataFrame()
 
     df_all = pd.DataFrame(rows)
@@ -840,17 +873,36 @@ def run_scan(custom_filters: dict = None,
     min_score = getattr(C, "SCAN_MIN_SCORE", 50.0)
     top_n     = getattr(C, "SCAN_TOP_N", 100)
     df_out = df_all[df_all["total_score"] >= min_score].head(top_n).reset_index(drop=True)
-    df_out["rank"] = df_out.index + 1
+    
+    if verbose:
+        logger.info("[Stage 3] %d/%d pass scoring gate (min_score=%.0f)", 
+                    len(df_out), total_scored, min_score)
+        print(f"\n[Final] {len(df_out)}/{total_scored} qualify (score ≥ {min_score:.0f})")
+    
+    if not shared:
+        _progress("Complete", 100, f"Scan done: {len(df_out)} final candidates")
+    
+    return df_out
 
-    logger.info("[Timing] Stage 3: %.1fs -> %d stocks scored", _elapsed(_t3), total_scored)
-    logger.info("[Quality Gate] %d scored -> %d after min_score=%.0f, top_n=%d",
-                total_scored, len(df_out), min_score, top_n)
+
+# ═════════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════════
+
+    # -- Stage 3 ---------------------------------------------------------------
+    _t3 = _time.perf_counter()
+    df_out = run_stage3(s2_results, verbose=verbose, shared=False)
+    logger.info("[Timing] Stage 3: %.1fs -> %d stocks scored", _elapsed(_t3), len(df_out))
+    
     logger.info("[Timing] Total scan: %.1fs", _elapsed())
     logger.info("[Stage 3] %d stocks in final results", len(df_out))
     print("=" * 60)
-    _progress("Complete", 100, f"{len(df_out)} stocks ranked (from {total_scored} scored)")
-    # Return tuple: (passed quality gate, all scored stocks)
-    return df_out, df_all
+    _progress("Complete", 100, f"{len(df_out)} stocks ranked (from {len(s2_results)} passed TT)")
+    
+    # Return tuple: (passed quality gate, all Stage 2 passing stocks)
+    return df_out, pd.DataFrame(s2_results) if s2_results else pd.DataFrame()
+
+
+
 
 
 

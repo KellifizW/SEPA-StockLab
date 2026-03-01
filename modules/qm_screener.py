@@ -344,10 +344,13 @@ def _check_qm_stage2(ticker: str, df: pd.DataFrame) -> dict | None:
     }
 
 
-def run_qm_stage2(tickers: list[str], verbose: bool = True) -> list[dict]:
+def run_qm_stage2(tickers: list[str], verbose: bool = True,
+                  enriched_map: dict = None, shared: bool = False) -> list[dict]:
     """
     Stage 2 — Download OHLCV and apply QM gate to each candidate.
     Returns list of passing ticker dicts for Stage 3.
+    
+    If enriched_map is provided, skip batch download (for combined scanning).
     """
     from modules.data_pipeline import batch_download_and_enrich
 
@@ -363,11 +366,16 @@ def run_qm_stage2(tickers: list[str], verbose: bool = True) -> list[dict]:
         pct = 12 + int((batch_num / total_batches) * 35)
         _progress("Stage 2", pct, msg)
 
-    enriched = batch_download_and_enrich(
-        tickers,
-        period="6mo",  # 6 months sufficient: ADR(14d) + mom 6M(126d) + 6d consolidation + SMA50
-        progress_cb=_progress_cb,
-    )
+    if enriched_map is None:
+        enriched = batch_download_and_enrich(
+            tickers,
+            period="6mo",  # 6 months sufficient: ADR(14d) + mom 6M(126d) + 6d consolidation + SMA50
+            progress_cb=_progress_cb,
+        )
+    else:
+        enriched = enriched_map
+        if verbose:
+            logger.info("[QM Stage2] Using pre-downloaded enriched_map (%d records)", len(enriched))
 
     _progress("Stage 2", 48, f"Applying QM momentum/ADR/dollar-volume filters…")
     passed = []
