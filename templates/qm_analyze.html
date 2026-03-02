@@ -140,6 +140,26 @@
   .premkt-row { display:flex; justify-content:space-between; padding:4px 0;
                 border-bottom:1px solid #21262d; font-size:13px; }
   .premkt-row:last-child { border-bottom:none; }
+
+  /* ── Unified top panel (Score | ORH | ATR) ─────────────── */
+  .qm-top-panel-inner { flex-wrap: nowrap; min-height: 0; }
+  .qm-section-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; color: #8b949e;
+    padding: 8px 14px; border-bottom: 1px solid #21262d; margin-bottom: 10px;
+  }
+  .qm-score-col { flex: 0 0 295px; border-right: 1px solid #30363d; padding-bottom: 12px; }
+  .qm-orh-col   { flex: 1 1 auto; min-width: 0; border-right: 1px solid #30363d; padding-bottom: 12px; }
+  .qm-atr-col   { flex: 0 0 260px; padding-bottom: 12px; align-self: flex-start; }
+  #qmScoreCard  { padding: 0 14px; }
+  .qm-orh-inner { padding: 0 14px; }
+  #qmAtrGauge   { padding: 0 14px; }
+  @media (max-width: 991px) {
+    .qm-top-panel-inner { flex-direction: column; }
+    .qm-score-col { flex: none; width: 100%; border-right: none; border-bottom: 1px solid #30363d; }
+    .qm-orh-col   { flex: none; width: 100%; border-right: none; border-bottom: 1px solid #30363d; }
+    .qm-atr-col   { flex: none; width: 100%; }
+  }
 </style>
 {% endblock %}
 
@@ -200,7 +220,7 @@
   <!-- Row 1: Star + Setup type + Radar -->
   <div class="row g-3 mb-3">
     <!-- Star rating card -->
-    <div class="col-12 col-md-3">
+    <div class="col-12 col-md-3 col-lg-2">
       <div class="card h-100 text-center">
         <div class="card-header"><i class="bi bi-star-fill me-1 text-warning"></i>QM 星級評分</div>
         <div class="card-body d-flex flex-column align-items-center justify-content-center py-4">
@@ -216,7 +236,7 @@
     </div>
 
     <!-- 6-dim radar -->
-    <div class="col-12 col-md-5">
+    <div class="col-12 col-md-5 col-lg-6">
       <div class="card h-100">
         <div class="card-header">
           <i class="bi bi-diagram-3 me-1"></i>六維評分 6-Dimension Scores
@@ -232,7 +252,7 @@
     </div>
 
     <!-- Setup type + quick metrics -->
-    <div class="col-12 col-md-4">
+    <div class="col-12 col-md-4 col-lg-4">
       <div class="card h-100">
         <div class="card-header"><i class="bi bi-tag me-1"></i>形態類型 Setup Type</div>
         <div class="card-body">
@@ -336,49 +356,51 @@
   <!-- 2. Gate alerts -->
   <div id="qmGateAlerts" class="mb-3"></div>
 
-  <!-- 2b-4 Top row: Watch Score, ORH, ATR (3 columns) -->
-  <div class="row g-3 mb-3">
-    <!-- Watch Score Card -->
-    <div class="col-12 col-lg-4" id="qmScoreCardWrap" style="display:none">
-      <div class="card h-100">
-        <div class="card-header d-flex align-items-center justify-content-between">
+  <!-- 2b-4 Top panel: Score | ORH | ATR (unified card, widescreen-optimised) -->
+  <div class="card mb-3">
+    <div class="d-flex align-items-stretch qm-top-panel-inner">
+
+      <!-- ① Watch Score — hidden until watch mode active -->
+      <div id="qmScoreCardWrap" class="qm-score-col" style="display:none">
+        <div class="qm-section-hdr">
           <span><i class="bi bi-speedometer me-1"></i>動態評分</span>
           <span id="qmScoreDelta" class="score-delta flat"></span>
         </div>
-        <div class="card-body" id="qmScoreCard" style="font-size:12px">
+        <div id="qmScoreCard" style="font-size:12px">
           <!-- Populated by renderQmWatchScore() -->
         </div>
       </div>
-    </div>
-    <!-- ORH Cascade -->
-    <div class="col-12 col-lg-4">
-      <div class="card h-100">
-        <div class="card-header">
-          <i class="bi bi-alarm me-1"></i>開市區間 ORH
-          <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip" style="font-size:10px"
-             title="Qullamaggie：突破開市場區間高點是重要買入信號。1分鐘 (最進取) / 5分鐘 (標準) / 30分鐘 (6x5min)。"></i>
+
+      <!-- ② ORH Cascade — always visible, flex:1 takes remaining width -->
+      <div class="qm-orh-col">
+        <div class="qm-section-hdr">
+          <span>
+            <i class="bi bi-alarm me-1"></i>開市區間 ORH
+            <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip" style="font-size:10px"
+               title="Qullamaggie：突破開市區間高點是重要買入信號。1分鐘 (最進取) / 5分鐘 (標準) / 30分鐘 (6x5min)。"></i>
+          </span>
         </div>
-        <div class="card-body" style="padding:10px">
+        <div class="qm-orh-inner">
           <div class="row g-2" id="qmOrhCascade" style="flex-wrap:wrap;margin:0">
             <!-- Populated by renderOrhCascade() -->
           </div>
         </div>
       </div>
-    </div>
-    <!-- ATR Entry Gate -->
-    <div class="col-12 col-lg-4">
-      <div class="card h-100">
-        <div class="card-header">
-          <i class="bi bi-speedometer2 me-1"></i>ATR 入場評估
-          <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip" style="font-size:10px"
-             title="理想入場在 LOD + 0~0.67×ATR。超過 1×ATR 為追價。"></i>
+
+      <!-- ③ ATR Entry Gate — fixed compact width -->
+      <div class="qm-atr-col">
+        <div class="qm-section-hdr">
+          <span>
+            <i class="bi bi-speedometer2 me-1"></i>ATR 入場評估
+            <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip" style="font-size:10px"
+               title="理想入場在 LOD + 0~0.67×ATR。超過 1×ATR 為追價。"></i>
+          </span>
         </div>
-        <div class="card-body" style="padding:10px">
-          <div id="qmAtrGauge" style="font-size:12px">
-            <!-- Populated by renderAtrGauge() -->
-          </div>
+        <div id="qmAtrGauge" style="font-size:12px">
+          <!-- Populated by renderAtrGauge() -->
         </div>
       </div>
+
     </div>
   </div>
 
@@ -585,6 +607,7 @@ function renderAnalysis(ticker, r) {
       },
       plugins: { legend: { display: false } },
       animation: { duration: 600 },
+      maintainAspectRatio: false,
     }
   });
 
