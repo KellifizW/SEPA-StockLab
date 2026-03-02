@@ -83,6 +83,43 @@
   .ms-closed    { background:#1c2128; color:#8b949e; }
   .watch-countdown { font-size:11px; color:#8b949e; }
 
+  /* ORH summary */
+  .orh-summary { border-radius:6px; padding:8px 12px; margin-top:8px; font-size:12px; font-weight:600; display:flex; align-items:center; gap:6px; }
+  .orh-summary.bullish  { background:#0d2016; border:1px solid #3fb950; color:#3fb950; }
+  .orh-summary.bearish  { background:#1a0a0a; border:1px solid #f85149; color:#f85149; }
+  .orh-summary.mixed    { background:#1f1600; border:1px solid #e3b341; color:#e3b341; }
+  .orh-summary.neutral  { background:#161b22; border:1px solid #30363d; color:#8b949e; }
+
+  /* Dynamic score card */
+  .score-card-wrap { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:16px; }
+  .score-ring { width:80px; height:80px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+                font-size:28px; font-weight:700; border:4px solid; }
+  .score-ring.buy    { border-color:#3fb950; color:#3fb950; background:#0d2016; }
+  .score-ring.watch  { border-color:#e3b341; color:#e3b341; background:#1f1600; }
+  .score-ring.avoid  { border-color:#f85149; color:#f85149; background:#1a0a0a; }
+  .score-action-text { font-size:14px; font-weight:700; }
+  .score-breakdown-row { display:flex; justify-content:space-between; padding:3px 0; font-size:11px; border-bottom:1px solid #21262d; }
+  .score-breakdown-row:last-child { border-bottom:none; }
+  .score-iron-rule { font-size:11px; padding:4px 8px; border-radius:4px; margin-top:2px; }
+  .score-iron-rule.block { background:#3a0a0a; color:#f85149; }
+  .score-iron-rule.warn  { background:#2e1f00; color:#e3b341; }
+  .score-delta { font-size:11px; padding:2px 8px; border-radius:10px; display:inline-block; }
+  .score-delta.up   { background:#0d2016; color:#3fb950; }
+  .score-delta.down { background:#1a0a0a; color:#f85149; }
+  .score-delta.flat { background:#21262d; color:#8b949e; }
+
+  /* Pre-market plan help */
+  .premkt-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #21262d; font-size:13px; align-items:baseline; }
+  .premkt-row:last-child { border-bottom:none; }
+  .premkt-help { font-size:10px; color:#6e7681; margin-top:2px; }
+
+  /* Intraday summary bar */
+  .intraday-summary { display:flex; gap:12px; padding:8px 12px; border-radius:6px; margin-bottom:8px; font-size:12px; font-weight:600; }
+  .intraday-summary.net-bull { background:#0d2016; border:1px solid #3fb950; }
+  .intraday-summary.net-bear { background:#1a0a0a; border:1px solid #f85149; }
+  .intraday-summary.net-neutral { background:#161b22; border:1px solid #30363d; }
+  .signal-ts { font-size:10px; color:#6e7681; margin-left:6px; }
+
   /* Watch log */
   .watch-log-entry { font-size:11px; padding:4px 8px; border-bottom:1px solid #21262d;
                      display:flex; gap:8px; }
@@ -90,9 +127,14 @@
   .watch-log-msg { color:#c9d1d9; }
 
   /* Intraday chart slots */
-  .slot-chart-container { height:300px; background:#0d1117; border-radius:6px; overflow:hidden; }
+  .slot-chart-container { height:300px; background:#0d1117; overflow:hidden; }
   .slot-selector select { background:#0d1117; border:1px solid #30363d; color:#c9d1d9;
                           border-radius:4px; font-size:12px; padding:3px 8px; }
+  /* Indicator legend + toggles */
+  .intraday-legend { display:flex; flex-wrap:wrap; gap:10px; padding:6px 10px; font-size:11px; color:#8b949e; min-height:28px; background:#0d1117; }
+  .ind-toggle { cursor:pointer; user-select:none; border-radius:4px; padding:1px 4px; transition:opacity .2s; }
+  .ind-toggle:hover { background:#21262d; }
+  .ind-toggle.toggled-off { opacity:0.35; text-decoration:line-through; }
   /* Premarket plan */
   .premkt-card { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:12px 16px; }
   .premkt-row { display:flex; justify-content:space-between; padding:4px 0;
@@ -294,6 +336,17 @@
   <!-- 2. Gate alerts -->
   <div id="qmGateAlerts" class="mb-3"></div>
 
+  <!-- 2b. Dynamic Watch Score Card -->
+  <div class="card mb-3" id="qmScoreCardWrap" style="display:none">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span><i class="bi bi-speedometer me-1"></i>動態盯盤評分 Watch Score</span>
+      <span id="qmScoreDelta" class="score-delta flat"></span>
+    </div>
+    <div class="card-body" id="qmScoreCard">
+      <!-- Populated by renderQmWatchScore() -->
+    </div>
+  </div>
+
   <!-- 3. ORH Cascade -->
   <div class="card mb-3">
     <div class="card-header">
@@ -338,7 +391,8 @@
             </select>
           </div>
         </div>
-        <div class="card-body p-2">
+        <div class="card-body p-0">
+          <div id="qmSlotALegend" class="intraday-legend" style="border-bottom:1px solid #21262d;min-height:28px"></div>
           <div class="slot-chart-container" id="qmSlotAChart"></div>
         </div>
       </div>
@@ -357,7 +411,8 @@
             </select>
           </div>
         </div>
-        <div class="card-body p-2">
+        <div class="card-body p-0">
+          <div id="qmSlotBLegend" class="intraday-legend" style="border-bottom:1px solid #21262d;min-height:28px"></div>
           <div class="slot-chart-container" id="qmSlotBChart"></div>
         </div>
       </div>
@@ -907,6 +962,7 @@ function vetoReason(code) {
 let _qmWatchTimer = null;
 let _qmCountdownTimer = null;
 let _qmSlotCharts = { A: null, B: null };
+let _qmSlotSeriesRefs = { A: {}, B: {} };
 let _qmWatchLogEntries = [];
 const QM_REFRESH_MS = 300000; // 5 min
 
@@ -964,6 +1020,14 @@ function initQmWatchMode() {
   // Set ticker label
   document.getElementById('watchTicker').textContent = ticker;
 
+  // Restore signal log from sessionStorage
+  const key = 'qm_watch_log_' + ticker;
+  try {
+    const saved = sessionStorage.getItem(key);
+    if (saved) { _qmWatchLogEntries = JSON.parse(saved); } else { _qmWatchLogEntries = []; }
+  } catch(e) { _qmWatchLogEntries = []; }
+  _qmRenderLog();
+
   // Render premarket plan from cached review result
   if (window._qmLastResult) renderQmPremktPlan(ticker, window._qmLastResult);
 
@@ -1017,7 +1081,13 @@ async function refreshQmWatchMode() {
     renderGateAlerts(data.gate_blocks || []);
     renderOrhCascade(data.orh_levels || {});
     renderAtrGauge(data.atr_gate || {});
-    renderQmIntradayCommentary(data.active_signals || [], data.signal_counts || {});
+    renderQmIntradayCommentary(data.active_signals || [], data.signal_counts || {}, data.refresh_ts || null);
+    if (data.watch_score) renderQmWatchScore(data.watch_score);
+
+    // Show data source badge if using fallback
+    if (data.data_source === 'fallback_daily') {
+      appendQmWatchLog('⚠️ 盤中5分鐘資料不可用，使用每日資料回退 (Fallback to daily data)');
+    }
 
     // Reload chart slot A
     loadQmSlotChart('A', document.getElementById('slotASelect').value, ticker);
@@ -1047,9 +1117,21 @@ function loadQmSlotChart(slot, interval, ticker) {
   }
 }
 
+function toggleQmSeries(slot, name, btn) {
+  const refs = _qmSlotSeriesRefs[slot];
+  if (!refs || !refs[name]) return;
+  const series = refs[name];
+  const vis = !series.options().visible;
+  series.applyOptions({ visible: vis });
+  if (btn) btn.classList.toggle('toggled-off', !vis);
+}
+
 async function _loadQmIntradayForSlot(containerId, ticker, interval, slot) {
   const container = document.getElementById(containerId);
   if (!container) return;
+  const legendId = slot === 'A' ? 'qmSlotALegend' : 'qmSlotBLegend';
+  const legendEl = document.getElementById(legendId);
+  if (legendEl) legendEl.innerHTML = '';
   container.innerHTML = '<div class="text-center py-4 text-secondary"><div class="spinner-border spinner-border-sm"></div></div>';
   try {
     const resp = await fetch(`/api/chart/intraday/${ticker}?interval=${interval}`);
@@ -1057,33 +1139,64 @@ async function _loadQmIntradayForSlot(containerId, ticker, interval, slot) {
     if (!data.ok || !data.candles || !data.candles.length) throw new Error('no data');
     container.innerHTML = '';
     if (_qmSlotCharts[slot]) { try { _qmSlotCharts[slot].remove(); } catch(e){} }
+    _qmSlotSeriesRefs[slot] = {};
+    const w = container.clientWidth || 500;
     const chart = LightweightCharts.createChart(container, {
-      width: container.clientWidth || 500, height: 295,
+      width: w, height: 295,
       layout: { background: { color: '#0d1117' }, textColor: '#c9d1d9' },
       grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#30363d', autoScale: true },
       timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#30363d' },
+    });
+    const candles = (data.candles || []).map(c => {
+      const cd = { time: c.time, open: c.open, high: c.high, low: c.low, close: c.close };
+      if (c.is_premarket) { cd.color = '#3fb95033'; cd.borderColor = '#3fb95033'; cd.wickColor = '#3fb95033'; }
+      return cd;
     });
     const cs = chart.addCandlestickSeries({
       upColor: '#3fb950', downColor: '#f85149', borderUpColor: '#3fb950', borderDownColor: '#f85149',
       wickUpColor: '#3fb950', wickDownColor: '#f85149',
     });
-    cs.setData(data.candles.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
-    // EMA overlays
+    cs.setData(candles);
+    if (data.orh && data.orh > 0) cs.createPriceLine({ price: data.orh, color: '#e3b341', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'ORH' });
+    if (data.lod && data.lod > 0) cs.createPriceLine({ price: data.lod, color: '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'LOD' });
+    // Volume on separate scale
+    if (data.volume && data.volume.length) {
+      const vs = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol',
+        color: '#21262d', upColor: '#3fb95066', downColor: '#f8514966' });
+      chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, drawTicks: false, borderVisible: false });
+      vs.setData(data.volume);
+    }
+    // Indicators -- save refs for toggle
+    const legendItems = [];
     if (data.ema9 && data.ema9.length) {
-      const e9 = chart.addLineSeries({ color: '#e3b341', lineWidth: 1, title: 'EMA9' });
+      const e9 = chart.addLineSeries({ color: '#e3b341', lineWidth: 1.5, title: '', priceLineVisible: false, lastValueVisible: false });
       e9.setData(data.ema9);
+      _qmSlotSeriesRefs[slot].ema9 = e9;
+      legendItems.push({ name: 'ema9', label: 'EMA 9', color: '#e3b341' });
     }
     if (data.ema21 && data.ema21.length) {
-      const e21 = chart.addLineSeries({ color: '#58a6ff', lineWidth: 1, title: 'EMA21' });
+      const e21 = chart.addLineSeries({ color: '#58a6ff', lineWidth: 1.5, title: '', priceLineVisible: false, lastValueVisible: false });
       e21.setData(data.ema21);
+      _qmSlotSeriesRefs[slot].ema21 = e21;
+      legendItems.push({ name: 'ema21', label: 'EMA 21', color: '#58a6ff' });
     }
     if (data.vwap && data.vwap.length) {
-      const vw = chart.addLineSeries({ color: '#ff8fa3', lineWidth: 1, lineStyle: 2, title: 'VWAP' });
+      const vw = chart.addLineSeries({ color: '#ff9500', lineWidth: 1.5, lineStyle: 2, title: '', priceLineVisible: false, lastValueVisible: false });
       vw.setData(data.vwap);
+      _qmSlotSeriesRefs[slot].vwap = vw;
+      legendItems.push({ name: 'vwap', label: 'VWAP', color: '#ff9500' });
+    }
+    // Populate legend
+    if (legendEl && legendItems.length) {
+      legendEl.innerHTML = legendItems.map(item =>
+        `<span class="ind-toggle" id="qm-${slot}-lg-${item.name}" onclick="toggleQmSeries('${slot}','${item.name}',this)">`+
+        `<span style="display:inline-block;width:14px;height:2px;background:${item.color};vertical-align:middle"></span>&nbsp;${item.label}</span>`
+      ).join('');
     }
     chart.timeScale().fitContent();
-    new ResizeObserver(() => { const w = container.clientWidth || 500; chart.applyOptions({ width: w }); }).observe(container);
+    new ResizeObserver(() => { const nw = container.clientWidth || 500; if (_qmSlotCharts[slot]) chart.applyOptions({ width: nw }); }).observe(container);
     _qmSlotCharts[slot] = chart;
   } catch(e) {
     container.innerHTML = `<div class="text-secondary text-center py-4" style="font-size:12px">圖表載入失敗 ${e.message}</div>`;
@@ -1104,6 +1217,7 @@ async function _loadQmDailyForSlot(containerId, ticker, slot) {
       width: container.clientWidth || 500, height: 295,
       layout: { background: { color: '#0d1117' }, textColor: '#c9d1d9' },
       grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      rightPriceScale: { borderColor: '#30363d', autoScale: true },
       timeScale: { borderColor: '#30363d' },
     });
     const cs = chart.addCandlestickSeries({
@@ -1135,6 +1249,7 @@ async function _loadQmWeeklyForSlot(containerId, ticker, slot) {
       width: container.clientWidth || 500, height: 295,
       layout: { background: { color: '#0d1117' }, textColor: '#c9d1d9' },
       grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      rightPriceScale: { borderColor: '#30363d', autoScale: true },
       timeScale: { borderColor: '#30363d' },
     });
     const cs = chart.addCandlestickSeries({
@@ -1174,11 +1289,13 @@ function renderOrhCascade(levels) {
     { key: '5m',  label: '5分鐘 ORH', hint: '(標準)' },
     { key: '60m', label: '30分鐘 ORH', hint: '(6x5min)' },
   ];
-  el.innerHTML = slots.map(s => {
+  let upCount = 0, dnCount = 0, neutralCount = 0;
+  const cards = slots.map(s => {
     const d = levels[s.key] || {};
     const hi = d.hi != null ? '$' + d.hi : '—';
     const lo = d.lo != null ? '$' + d.lo : '—';
     const breakCls = d.broken_up ? 'broken-up' : d.broken_dn ? 'broken-dn' : '';
+    if (d.broken_up) upCount++; else if (d.broken_dn) dnCount++; else neutralCount++;
     const breakBadge = d.broken_up
       ? `<span class="orh-break-badge orh-break-up">突破高點 ↑</span>`
       : d.broken_dn
@@ -1192,12 +1309,24 @@ function renderOrhCascade(levels) {
         <div class="mt-1">${breakBadge}</div>
       </div></div>`;
   }).join('');
+  // Summary conclusion
+  let sumCls, sumIcon, sumText;
+  if (upCount === 3)                              { sumCls = 'bullish'; sumIcon = '🟢'; sumText = '全線突破 — 極強勢，可積極入場 All levels broken up'; }
+  else if (upCount >= 2 && dnCount === 0)         { sumCls = 'bullish'; sumIcon = '🟢'; sumText = `${upCount}/3 突破高點 — 偏強勢 Mostly bullish`; }
+  else if (dnCount === 3)                         { sumCls = 'bearish'; sumIcon = '🔴'; sumText = '全線跌破 — 極弱勢，回避入場 All levels broken down'; }
+  else if (dnCount >= 2 && upCount === 0)         { sumCls = 'bearish'; sumIcon = '🔴'; sumText = `${dnCount}/3 跌破低點 — 偏弱勢 Mostly bearish`; }
+  else if (upCount > 0 && dnCount > 0)            { sumCls = 'mixed';   sumIcon = '⚠️'; sumText = `${upCount}↑ ${dnCount}↓ — 訊號矛盾，宜觀望 Mixed signals`; }
+  else if (neutralCount === 3)                    { sumCls = 'neutral'; sumIcon = '⏳'; sumText = '尚未突破任一級別 — 繼續觀望 Still waiting for breakout'; }
+  else                                            { sumCls = 'neutral'; sumIcon = 'ℹ️'; sumText = `${upCount}↑ ${dnCount}↓ ${neutralCount}— — 待確認 Developing`; }
+  const summary = `<div class="col-12"><div class="orh-summary ${sumCls}">${sumIcon} ${sumText}</div></div>`;
+  el.innerHTML = cards + summary;
 }
 
 function renderAtrGauge(atr) {
   const el = document.getElementById('qmAtrGauge');
   if (!atr || atr.atr == null) {
-    el.innerHTML = '<div class="text-secondary" style="font-size:12px">等待盤中資料…</div>';
+    // Check if we got daily fallback data (atr_daily might be available in parent data)
+    el.innerHTML = '<div class="text-secondary" style="font-size:12px"><i class="bi bi-clock me-1"></i>等待盤中5分鐘資料… 每日ATR數據將在盤中自動填入</div>';
     return;
   }
   const frac = Math.min(atr.dist_atr_frac ?? 0, 1.5);
@@ -1242,19 +1371,33 @@ function renderQmPremktPlan(ticker, result) {
   const plan = result.trade_plan || {};
   const star = parseFloat(result.capped_stars ?? result.stars ?? 0);
   const starCls = star >= 5 ? '#3fb950' : star >= 4 ? '#e3b341' : '#8b949e';
+  // Fix: use position_lo_pct / position_hi_pct instead of recommended_size_pct
+  const loPct = plan.position_lo_pct != null ? Math.round(plan.position_lo_pct) : null;
+  const hiPct = plan.position_hi_pct != null ? Math.round(plan.position_hi_pct) : null;
+  const sizeText = loPct != null && hiPct != null ? `${loPct}–${hiPct}%` : (loPct != null ? `${loPct}%` : '—');
   const rows = [
-    ['評分 Stars', `<span style="color:${starCls};font-weight:700">${star.toFixed(1)}★</span>`],
-    ['入場價 Entry', plan.entry_price ? '$' + parseFloat(plan.entry_price).toFixed(2) : '市價付買'],
-    ['Day 1 Stop', plan.day1_stop != null ? `<span style="color:#f85149">$${parseFloat(plan.day1_stop).toFixed(2)}</span>` : '—'],
-    ['Day 3+ Trail', plan.day3plus_stop != null ? `<span style="color:#e3b341">$${parseFloat(plan.day3plus_stop).toFixed(2)}</span>` : '10MA'],
-    ['建議倉位比 Size', plan.recommended_size_pct ? plan.recommended_size_pct + '%' : '—'],
+    { label: '評分 Stars',      value: `<span style="color:${starCls};font-weight:700">${star.toFixed(1)}★</span>`,
+      help: '星級越高，建議倉位越大。5★+ = 大倉位，3★ = 最小倉位' },
+    { label: '入場價 Entry',    value: plan.entry_price ? '$' + parseFloat(plan.entry_price).toFixed(2) : '市價買入',
+      help: '突破買入價位，盤中突破此價位可考慮入場' },
+    { label: 'Day 1 Stop',     value: plan.day1_stop != null ? `<span style="color:#f85149">$${parseFloat(plan.day1_stop).toFixed(2)}</span>` : '—',
+      help: '第1天停損設於日低位 (LOD) 下方 0.5%，跌破即止損出場' },
+    { label: 'Day 2 Stop',     value: plan.day2_stop != null ? `<span style="color:#e3b341">$${parseFloat(plan.day2_stop).toFixed(2)}</span>` : '成本位',
+      help: '第2天起停損移至成本，保護不虧損 (Break-Even)' },
+    { label: 'Day 3+ Trail',   value: plan.day3plus_stop != null ? `<span style="color:#3fb950">$${parseFloat(plan.day3plus_stop).toFixed(2)}</span>` : '10MA',
+      help: '第3天起用 10日均線追蹤停損；收跌破 10MA 出場' },
+    { label: '建議倉位 Size',   value: `<span style="font-weight:700">${sizeText}</span>`,
+      help: '佔帳戶資金比例：5★+ = 15-25%，4★ = 10-15%，3★ = 5-10%' },
   ];
-  el.innerHTML = rows.map(([k, v]) =>
-    `<div class="premkt-row"><span style="color:#8b949e">${k}</span><span>${v}</span></div>`
+  el.innerHTML = rows.map(r =>
+    `<div class="premkt-row">
+       <div><span style="color:#8b949e">${r.label}</span><div class="premkt-help">${r.help}</div></div>
+       <span>${r.value}</span>
+     </div>`
   ).join('');
 }
 
-function renderQmIntradayCommentary(signals, counts) {
+function renderQmIntradayCommentary(signals, counts, refreshTs) {
   const el = document.getElementById('qmIntradayCommentary');
   const countEl = document.getElementById('qmSignalCount');
   if (countEl) countEl.textContent = counts.total || 0;
@@ -1263,27 +1406,124 @@ function renderQmIntradayCommentary(signals, counts) {
     el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:12px">目前無盤中訊號</div>';
     return;
   }
-  el.innerHTML = signals.map(s => {
+  // Timestamp for this refresh
+  const tsStr = refreshTs
+    ? new Date(refreshTs * 1000).toLocaleTimeString('zh-HK', { hour:'2-digit', minute:'2-digit' })
+    : new Date().toLocaleTimeString('zh-HK', { hour:'2-digit', minute:'2-digit' });
+  // Bull/bear summary bar
+  const bull = counts.bullish || 0;
+  const bear = counts.bearish || 0;
+  const net = bull - bear;
+  const netCls = net > 0 ? 'net-bull' : net < 0 ? 'net-bear' : 'net-neutral';
+  const netIcon = net > 0 ? '🟢' : net < 0 ? '🔴' : '⚪';
+  const netLabel = net > 0 ? '偏多 Bullish Bias' : net < 0 ? '偏空 Bearish Bias' : '中性 Neutral';
+  const summaryBar = `<div class="intraday-summary ${netCls}">
+    <span>${netIcon} ${netLabel}</span>
+    <span style="color:#8b949e">🟢${bull} 🔴${bear}</span>
+    <span class="ms-auto" style="color:#6e7681;font-weight:400;font-size:11px">⏱ ${tsStr}</span>
+  </div>`;
+  const cards = signals.map(s => {
     const cls = s.includes('🟢') ? 'signal-bull'
                : s.includes('🔴') ? 'signal-bear'
                : s.includes('⚠') ? 'signal-warn' : 'signal-info';
     return `<div class="signal-card ${cls}">${s}</div>`;
   }).join('');
+  el.innerHTML = summaryBar + cards;
+}
+
+function renderQmWatchScore(ws) {
+  const wrap = document.getElementById('qmScoreCardWrap');
+  const el = document.getElementById('qmScoreCard');
+  const deltaEl = document.getElementById('qmScoreDelta');
+  if (!ws || ws.normalized == null) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  const score = ws.normalized;
+  const action = ws.action || '';
+  const actionCls = (action === 'BUY' || action === 'STRONG_BUY') ? 'buy'
+                  : (action === 'AVOID' || action === 'BLOCK') ? 'avoid' : 'watch';
+  const actionColor = actionCls === 'buy' ? '#3fb950' : actionCls === 'avoid' ? '#f85149' : '#e3b341';
+  const actionLabel = ws.action_zh || action;
+
+  // Delta from sessionStorage
+  const ticker = window._qmLastTicker || '';
+  const cacheKey = 'qm_wscore_' + ticker;
+  let prevScore = null;
+  try { prevScore = parseFloat(sessionStorage.getItem(cacheKey)); } catch(e) {}
+  try { sessionStorage.setItem(cacheKey, score.toString()); } catch(e) {}
+  let deltaHtml = '';
+  if (prevScore != null && !isNaN(prevScore)) {
+    const diff = score - prevScore;
+    if (Math.abs(diff) >= 1) {
+      const dCls = diff > 0 ? 'up' : 'down';
+      const dSign = diff > 0 ? '+' : '';
+      deltaHtml = `<span class="score-delta ${dCls}">${dSign}${diff.toFixed(0)}</span>`;
+    } else {
+      deltaHtml = '<span class="score-delta flat">—</span>';
+    }
+  }
+  if (deltaEl) deltaEl.innerHTML = deltaHtml;
+
+  // Breakdown table (backend sends array of {dim, pts, note})
+  const bd = ws.breakdown || [];
+  const bdRows = bd.map(item => {
+    const val = parseFloat(item.pts) || 0;
+    const color = val > 0 ? '#3fb950' : val < 0 ? '#f85149' : '#8b949e';
+    const sign = val > 0 ? '+' : '';
+    return `<div class="score-breakdown-row">
+      <span style="color:#8b949e">${item.dim || ''}</span>
+      <span style="color:${color};font-weight:600" title="${item.note || ''}">${sign}${val.toFixed(0)}</span>
+    </div>`;
+  }).join('');
+
+  // Iron rules (backend sends array of {rule, msg, severity})
+  const ironRules = ws.iron_rules || [];
+  const ironHtml = ironRules.length ? ironRules.map(r => {
+    const cls = r.severity === 'block' ? 'block' : 'warn';
+    return `<div class="score-iron-rule ${cls}"><i class="bi bi-shield-exclamation me-1"></i>${r.msg}</div>`;
+  }).join('') : '';
+
+  el.innerHTML = `
+    <div class="d-flex align-items-center gap-3 mb-3">
+      <div class="score-ring ${actionCls}">${Math.round(score)}</div>
+      <div>
+        <div class="score-action-text" style="color:${actionColor}">${actionLabel}</div>
+        <div style="font-size:11px;color:#8b949e">滿分 100 · 70+ 可入場 · 30- 回避</div>
+      </div>
+    </div>
+    ${ironHtml ? '<div class="mb-2">' + ironHtml + '</div>' : ''}
+    <div style="font-size:11px;color:#6e7681;margin-bottom:4px">評分明細 Score Breakdown (raw: ${ws.raw || 0})</div>
+    ${bdRows}
+  `;
+}
+
+function _qmLogKey() {
+  const ticker = window._qmLastTicker || document.getElementById('tickerInput').value.trim().toUpperCase();
+  return ticker ? 'qm_watch_log_' + ticker : null;
+}
+
+function _qmRenderLog() {
+  const el = document.getElementById('qmSignalLog');
+  if (!el) return;
+  if (!_qmWatchLogEntries.length) { el.innerHTML = ''; return; }
+  el.innerHTML = _qmWatchLogEntries.map(e =>
+    `<div class="watch-log-entry"><span class="watch-log-ts">${e.ts}</span><span class="watch-log-msg">${e.msg}</span></div>`
+  ).join('');
 }
 
 function appendQmWatchLog(msg) {
-  const el = document.getElementById('qmSignalLog');
   const now = new Date();
   const ts = now.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const entry = document.createElement('div');
-  entry.className = 'watch-log-entry';
-  entry.innerHTML = `<span class="watch-log-ts">${ts}</span><span class="watch-log-msg">${msg}</span>`;
-  el.insertBefore(entry, el.firstChild);
-  // Keep max 50 entries
-  while (el.children.length > 50) el.removeChild(el.lastChild);
+  _qmWatchLogEntries.unshift({ ts, msg });
+  if (_qmWatchLogEntries.length > 50) _qmWatchLogEntries.length = 50;
+  const key = _qmLogKey();
+  if (key) { try { sessionStorage.setItem(key, JSON.stringify(_qmWatchLogEntries)); } catch(e){} }
+  _qmRenderLog();
 }
 
 function clearQmWatchLog() {
+  _qmWatchLogEntries = [];
+  const key = _qmLogKey();
+  if (key) { try { sessionStorage.removeItem(key); } catch(e){} }
   document.getElementById('qmSignalLog').innerHTML = '';
 }
 

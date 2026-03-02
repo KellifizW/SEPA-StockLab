@@ -1223,8 +1223,8 @@ let _mlCommentaryLog = []; // Signal history log entries
 
 // Two independent chart slots: A and B
 let _watchSlots = {
-  A: { type: '5m',    chart: null, data: null },
-  B: { type: 'daily', chart: null, data: null }
+  A: { type: '5m',    chart: null, data: null, series: {} },
+  B: { type: 'daily', chart: null, data: null, series: {} }
 };
 
 function getMarketStatus() {
@@ -1293,6 +1293,13 @@ function switchMlMode(mode) {
 function initWatchMode(ticker) {
   _mlWatchTicker = ticker;
   document.getElementById('watchTicker').textContent = ticker;
+
+  // Restore signal log from sessionStorage
+  try {
+    const saved = sessionStorage.getItem('ml_watch_log_' + ticker);
+    if (saved) { _mlCommentaryLog = JSON.parse(saved); renderWatchLog(); }
+    else { _mlCommentaryLog = []; }
+  } catch(e) { _mlCommentaryLog = []; }
 
   // Update market status badge
   updateMarketStatus();
@@ -1557,6 +1564,7 @@ async function _loadIntradayForSlot(slotId, interval, ticker) {
   if (!container) return;
 
   const slot = _watchSlots[slotId];
+  slot.series = {};
   if (slot.chart) { try { slot.chart.remove(); } catch(e) {} slot.chart = null; }
 
   try {
@@ -1606,9 +1614,30 @@ async function _loadIntradayForSlot(slotId, interval, ticker) {
       slot.chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, drawTicks: false, borderVisible: false });
       vs.setData(data.volume);
     }
-    if (data.ema9  && data.ema9.length)  slot.chart.addLineSeries({ color:'#00d4ff', lineWidth:1.5, title:'EMA 9',  priceLineVisible:false, lastValueVisible:false }).setData(data.ema9);
-    if (data.ema21 && data.ema21.length) slot.chart.addLineSeries({ color:'#3fb950', lineWidth:1.5, title:'EMA 21', priceLineVisible:false, lastValueVisible:false }).setData(data.ema21);
-    if (data.vwap  && data.vwap.length)  slot.chart.addLineSeries({ color:'#ff9500', lineWidth:1.5, title:'VWAP',   priceLineVisible:false, lastValueVisible:false }).setData(data.vwap);
+    if (data.ema9  && data.ema9.length) {
+      const e9 = slot.chart.addLineSeries({ color:'#00d4ff', lineWidth:1.5, title:'', priceLineVisible:false, lastValueVisible:false });
+      e9.setData(data.ema9); slot.series.ema9 = e9;
+    }
+    if (data.ema21 && data.ema21.length) {
+      const e21 = slot.chart.addLineSeries({ color:'#3fb950', lineWidth:1.5, title:'', priceLineVisible:false, lastValueVisible:false });
+      e21.setData(data.ema21); slot.series.ema21 = e21;
+    }
+    if (data.vwap  && data.vwap.length) {
+      const vw = slot.chart.addLineSeries({ color:'#ff9500', lineWidth:1.5, lineStyle:2, title:'', priceLineVisible:false, lastValueVisible:false });
+      vw.setData(data.vwap); slot.series.vwap = vw;
+    }
+    // Populate legend with toggle buttons
+    const legendEl = document.getElementById('watchSlot' + slotId + 'Legend');
+    if (legendEl) {
+      const items = [];
+      if (slot.series.ema9)  items.push({ name:'ema9',  label:'EMA 9',  color:'#00d4ff' });
+      if (slot.series.ema21) items.push({ name:'ema21', label:'EMA 21', color:'#3fb950' });
+      if (slot.series.vwap)  items.push({ name:'vwap',  label:'VWAP',   color:'#ff9500' });
+      legendEl.innerHTML = items.map(it =>
+        `<span class="ind-toggle" id="ml-wch-${slotId}-${it.name}" onclick="toggleMlWatchSeries('${slotId}','${it.name}',this)">`+
+        `<span style="display:inline-block;width:14px;height:2px;background:${it.color};vertical-align:middle"></span>&nbsp;${it.label}</span>`
+      ).join('');
+    }
     if (data.orh && data.orh > 0) cs.createPriceLine({ price:data.orh, color:'#e3b341', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'ORH $'+data.orh.toFixed(2) });
     if (data.lod && data.lod > 0) cs.createPriceLine({ price:data.lod, color:'#f85149', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'LOD $'+data.lod.toFixed(2) });
 
@@ -1740,6 +1769,14 @@ async function _loadWeeklyForSlot(slotId, ticker) {
   }
 }
 
+function toggleMlWatchSeries(slotId, name, btn) {
+  const slot = _watchSlots[slotId];
+  if (!slot || !slot.series || !slot.series[name]) return;
+  const vis = !slot.series[name].options().visible;
+  slot.series[name].applyOptions({ visible: vis });
+  if (btn) btn.classList.toggle('toggled-off', !vis);
+}
+
 /* ---------- Signal History Log ---------- */
 function appendWatchLog(signals, status) {
   const advice = signals.setup_advice || 'monitoring';
@@ -1766,6 +1803,9 @@ function appendWatchLog(signals, status) {
 
   _mlCommentaryLog.unshift(entry);
   if (_mlCommentaryLog.length > 30) _mlCommentaryLog.pop();
+  if (_mlWatchTicker) {
+    try { sessionStorage.setItem('ml_watch_log_' + _mlWatchTicker, JSON.stringify(_mlCommentaryLog)); } catch(e){}
+  }
   renderWatchLog();
 }
 
@@ -1781,6 +1821,9 @@ function renderWatchLog() {
 
 function clearWatchLog() {
   _mlCommentaryLog = [];
+  if (_mlWatchTicker) {
+    try { sessionStorage.removeItem('ml_watch_log_' + _mlWatchTicker); } catch(e){}
+  }
   const logEl = document.getElementById('watchSignalLog');
   if (logEl) logEl.innerHTML = '<div class="text-secondary text-center py-3" id="watchLogEmpty">等待首次自動更新…</div>';
 }

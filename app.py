@@ -2976,6 +2976,7 @@ def _get_qm_intraday_signals(
       signal_counts      : dict        {total, bullish, bearish, neutral}
     """
     import datetime, math
+    import time as _time
     signals = []
     gate_blocks = []
 
@@ -3039,7 +3040,7 @@ def _get_qm_intraday_signals(
         "60m": orh_5m_6bar,
     }
 
-    current_price = candles_5m[-1]["close"] if candles_5m else None
+    current_price = candles_5m[-1]["close"] if candles_5m else (hod if hod else None)
 
     if orh_5m_6bar.get("broken_up"):
         signals.append(f" 突破30分鐘高點 Price broke above 30-min ORH {orh_5m_6bar['hi']}")
@@ -3159,6 +3160,164 @@ def _get_qm_intraday_signals(
     bearish = sum(1 for s in signals if "" in s)
     neutral = sum(1 for s in signals if "" in s)
 
+    # ── QM Dynamic Watch Score (盯盤動態評分) ─────────────────────────────
+    # Aggregates all intraday signals into a single 0-100 score with
+    # iron-rule detection. Cached client-side for delta comparison.
+    import time as _time
+    w_score = 0
+    w_breakdown = []
+    w_iron_rules = []
+
+    # ORH breakthrough summary
+    _orh_up = sum(1 for k in ("1m", "5m", "60m") if orh_levels.get(k, {}).get("broken_up"))
+    _orh_dn = sum(1 for k in ("1m", "5m", "60m") if orh_levels.get(k, {}).get("broken_dn"))
+    if _orh_up == 3:
+        w_score += C.QM_WSCORE_ORH_ALL_UP
+        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_ALL_UP,
+                            "note": f"三級全部突破 All 3 ORH broken up ↑"})
+    elif orh_levels.get("60m", {}).get("broken_up"):
+        w_score += C.QM_WSCORE_ORH_60M_UP
+        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_60M_UP,
+                            "note": "30分鐘 ORH 突破 ↑"})
+    elif orh_levels.get("5m", {}).get("broken_up"):
+        w_score += C.QM_WSCORE_ORH_5M_UP
+        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_5M_UP,
+                            "note": "5分鐘 ORH 突破 ↑"})
+    else:
+        w_breakdown.append({"dim": "ORH", "pts": 0, "note": "尚未突破任何 ORH"})
+    if orh_levels.get("60m", {}).get("broken_dn"):
+        w_score += C.QM_WSCORE_ORH_60M_DN
+        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_60M_DN,
+                            "note": "跌破30分鐘 ORL ↓ 結構失敗"})
+
+    # ATR entry gate
+    _chase = atr_gate.get("chase_status", "n/a")
+    _atr_map = {"excellent": C.QM_WSCORE_ATR_EXCELLENT, "ideal": C.QM_WSCORE_ATR_IDEAL,
+                "caution": C.QM_WSCORE_ATR_CAUTION, "too_late": C.QM_WSCORE_ATR_TOOLATE}
+    if _chase in _atr_map:
+        w_score += _atr_map[_chase]
+        w_breakdown.append({"dim": "ATR", "pts": _atr_map[_chase],
+                            "note": f"ATR chase: {_chase}"})
+    else:
+        w_breakdown.append({"dim": "ATR", "pts": 0, "note": "ATR 資料不足"})
+    if _chase == "too_late":
+        w_iron_rules.append({"rule": "ATR_TOO_LATE",
+                             "msg": "追價過高 (>1×ATR from LOD) — 強烈不建議追買",
+                             "severity": "warn"})
+
+    # NASDAQ regime
+    _nas_map = {"full_power": C.QM_WSCORE_NASDAQ_FULL, "caution": C.QM_WSCORE_NASDAQ_CAUTION,
+                "choppy": C.QM_WSCORE_NASDAQ_CHOPPY, "stop": C.QM_WSCORE_NASDAQ_STOP}
+    if regime in _nas_map:
+        w_score += _nas_map[regime]
+        w_breakdown.append({"dim": "NASDAQ", "pts": _nas_map[regime],
+                            "note": f"NASDAQ regime: {regime}"})
+    if regime == "stop":
+        w_iron_rules.append({"rule": "NASDAQ_STOP",
+                             "msg": "NASDAQ 停損區 — 鐵律禁止做多 (S5)",
+                             "severity": "block"})
+
+    # Earnings proximity
+    if "EARNINGS_BLACKOUT" in gate_blocks:
+        w_score += C.QM_WSCORE_EARNINGS_BLOCK
+        w_breakdown.append({"dim": "Earnings", "pts": C.QM_WSCORE_EARNINGS_BLOCK,
+                            "note": "財報 ≤3天 — 鐵律禁止 (S2)"})
+        w_iron_rules.append({"rule": "EARNINGS_BLACKOUT",
+                             "msg": "財報黑色期 ≤3天 — 鐵律禁止新建倉",
+                             "severity": "block"})
+    elif "EARNINGS_WARNING" in gate_blocks:
+        w_score += C.QM_WSCORE_EARNINGS_WARN
+        w_breakdown.append({"dim": "Earnings", "pts": C.QM_WSCORE_EARNINGS_WARN,
+                            "note": "財報 ≤7天 — 減半倉位"})
+    else:
+        w_score += C.QM_WSCORE_EARNINGS_CLEAR
+        w_breakdown.append({"dim": "Earnings", "pts": C.QM_WSCORE_EARNINGS_CLEAR,
+                            "note": "財報遠離 — OK"})
+
+    # Gap (S30)
+    if abs(gap_pct) >= C.QM_GAP_PASS_PCT:
+        w_score += C.QM_WSCORE_GAP_BLOCK
+        w_breakdown.append({"dim": "Gap", "pts": C.QM_WSCORE_GAP_BLOCK,
+                            "note": f"跳空 {gap_pct:+.1f}% > {C.QM_GAP_PASS_PCT}% — pass"})
+        w_iron_rules.append({"rule": "GAP_EXTREME",
+                             "msg": f"跳空 {gap_pct:+.1f}% 過大 — 鐵律 pass (S30)",
+                             "severity": "block"})
+    elif abs(gap_pct) >= C.QM_GAP_WARN_PCT:
+        w_score += C.QM_WSCORE_GAP_WARN
+        w_breakdown.append({"dim": "Gap", "pts": C.QM_WSCORE_GAP_WARN,
+                            "note": f"跳空 {gap_pct:+.1f}% — 注意"})
+    else:
+        w_breakdown.append({"dim": "Gap", "pts": 0, "note": f"跳空 {gap_pct:+.1f}% — 正常"})
+
+    # Higher lows (S40)
+    if higher_lows.get("valid"):
+        w_score += C.QM_WSCORE_HL_CONFIRMED
+        w_breakdown.append({"dim": "HL", "pts": C.QM_WSCORE_HL_CONFIRMED,
+                            "note": "盤中 Higher Lows 確認 ↑"})
+    elif higher_lows.get("trend") == "descending":
+        w_score += C.QM_WSCORE_HL_LOWER
+        w_breakdown.append({"dim": "HL", "pts": C.QM_WSCORE_HL_LOWER,
+                            "note": "盤中 Lower Lows ↓"})
+    else:
+        w_breakdown.append({"dim": "HL", "pts": 0, "note": "盤中低點: 持平/不明確"})
+
+    # MA position (S11)
+    if ma_signals.get("price_vs_5m_sma20") == "above":
+        w_score += C.QM_WSCORE_MA_ABOVE_5M20
+        w_breakdown.append({"dim": "5m MA", "pts": C.QM_WSCORE_MA_ABOVE_5M20,
+                            "note": "Price > 5min SMA20"})
+    elif ma_signals.get("price_vs_5m_sma20") == "below":
+        w_score += C.QM_WSCORE_MA_BELOW_5M20
+        w_breakdown.append({"dim": "5m MA", "pts": C.QM_WSCORE_MA_BELOW_5M20,
+                            "note": "Price < 5min SMA20"})
+    if ma_signals.get("price_vs_1h_ema65") == "above":
+        w_score += C.QM_WSCORE_MA_ABOVE_1H65
+        w_breakdown.append({"dim": "1h MA", "pts": C.QM_WSCORE_MA_ABOVE_1H65,
+                            "note": "Price > 1hr EMA65 (≈Daily 10SMA)"})
+    elif ma_signals.get("price_vs_1h_ema65") == "below":
+        w_score += C.QM_WSCORE_MA_BELOW_1H65
+        w_breakdown.append({"dim": "1h MA", "pts": C.QM_WSCORE_MA_BELOW_1H65,
+                            "note": "Price < 1hr EMA65 — 關鍵支撐丟失"})
+
+    # HOD challenge
+    if any(b["type"] == "HOD_CHALLENGE" for b in breakout_signals):
+        w_score += C.QM_WSCORE_HOD_CHALLENGE
+        w_breakdown.append({"dim": "Breakout", "pts": C.QM_WSCORE_HOD_CHALLENGE,
+                            "note": "挑戰日高 HOD"})
+
+    # Normalize raw score → 0-100
+    _max_raw = C.QM_WSCORE_MAX
+    w_normalized = max(0, min(100, int((w_score + _max_raw) / (2 * _max_raw) * 100)))
+
+    # Action recommendation
+    _has_block = any(r["severity"] == "block" for r in w_iron_rules)
+    if _has_block:
+        w_action    = "BLOCK"
+        w_action_zh = "🚫 鐵律否決 — 不可買入"
+    elif w_normalized >= 70:
+        w_action    = "BUY"
+        w_action_zh = "🟢 動態看好 — 可以入場/加倉"
+    elif w_normalized >= 50:
+        w_action    = "WATCH"
+        w_action_zh = "🟡 中性觀望 — 等待更好信號"
+    elif w_normalized >= 30:
+        w_action    = "CAUTION"
+        w_action_zh = "🟠 偏弱謹慎 — 不建議新倉"
+    else:
+        w_action    = "AVOID"
+        w_action_zh = "🔴 偏空 — 不建議買入"
+
+    watch_score = {
+        "raw":         w_score,
+        "normalized":  w_normalized,
+        "action":      w_action,
+        "action_zh":   w_action_zh,
+        "breakdown":   w_breakdown,
+        "iron_rules":  w_iron_rules,
+        "has_block":   _has_block,
+        "timestamp":   int(_time.time()),
+    }
+
     return {
         "gate_blocks":      gate_blocks,
         "nasdaq":           {k: v for k, v in nasdaq.items() if k != "fetched_at"},
@@ -3170,6 +3329,7 @@ def _get_qm_intraday_signals(
         "breakout_signals": breakout_signals,
         "active_signals":   signals,
         "signal_counts":    {"total": len(signals), "bullish": bullish, "bearish": bearish, "neutral": neutral},
+        "watch_score":      watch_score,
     }
 
 
@@ -3178,10 +3338,13 @@ def qm_watch_signals(ticker: str):
     """
     QM 盯盤模式  real-time intraday signal bundle for a ticker.
     Returns JSON compatible with the qm_analyze.html watch panel.
+    Includes: ORH cascade, ATR gate, NASDAQ regime, earnings gate,
+              MA signals, higher-lows, breakout signals, watch_score.
     """
-    import datetime
+    import datetime, time as _time
     try:
         ticker = ticker.upper().strip()
+        _data_source = "intraday"  # will be changed to "fallback_daily" if 5m empty
 
         #  Fetch intraday candles via yfinance 
         import yfinance as yf
@@ -3209,16 +3372,8 @@ def qm_watch_signals(ticker: str):
         except Exception:
             candles_1h = []
 
-        #  Session extremes 
-        if candles_5m:
-            hod = max(c["high"] for c in candles_5m)
-            lod = min(c["low"]  for c in candles_5m)
-            orh  = candles_5m[0]["high"] if candles_5m else None
-            orl  = candles_5m[0]["low"]  if candles_5m else None
-        else:
-            hod = lod = orh = orl = None
-
         #  Daily ATR via data_pipeline 
+        df_d = None
         try:
             from modules.data_pipeline import get_price_data
             df_d = get_price_data(ticker, period="3mo", interval="1d")
@@ -3234,6 +3389,21 @@ def qm_watch_signals(ticker: str):
         except Exception:
             atr_daily = prev_close = None
             gap_pct = 0.0
+
+        #  Session extremes (with daily fallback) 
+        if candles_5m:
+            hod = max(c["high"] for c in candles_5m)
+            lod = min(c["low"]  for c in candles_5m)
+            orh  = candles_5m[0]["high"]
+            orl  = candles_5m[0]["low"]
+        elif df_d is not None and not df_d.empty and len(df_d) >= 1:
+            # Fallback: use last daily bar's HOD/LOD for ATR gate reference
+            _data_source = "fallback_daily"
+            hod = float(df_d["High"].iloc[-1])
+            lod = float(df_d["Low"].iloc[-1])
+            orh = orl = None  # ORH not applicable in daily fallback
+        else:
+            hod = lod = orh = orl = None
 
         #  Swing lows from 5-min candles 
         hl_swings = []
@@ -3256,7 +3426,9 @@ def qm_watch_signals(ticker: str):
             ticker=ticker,
         )
 
-        current_price = candles_5m[-1]["close"] if candles_5m else None
+        current_price = candles_5m[-1]["close"] if candles_5m else (
+            float(df_d["Close"].iloc[-1]) if df_d is not None and not df_d.empty else None
+        )
         last_ts = candles_5m[-1]["time"] if candles_5m else None
 
         return jsonify(_clean({
@@ -3267,6 +3439,8 @@ def qm_watch_signals(ticker: str):
             "hod": hod, "lod": lod, "orh": orh, "orl": orl,
             "gap_pct": round(gap_pct, 2),
             "atr_daily": round(atr_daily, 4) if atr_daily else None,
+            "data_source": _data_source,
+            "refresh_ts": int(_time.time()),
             **signals,
         }))
 
@@ -3433,7 +3607,8 @@ def api_chart_intraday(ticker: str):
                     df.loc[df['date_et'] == date, 'cumul_vol'] = \
                         df.loc[df['date_et'] == date, 'Volume'].cumsum()
         
-        df['vwap'] = df['cumul_tp_vol'] / df['cumul_vol'].replace(0, 1)
+        df['vwap'] = df['cumul_tp_vol'] / df['cumul_vol'].replace(0, float('nan'))
+        # NaN vwap (zero-volume pre-market bars) → excluded from chart via _sf → None
         
         # Calculate ORH, ORL, LOD, HOD for current day
         et_tz = pytz.timezone('US/Eastern')

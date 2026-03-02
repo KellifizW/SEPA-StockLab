@@ -538,6 +538,58 @@ QM_GAP_WARN_PCT            = 5.0   # Gap > 5% → show caution warning
 QM_HL_LOOKBACK_CANDLES     = 12    # Look back 12×5-min = 1 hour for higher-lows
 QM_HL_MIN_SWINGS           = 2     # Need ≥ 2 higher lows to confirm intraday HL
 
+# ── QM WATCH MODE — Dynamic Score Weights (盯盤動態評分) ─────────────────────
+# Each dimension contributes +/- points to a raw score, then normalized 0-100.
+# Iron rules (severity=block) set score to 0 and override action to BLOCK.
+# Reference: S1 (ATR entry), S2 (earnings), S3 (sector), S5 (NASDAQ),
+#            S29 (ORH), S30 (gap), S40 (higher lows), S11 (MA)
+
+# ── ORH breakthrough scoring ────────────────────────────────────────────────
+QM_WSCORE_ORH_ALL_UP       =  3    # All 3 ORH levels broken up → strongest confirmation
+QM_WSCORE_ORH_60M_UP       =  2    # 30-min ORH broken up
+QM_WSCORE_ORH_5M_UP        =  1    # 5-min ORH broken up only
+QM_WSCORE_ORH_60M_DN       = -3    # 30-min ORL broken down → structure failure
+
+# ── ATR entry gate scoring (S1/S31) ─────────────────────────────────────────
+QM_WSCORE_ATR_EXCELLENT    =  2    # Price < 1/3 ATR from LOD → very early
+QM_WSCORE_ATR_IDEAL        =  1    # Price < 2/3 ATR from LOD → ideal window
+QM_WSCORE_ATR_CAUTION      = -1    # Price < 1.0 ATR from LOD → feels like chasing
+QM_WSCORE_ATR_TOOLATE      = -3    # Price > 1.0 ATR from LOD → "I simply don't buy"
+
+# ── NASDAQ regime scoring (S5) ───────────────────────────────────────────────
+QM_WSCORE_NASDAQ_FULL      =  2    # QQQ: 10SMA > 20SMA, both rising → full power
+QM_WSCORE_NASDAQ_CAUTION   =  0    # QQQ: one MA weak → half size
+QM_WSCORE_NASDAQ_CHOPPY    = -1    # QQQ: MAs tangled → very selective
+QM_WSCORE_NASDAQ_STOP      = -3    # QQQ below both SMAs → IRON RULE: no longs
+
+# ── Earnings proximity scoring (S2) ──────────────────────────────────────────
+QM_WSCORE_EARNINGS_CLEAR   =  1    # > 7 days from earnings → all clear
+QM_WSCORE_EARNINGS_WARN    = -1    # ≤ 7 days → reduce size
+QM_WSCORE_EARNINGS_BLOCK   = -5    # ≤ 3 days → IRON RULE: no new entries
+
+# ── Gap scoring (S30) ───────────────────────────────────────────────────────
+QM_WSCORE_GAP_SMALL        =  0    # Gap < 5% → normal
+QM_WSCORE_GAP_WARN         = -1    # Gap 5-10% → caution, wait for ORH confirm
+QM_WSCORE_GAP_BLOCK        = -3    # Gap > 10% → IRON RULE: pass
+
+# ── Intraday higher lows scoring (S40) ───────────────────────────────────────
+QM_WSCORE_HL_CONFIRMED     =  2    # Higher lows forming → institutional accumulation
+QM_WSCORE_HL_LOWER         = -2    # Lower lows forming → distribution
+
+# ── MA position scoring (S11) ────────────────────────────────────────────────
+QM_WSCORE_MA_ABOVE_5M20    =  1    # Price > 5-min SMA20 → short-term bullish
+QM_WSCORE_MA_BELOW_5M20    = -1    # Price < 5-min SMA20 → short-term weak
+QM_WSCORE_MA_ABOVE_1H65    =  1    # Price > 1-hr EMA65 (≈daily 10SMA) → macro support
+QM_WSCORE_MA_BELOW_1H65    = -2    # Price < 1-hr EMA65 → key support lost
+
+# ── Breakout and extended scoring ────────────────────────────────────────────
+QM_WSCORE_HOD_CHALLENGE    =  1    # Price challenging day high → breakout imminent
+QM_WSCORE_EXTENDED_WARN    = -2    # > 40% above 10SMA → extended (S4)
+QM_WSCORE_EXTENDED_EXTREME = -4    # > 60% above 10SMA → extreme, consider selling
+
+# ── Normalization ────────────────────────────────────────────────────────────
+QM_WSCORE_MAX              = 15    # Max expected positive raw score (for 0-100 mapping)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # QM BACKTEST — Walk-forward simulation configuration
 # Reference: modules/qm_backtester.py
