@@ -2327,30 +2327,46 @@ def api_rs_top():
 @app.route("/api/admin/restart", methods=["POST"])
 def api_restart_server():
     """Gracefully restart the Flask development server (Windows-compatible)."""
+    logger.info("[RESTART] Server restart requested from web interface")
+    
     def _restart():
         import time
+        logger.info("[RESTART] Restarting server in 1.5 seconds...")
         # Give the current request time to complete and response to reach client
         time.sleep(1.5)
+        
+        logger.info("[RESTART] Creating new Flask process...")
         # Start new process in background, detached (so it survives when parent dies)
-        # Windows: use creationflags to detach the process
-        # Unix: use preexec_fn=os.setsid (but on Windows this doesn't apply)
+        # IMPORTANT: Do NOT use CREATE_NO_WINDOW so the new Flask instance outputs to the same console
         creationflags = 0
         if sys.platform == 'win32':
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        subprocess.Popen(
-            [sys.executable, str(ROOT / "app.py")],
-            cwd=str(ROOT),
-            creationflags=creationflags,
-            start_new_session=(sys.platform != 'win32')  # Unix: detach via new session
-        )
+            # Use CREATE_NEW_PROCESS_GROUP to detach, but NOT CREATE_NO_WINDOW
+            # This allows the new process to output to the parent console
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        
+        try:
+            subprocess.Popen(
+                [sys.executable, str(ROOT / "app.py")],
+                cwd=str(ROOT),
+                creationflags=creationflags,
+                start_new_session=(sys.platform != 'win32')  # Unix: detach via new session
+            )
+            logger.info("[RESTART] New Flask process started successfully")
+        except Exception as e:
+            logger.error(f"[RESTART] Failed to start new process: {e}")
+        
         # Now terminate this process to release the port
         time.sleep(0.2)
+        logger.info("[RESTART] Terminating old Flask process...")
+        sys.stdout.flush()
+        sys.stderr.flush()
         os._exit(0)  # Force exit (bypasses cleanup, but needed for clean restart)
     
     try:
         threading.Thread(target=_restart, daemon=False).start()
         return jsonify({"ok": True, "message": "Server restarting..."}), 200
     except Exception as exc:
+        logger.error(f"[RESTART] Error: {exc}")
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -3751,44 +3767,71 @@ if __name__ == "__main__":
     print("  └──────────────────────────────────────────┘\n")
     sys.stdout.flush()
     
-    # Auto-open browser after a short delay
+    # Cleanup function
+    def _cleanup_and_exit(code=0):
+        """Cleanup resources and exit immediately."""
+        try:
+            with _jobs_lock:
+                for jid in list(_cancel_events.keys()):
+                    _cancel_events[jid].set()
+        except:
+            pass
+        print("\n\n  ⏹  關閉伺服器... Shutting down server...\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    
+    # Signal handler - will be called on Ctrl+C
+    def _signal_handler(signum, frame):
+        _cleanup_and_exit(0)
+    
+    # Register signal handlers BEFORE starting the server
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+    
+    # Auto-open browser
     def _open_browser():
         import time
-        time.sleep(2)  # Wait for Flask server to start
+        time.sleep(2)
         try:
             webbrowser.open("http://localhost:5000")
         except:
-            pass  # Ignore browser open errors
+            pass
     
     browser_thread = threading.Thread(target=_open_browser, daemon=True)
     browser_thread.start()
     
-    # Running Flask directly with signal handling for clean shutdown
-    def _graceful_shutdown(signum=None, frame=None):
-        # Cancel all running scan jobs
-        with _jobs_lock:
-            for jid in list(_cancel_events.keys()):
-                _cancel_events[jid].set()
-        print("\n\n  ⏹  關閉伺服器... Shutting down server...\n")
-        sys.stdout.flush()
-        sys.exit(0)
+    # Run Flask server in a separate thread
+    def _run_flask():
+        try:
+            app.run(
+                debug=False,
+                host="127.0.0.1",
+                port=5000,
+                threaded=True,
+                use_reloader=False,
+                use_debugger=False
+            )
+        except Exception as e:
+            print(f"Flask server error: {e}")
+            sys.stdout.flush()
     
-    # Register signal handlers
-    signal.signal(signal.SIGINT, _graceful_shutdown)
-    signal.signal(signal.SIGTERM, _graceful_shutdown)
+    # Start Flask in a daemon thread
+    flask_thread = threading.Thread(target=_run_flask, daemon=True)
+    flask_thread.start()
     
+    print(" * Serving Flask app 'app'")
+    print(" * Debug mode: off")
+    
+    # Main thread: wait for signals
+    # Keep the main thread alive to receive signals
     try:
-        # Run Flask with thread safety
-        app.run(
-            debug=False,
-            host="127.0.0.1",
-            port=5000,
-            threaded=True,
-            use_reloader=False,
-            use_debugger=False
-        )
+        while True:
+            import time
+            time.sleep(1)
     except KeyboardInterrupt:
-        _graceful_shutdown()
+        _cleanup_and_exit(0)
     except Exception as e:
         print(f"\n\n  ❌ 錯誤 Error: {e}\n")
-        sys.exit(1)
+        sys.stdout.flush()
+        _cleanup_and_exit(1)
