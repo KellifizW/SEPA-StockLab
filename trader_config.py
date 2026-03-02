@@ -536,6 +536,38 @@ QM_GAP_WARN_PCT            = 5.0   # Gap > 5% → show caution warning
 QM_HL_LOOKBACK_CANDLES     = 12    # Look back 12×5-min = 1 hour for higher-lows
 QM_HL_MIN_SWINGS           = 2     # Need ≥ 2 higher lows to confirm intraday HL
 
+# ─────────────────────────────────────────────────────────────────────────────
+# QM BACKTEST — Walk-forward simulation configuration
+# Reference: modules/qm_backtester.py
+# Architecture mirrors VCP backtester (modules/backtester.py) but uses the
+# QM 3-phase stop system and 6-dimension star-rating for signal qualification.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Scan loop settings ────────────────────────────────────────────────────────
+QM_BT_MIN_DATA_BARS        = 130   # Bars needed before first QM scan (SMA50/ADR need depth)
+QM_BT_STEP_DAYS            = 5     # Advance walk-forward checkpoint every N trading days
+QM_BT_SIGNAL_COOLDOWN      = 10    # Skip N bars after a signal fires (avoid double-counting same base)
+QM_BT_BREAKOUT_WINDOW      = 20    # Max bars after signal to confirm volume breakout
+QM_BT_DEFAULT_PERIOD       = "2y"  # Default yfinance history period
+QM_BT_OUTCOME_HORIZONS     = [10, 20, 60]  # Fixed forward-horizon return windows (days)
+
+# ── Trade simulation settings ─────────────────────────────────────────────────
+QM_BT_MAX_HOLD_DAYS        = 120   # Maximum holding period (horizon exit)
+QM_BT_DEFAULT_MIN_STAR     = 3.0   # Default minimum star rating to simulate a trade
+
+# ── Outcome classification thresholds ──────────────────────────────────────────
+# Same philosophy as Minervini: define WIN/LOSS in realized terms (after stops)
+QM_BT_WIN_THRESHOLD        = 10.0  # ≥ 10% realized gain → WIN
+QM_BT_SMALL_WIN_THRESHOLD  = 3.0   # ≥ 3% realized gain  → SMALL_WIN
+QM_BT_LOSS_THRESHOLD       = -7.0  # < −7% realized gain → LOSS (else FLAT)
+
+# ── Portfolio-level backtest settings ─────────────────────────────────────────
+QM_BT_DEFAULT_ACCOUNT_SIZE   = 100_000   # Default simulated account ($100K)
+QM_BT_MAX_OPEN_POSITIONS     = 10        # Max concurrent positions in portfolio mode
+QM_BT_REBALANCE_FREQ_DAYS    = 5         # Portfolio review frequency (every 5 trading days)
+QM_BT_DEFAULT_UNIVERSE       = "SP500"   # Default universe: SP500, RUSSELL2000, or CUSTOM
+QM_BT_SP500_CACHE_HOURS      = 24        # Cache S&P 500 component list for 24 hours
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MARTIN LUK (ML) — Systematic Swing Trading Configuration

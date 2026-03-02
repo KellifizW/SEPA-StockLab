@@ -1,0 +1,493 @@
+{% extends "base.html" %}
+
+{% block title %}QM Backtest{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="row">
+    <div class="col-lg-12">
+      <h1 class="mb-4">
+        <i class="bi bi-clock-history me-2"></i>QM Backtest 回測
+      </h1>
+    </div>
+  </div>
+
+  <!-- Input Panel -->
+  <div class="card card-dark mb-4">
+    <div class="card-header bg-dark border-secondary">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-sliders me-2"></i>Backtest Parameters 參數
+      </h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-3">
+          <label class="form-label fw-bold">Ticker 股票代碼</label>
+          <input type="text" class="form-control form-control-dark" id="btTicker" placeholder="e.g., NVDA" />
+        </div>
+        <div class="col-md-3">
+          <label class="form-label fw-bold">Min Star ★ (最低星級)</label>
+          <div class="d-flex align-items-center gap-2">
+            <input type="range" class="form-range" id="btMinStar" min="1.0" max="5.5" step="0.5" value="3.0" />
+            <span class="badge bg-info" id="btMinStarValue">3.0★</span>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label fw-bold">Max Hold Days (最大持股天數)</label>
+          <div class="d-flex align-items-center gap-2">
+            <input type="range" class="form-range" id="btMaxHoldDays" min="20" max="120" step="5" value="120" />
+            <span class="badge bg-success" id="btMaxHoldDaysValue">120d</span>
+          </div>
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <button class="btn btn-primary w-100" id="btRunBtn" onclick="startQmBacktest()">
+            <i class="bi bi-play-fill me-2"></i>Run Backtest 開始回測
+          </button>
+        </div>
+      </div>
+      <div class="mt-3">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="btDebugMode" />
+          <label class="form-check-label" for="btDebugMode">
+            🐛 Debug Mode (Relaxed gates for testing) 調試模式
+          </label>
+        </div>
+      </div>
+      <div class="mt-3">
+        <small class="text-muted">Quick Picks:</small>
+        <div class="btn-group btn-group-sm mt-2 flex-wrap gap-1" role="group">
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setTickerQuick('NVDA')">NVDA</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setTickerQuick('SMCI')">SMCI</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setTickerQuick('CELH')">CELH</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Progress Container -->
+  <div id="progressContainer" style="display: none;" class="card card-dark mb-4">
+    <div class="card-header bg-dark border-secondary">
+      <h5 class="card-title mb-0"><i class="bi bi-hourglass-split me-2"></i>Progress 進度</h5>
+    </div>
+    <div class="card-body">
+      <div class="progress mb-2" style="height: 30px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" id="progressBar" role="progressbar" style="width: 0%;">
+          <span id="progressPct">0%</span>
+        </div>
+      </div>
+      <p class="mb-0 text-muted" id="progressMsg">Initializing...</p>
+      <small class="text-muted mt-2">
+        📋 <a id="logLink" href="#" target="_blank">View Debug Log</a>
+      </small>
+    </div>
+  </div>
+
+  <!-- Results Container -->
+  <div id="resultsContainer" style="display: none;">
+    <div id="verdictBanner" class="alert mb-4" role="alert">
+      <i id="verdictIcon" class="bi me-2"></i>
+      <span id="verdictText"></span>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="row g-3 mb-4">
+      <div class="col-md-4">
+        <div class="card card-dark h-100">
+          <div class="card-body">
+            <h6 class="card-title text-muted">Total Signals 信號總數</h6>
+            <h3 class="mb-0" id="summaryTotalSignals">—</h3>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card card-dark h-100">
+          <div class="card-body">
+            <h6 class="card-title text-muted">Win Rate 勝率</h6>
+            <h3 class="mb-0" id="summaryWinRate">—</h3>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card card-dark h-100">
+          <div class="card-body">
+            <h6 class="card-title text-muted">Avg Realized Gain 平均實現收益</h6>
+            <h3 class="mb-0" id="summaryAvgGain">—</h3>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card card-dark h-100">
+          <div class="card-body">
+            <h6 class="card-title text-muted">Profit Factor 利潤因子</h6>
+            <h3 class="mb-0" id="summaryProfitFactor">—</h3>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card card-dark h-100">
+          <div class="card-body">
+            <h6 class="card-title text-muted">Best / Worst Trade 最佳/最差</h6>
+            <h3 class="mb-0" id="summaryBestWorst">—</h3>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card card-dark h-100">
+          <div class="card-body">
+            <h6 class="card-title text-muted">Breakouts Confirmed 確認突破</h6>
+            <h3 class="mb-0" id="summaryBreakoutsConfirmed">—</h3>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Setup Type Breakdown -->
+    <div class="card card-dark mb-4">
+      <div class="card-header bg-dark border-secondary">
+        <h5 class="card-title mb-0"><i class="bi bi-layers me-2"></i>Setup Type Breakdown 設置類型細分</h5>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-dark table-sm">
+            <thead>
+              <tr>
+                <th>Setup Type</th>
+                <th class="text-end">Count</th>
+                <th class="text-end">Win Rate %</th>
+                <th class="text-end">Avg Gain %</th>
+              </tr>
+            </thead>
+            <tbody id="setupTypeTableBody">
+              <tr><td colspan="4" class="text-center text-muted">No data</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Star Rating Breakdown -->
+    <div class="card card-dark mb-4">
+      <div class="card-header bg-dark border-secondary">
+        <h5 class="card-title mb-0"><i class="bi bi-star-fill me-2"></i>Star Rating Breakdown 星級細分</h5>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-dark table-sm">
+            <thead>
+              <tr>
+                <th>Star Level</th>
+                <th class="text-end">Count</th>
+                <th class="text-end">Win Rate %</th>
+                <th class="text-end">Avg Gain %</th>
+              </tr>
+            </thead>
+            <tbody id="starRatingTableBody">
+              <tr><td colspan="4" class="text-center text-muted">No data</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signal Detail Table -->
+    <div class="card card-dark mb-4">
+      <div class="card-header bg-dark border-secondary">
+        <h5 class="card-title mb-0"><i class="bi bi-list-ul me-2"></i>Signal Details 信號詳情</h5>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-dark table-sm" id="signalTable">
+            <thead>
+              <tr>
+                <th>Signal Date</th>
+                <th class="text-end">★</th>
+                <th>Setup</th>
+                <th class="text-end">Signal $</th>
+                <th class="text-end">BO Level</th>
+                <th>BO Date</th>
+                <th class="text-end">BO $</th>
+                <th class="text-end">Hold Days</th>
+                <th>Exit Date</th>
+                <th>Exit Reason</th>
+                <th class="text-end">+10d %</th>
+                <th class="text-end">+20d %</th>
+                <th class="text-end">+60d %</th>
+                <th class="text-end">Max Gain %</th>
+                <th class="text-end">Realized %</th>
+                <th>Outcome</th>
+              </tr>
+            </thead>
+            <tbody id="signalTableBody">
+              <tr><td colspan="16" class="text-center text-muted">No signals</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let qmBtCurrentJobId = null;
+let qmBtCurrentResult = null;
+
+document.getElementById('btMinStar').addEventListener('input', function() {
+  document.getElementById('btMinStarValue').textContent = this.value + '★';
+});
+
+document.getElementById('btMaxHoldDays').addEventListener('input', function() {
+  document.getElementById('btMaxHoldDaysValue').textContent = this.value + 'd';
+});
+
+document.getElementById('btTicker').addEventListener('change', function() {
+  this.value = this.value.toUpperCase();
+});
+
+function setTickerQuick(ticker) {
+  document.getElementById('btTicker').value = ticker;
+  startQmBacktest();
+}
+
+function startQmBacktest() {
+  const ticker = document.getElementById('btTicker').value.trim().toUpperCase();
+  const minStar = parseFloat(document.getElementById('btMinStar').value);
+  const maxHoldDays = parseInt(document.getElementById('btMaxHoldDays').value);
+  const debugMode = document.getElementById('btDebugMode').checked;
+
+  if (!ticker) {
+    alert('Please enter a ticker symbol 請輸入股票代碼');
+    return;
+  }
+
+  console.log('[QM Backtest] Starting:', {ticker, minStar, maxHoldDays, debugMode});
+
+  document.getElementById('progressContainer').style.display = 'block';
+  document.getElementById('resultsContainer').style.display = 'none';
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressPct').textContent = '0%';
+  document.getElementById('progressMsg').textContent = 'Initializing...';
+  document.getElementById('btRunBtn').disabled = true;
+
+  fetch('/api/qm/backtest/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ticker: ticker,
+      min_star: minStar,
+      max_hold_days: maxHoldDays,
+      debug: debugMode
+    })
+  })
+  .then(res => res.json())
+  .then(data => {
+    console.log('[QM Backtest] Job started:', data);
+    if (!data.ok) {
+      alert('Error: ' + (data.error || 'Failed to start backtest'));
+      document.getElementById('progressContainer').style.display = 'none';
+      document.getElementById('btRunBtn').disabled = false;
+      return;
+    }
+    qmBtCurrentJobId = data.job_id;
+    pollQmBtJob(data.job_id);
+  })
+  .catch(err => {
+    console.error('[QM Backtest] Error:', err);
+    alert('Error: ' + err.message);
+    document.getElementById('progressContainer').style.display = 'none';
+    document.getElementById('btRunBtn').disabled = false;
+  });
+}
+
+function pollQmBtJob(jobId) {
+  console.log('[QM Backtest] Polling job:', jobId);
+  
+  // Setup log link
+  const logLink = document.getElementById('logLink');
+  logLink.href = `/api/qm/backtest/log/${jobId}`;
+  
+  const pollInterval = setInterval(() => {
+    fetch(`/api/qm/backtest/status/${jobId}`)
+    .then(res => res.json())
+    .then(data => {
+      if (!data.ok) {
+        clearInterval(pollInterval);
+        alert('Error: ' + (data.error || 'Job failed'));
+        document.getElementById('progressContainer').style.display = 'none';
+        document.getElementById('btRunBtn').disabled = false;
+        return;
+      }
+
+      const pct = Math.min(data.pct || 0, 100);
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressPct').textContent = pct + '%';
+      document.getElementById('progressMsg').textContent = data.msg || 'Processing...';
+
+      if (data.status === 'complete' || data.status === 'error') {
+        clearInterval(pollInterval);
+        console.log('[QM Backtest] Job finished:', data.status);
+        
+        if (data.status === 'error') {
+          alert('Backtest error: ' + (data.error || 'Unknown error'));
+          document.getElementById('progressContainer').style.display = 'none';
+          document.getElementById('btRunBtn').disabled = false;
+          return;
+        }
+        
+        if (data.result && data.result.ok) {
+          qmBtCurrentResult = data.result;
+          renderQmBacktestResults(data.result);
+        } else {
+          alert('Backtest error: ' + (data.result?.error || 'Unknown error'));
+          document.getElementById('progressContainer').style.display = 'none';
+          document.getElementById('btRunBtn').disabled = false;
+        }
+      }
+    })
+    .catch(err => {
+      console.error('[QM Backtest] Poll error:', err);
+      clearInterval(pollInterval);
+      alert('Polling error: ' + err.message);
+      document.getElementById('progressContainer').style.display = 'none';
+      document.getElementById('btRunBtn').disabled = false;
+    });
+  }, 1000);
+}
+
+function renderQmBacktestResults(result) {
+  console.log('[QM Backtest] Rendering results...');
+  
+  if (!result.signals || result.signals.length === 0) {
+    alert('No signals found for this ticker and parameters.');
+    document.getElementById('progressContainer').style.display = 'none';
+    document.getElementById('btRunBtn').disabled = false;
+    return;
+  }
+
+  document.getElementById('progressContainer').style.display = 'none';
+  document.getElementById('resultsContainer').style.display = 'block';
+  document.getElementById('btRunBtn').disabled = false;
+
+  const summary = result.summary;
+
+  let verdictClass = 'alert-danger';
+  let verdictIcon = 'bi-x-circle';
+  let verdictText = 'Verdict: ❌ Not Recommended';
+
+  if (summary.win_rate >= 0.50 && summary.avg_realized_gain >= 10) {
+    verdictClass = 'alert-success';
+    verdictIcon = 'bi-check-circle';
+    verdictText = 'Verdict: ✅ Looks Promising';
+  } else if (summary.win_rate >= 0.40 && summary.profit_factor >= 1) {
+    verdictClass = 'alert-warning';
+    verdictIcon = 'bi-exclamation-circle';
+    verdictText = 'Verdict: ⚠️ Moderate';
+  }
+
+  document.getElementById('verdictBanner').className = 'alert ' + verdictClass + ' mb-4';
+  document.getElementById('verdictIcon').className = 'bi ' + verdictIcon + ' me-2';
+  document.getElementById('verdictText').textContent = verdictText;
+
+  document.getElementById('summaryTotalSignals').textContent = summary.total_signals || 0;
+  document.getElementById('summaryWinRate').textContent = (summary.win_rate * 100).toFixed(1) + '%';
+  document.getElementById('summaryAvgGain').textContent = summary.avg_realized_gain.toFixed(2) + '%';
+  document.getElementById('summaryProfitFactor').textContent = summary.profit_factor.toFixed(2);
+  document.getElementById('summaryBestWorst').textContent = summary.best_gain.toFixed(2) + '% / ' + summary.worst_gain.toFixed(2) + '%';
+  document.getElementById('summaryBreakoutsConfirmed').textContent = summary.breakouts_confirmed || 0;
+
+  renderSetupTypeTable(summary.by_setup_type || {});
+  renderStarRatingTable(summary.by_star_rating || {});
+  renderSignalTable(result.signals);
+}
+
+function renderSetupTypeTable(bySetupType) {
+  const tbody = document.getElementById('setupTypeTableBody');
+  tbody.innerHTML = '';
+
+  const setupTypes = ['HTF', 'EP', 'LADDER', 'SURF_50', 'FLAG', 'RPL'];
+  let hasData = false;
+  
+  for (const setupType of setupTypes) {
+    const data = bySetupType[setupType];
+    if (!data) continue;
+    hasData = true;
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${setupType}</td>
+      <td class="text-end">${data.count}</td>
+      <td class="text-end">${(data.win_rate * 100).toFixed(1)}%</td>
+      <td class="text-end">${data.avg_gain.toFixed(2)}%</td>
+    `;
+    tbody.appendChild(row);
+  }
+
+  if (!hasData) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No data</td></tr>';
+  }
+}
+
+function renderStarRatingTable(byStarRating) {
+  const tbody = document.getElementById('starRatingTableBody');
+  tbody.innerHTML = '';
+
+  const starLevels = ['3.0', '4.0', '5.0', '5.5'];
+  let hasData = false;
+  
+  for (const starLevel of starLevels) {
+    const data = byStarRating[starLevel];
+    if (!data) continue;
+    hasData = true;
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${starLevel}★</td>
+      <td class="text-end">${data.count}</td>
+      <td class="text-end">${(data.win_rate * 100).toFixed(1)}%</td>
+      <td class="text-end">${data.avg_gain.toFixed(2)}%</td>
+    `;
+    tbody.appendChild(row);
+  }
+
+  if (!hasData) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No data</td></tr>';
+  }
+}
+
+function renderSignalTable(signals) {
+  const tbody = document.getElementById('signalTableBody');
+  tbody.innerHTML = '';
+
+  for (const sig of signals) {
+    const outcomeClass = getOutcomeClass(sig.outcome);
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${sig.signal_date}</td>
+      <td class="text-end">${sig.star_rating.toFixed(1)}</td>
+      <td><span class="badge bg-secondary">${sig.setup_type}</span></td>
+      <td class="text-end">$${sig.signal_close.toFixed(2)}</td>
+      <td class="text-end">$${sig.breakout_level.toFixed(2)}</td>
+      <td>${sig.breakout_date || 'N/A'}</td>
+      <td class="text-end">${sig.breakout_price ? '$' + sig.breakout_price.toFixed(2) : 'N/A'}</td>
+      <td class="text-end">${sig.holding_days || 0}</td>
+      <td>${sig.exit_date || 'N/A'}</td>
+      <td>${sig.exit_reason || 'N/A'}</td>
+      <td class="text-end">${sig.horizon_10d_gain !== null ? sig.horizon_10d_gain.toFixed(2) + '%' : 'N/A'}</td>
+      <td class="text-end">${sig.horizon_20d_gain !== null ? sig.horizon_20d_gain.toFixed(2) + '%' : 'N/A'}</td>
+      <td class="text-end">${sig.horizon_60d_gain !== null ? sig.horizon_60d_gain.toFixed(2) + '%' : 'N/A'}</td>
+      <td class="text-end">${sig.max_gain.toFixed(2)}%</td>
+      <td class="text-end fw-bold">${sig.realized_gain.toFixed(2)}%</td>
+      <td><span class="badge ${outcomeClass}">${sig.outcome}</span></td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+
+function getOutcomeClass(outcome) {
+  const classes = {
+    'WIN': 'bg-success',
+    'SMALL_WIN': 'bg-info',
+    'FLAT': 'bg-secondary',
+    'LOSS': 'bg-danger'
+  };
+  return classes[outcome] || 'bg-secondary';
+}
+</script>
+{% endblock %}

@@ -3078,12 +3078,31 @@ def qm_watch_signals(ticker: str):
     try:
         ticker = ticker.upper().strip()
 
-        #  Fetch intraday candles (5-min) 
-        raw_5m  = _get_intraday_candles(ticker, interval="5m")   # reuse ML helper
-        raw_1h  = _get_intraday_candles(ticker, interval="1h")
+        #  Fetch intraday candles via yfinance 
+        import yfinance as yf
+        import math as _math
 
-        candles_5m = raw_5m if isinstance(raw_5m, list) else []
-        candles_1h = raw_1h if isinstance(raw_1h, list) else []
+        def _df_to_candles(df) -> list:
+            """Convert yfinance DataFrame to {time,open,high,low,close,volume} list."""
+            result = []
+            for ts, row in df.iterrows():
+                t_unix = int(ts.timestamp()) if hasattr(ts, 'timestamp') else int(ts)
+                o, h, l, c, v = row.get('Open'), row.get('High'), row.get('Low'), row.get('Close'), row.get('Volume', 0)
+                if any(x is None or (isinstance(x, float) and (_math.isnan(x) or _math.isinf(x))) for x in [o, h, l, c]):
+                    continue
+                result.append({"time": t_unix, "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": int(v or 0)})
+            return result
+
+        try:
+            df_5m = yf.Ticker(ticker).history(period="2d", interval="5m", prepost=False)
+            candles_5m = _df_to_candles(df_5m) if not df_5m.empty else []
+        except Exception:
+            candles_5m = []
+        try:
+            df_1h = yf.Ticker(ticker).history(period="60d", interval="1h", prepost=False)
+            candles_1h = _df_to_candles(df_1h) if not df_1h.empty else []
+        except Exception:
+            candles_1h = []
 
         #  Session extremes 
         if candles_5m:
@@ -3495,6 +3514,147 @@ def api_backtest_status(jid):
         "result": job.get("result"),
         "error":  job.get("error"),
     })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# QM BACKTEST routes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_qm_bt_jobs: dict = {}
+_qm_bt_lock = threading.Lock()
+
+
+@app.route("/qm/backtest")
+def page_qm_backtest():
+    return render_template("qm_backtest.html")
+
+
+@app.route("/api/qm/backtest/run", methods=["POST"])
+def api_qm_backtest_run():
+    body          = request.get_json(force=True) or {}
+    ticker        = str(body.get("ticker", "")).strip().upper()
+    min_star      = float(body.get("min_star", 3.0))
+    max_hold_days = int(body.get("max_hold_days", 120))
+    debug_mode    = bool(body.get("debug", False))  # Optional debug flag
+
+    if not ticker:
+        return jsonify({"ok": False, "error": "ticker required"}), 400
+
+    jid = f"qmbt_{ticker}_{uuid.uuid4().hex[:8]}"
+
+    # Per-backtest log file
+    bt_log = _LOG_DIR / f"qm_backtest_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    bt_handler = logging.FileHandler(bt_log, encoding="utf-8")
+    bt_handler.setLevel(logging.DEBUG)
+    bt_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s  %(message)s")
+    )
+    _QM_BT_LOGGERS = [
+        "modules.qm_backtester", "modules.qm_analyzer",
+        "modules.qm_setup_detector", "modules.data_pipeline",
+    ]
+    for ln in _QM_BT_LOGGERS:
+        _lg = logging.getLogger(ln)
+        _lg.setLevel(logging.DEBUG)
+        _lg.addHandler(bt_handler)
+
+    with _qm_bt_lock:
+        _qm_bt_jobs[jid] = {
+            "status": "running", "pct": 0, "msg": "Initializing…",
+            "result": None, "error": None, "log_file": bt_log.name,
+        }
+
+    def _run():
+        from modules.qm_backtester import run_qm_backtest
+
+        def _cb(pct, msg):
+            with _qm_bt_lock:
+                _qm_bt_jobs[jid]["pct"] = pct
+                _qm_bt_jobs[jid]["msg"] = msg
+
+        try:
+            logging.getLogger("modules.qm_backtester").info(
+                f"Starting QM backtest: {ticker}  min_star={min_star}  max_hold={max_hold_days}  debug={debug_mode} (job {jid})"
+            )
+            result = run_qm_backtest(
+                ticker=ticker,
+                min_star=min_star,
+                max_hold_days=max_hold_days,
+                progress_cb=_cb,
+                log_file=bt_log,
+                debug_mode=debug_mode,
+            )
+            with _qm_bt_lock:
+                _qm_bt_jobs[jid]["status"] = "complete"
+                _qm_bt_jobs[jid]["pct"] = 100
+                _qm_bt_jobs[jid]["result"] = _clean(result)
+            logging.getLogger("modules.qm_backtester").info(
+                f"QM backtest complete: {ticker}  "
+                f"signals={result.get('summary', {}).get('total_signals')}  "
+                f"win_rate={result.get('summary', {}).get('win_rate_pct')}%"
+            )
+        except Exception as exc:
+            logger.exception("[QM Backtest] run error for %s", ticker)
+            logging.getLogger("modules.qm_backtester").error(f"QM backtest error: {str(exc)}")
+            with _qm_bt_lock:
+                _qm_bt_jobs[jid]["status"] = "error"
+                _qm_bt_jobs[jid]["error"]  = str(exc)
+        finally:
+            for ln in _QM_BT_LOGGERS:
+                logging.getLogger(ln).removeHandler(bt_handler)
+            bt_handler.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({
+        "ok": True,
+        "job_id": jid,
+        "log_file": bt_log.name,
+        "log_url": f"/api/qm/backtest/log/{jid}"
+    })
+
+
+@app.route("/api/qm/backtest/status/<jid>")
+def api_qm_backtest_status(jid):
+    with _qm_bt_lock:
+        job = _qm_bt_jobs.get(jid)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    return jsonify({
+        "ok":     True,
+        "status": job["status"],
+        "pct":    job["pct"],
+        "msg":    job["msg"],
+        "result": job.get("result"),
+        "error":  job.get("error"),
+    })
+
+
+@app.route("/api/qm/backtest/log/<jid>")
+def api_qm_backtest_log(jid):
+    """Return the last 100 lines of the backtest log."""
+    with _qm_bt_lock:
+        job = _qm_bt_jobs.get(jid)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    
+    log_file = job.get("log_file")
+    if not log_file:
+        return jsonify({"ok": False, "error": "No log file"}), 404
+    
+    try:
+        log_path = Path(log_file) if log_file.startswith('/') or ':' in log_file else _LOG_DIR / log_file
+        if log_path.exists():
+            with open(log_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                return jsonify({
+                    "ok": True,
+                    "lines": lines[-100:],  # Last 100 lines
+                    "total_lines": len(lines)
+                })
+        else:
+            return jsonify({"ok": False, "error": f"Log not found: {log_path}"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
