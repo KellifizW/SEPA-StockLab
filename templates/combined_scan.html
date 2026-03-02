@@ -809,6 +809,38 @@ document.addEventListener('DOMContentLoaded', function() {
     new bootstrap.Tooltip(el, {trigger: 'hover', html: true});
   });
 
+  // Check if there's an in-flight combined scan we can reconnect to
+  var activeJid = localStorage.getItem('combined_active_jid');
+  if (activeJid) {
+    // We have an active job — try to reconnect
+    _jid = activeJid;
+    document.getElementById('btnRun').disabled = true;
+    document.getElementById('btnStop').classList.remove('d-none');
+    document.getElementById('progressArea').classList.remove('d-none');
+    document.getElementById('progressBar').style.width = '0%';
+    document.getElementById('progressMsg').textContent = 'Reconnecting to in-flight scan…';
+    
+    // Check job status
+    fetch('/api/combined/scan/status/' + _jid)
+      .then(function(r) { return r.json(); })
+      .then(function(job) {
+        if (job.status === 'done') {
+          // Scan already completed
+          onDone(job.result || {});
+        } else if (job.status === 'error') {
+          onError(job.error || 'Job failed');
+        } else {
+          // Still running — resume polling
+          document.getElementById('progressMsg').textContent = 'Scan in progress (reconnected)…';
+          pollScan();
+        }
+      })
+      .catch(function() {
+        onError('Failed to reconnect to scan');
+      });
+    return;  // Don't load cached results yet
+  }
+
   // Restore from localStorage
   try {
     var raw = localStorage.getItem(CACHE_KEY);
@@ -848,6 +880,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
 /* ═══ SCAN CONTROL ══════════════════════════════════════════════════ */
 async function startScan() {
+  // Prevent duplicate scans
+  if (localStorage.getItem('combined_active_jid')) {
+    alert('⚠️ Combined scan already in progress. Cancel it first.');
+    return;
+  }
+
   var refreshRs = document.getElementById('chkRefreshRS').checked;
   var stage1Src = document.getElementById('combinedSource').value;
 
@@ -880,12 +918,19 @@ async function startScan() {
     });
     var r = await resp.json();
     _jid = r.job_id;
+    // Persist job ID to localStorage
+    try {
+      localStorage.setItem('combined_active_jid', _jid);
+    } catch(e) {}
     pollScan();
   } catch(e) { onError(e.message); }
 }
 
 function stopScan() {
-  if (_jid) fetch('/api/combined/scan/cancel/' + _jid, {method: 'POST'}).catch(function(){});
+  if (_jid) {
+    localStorage.removeItem('combined_active_jid');
+    fetch('/api/combined/scan/cancel/' + _jid, {method: 'POST'}).catch(function(){});
+  }
   resetUI();
   setStatus('Cancelled');
 }
@@ -944,6 +989,7 @@ function toggleLiveLog() {
 }
 
 function onDone(result) {
+  localStorage.removeItem('combined_active_jid');
   resetUI();
   document.getElementById('progressBar').style.width = '100%';
   for (var i = 1; i <= 5; i++) document.getElementById('step' + i).className = 'step-dot done';
@@ -1016,6 +1062,7 @@ function onDone(result) {
 }
 
 function onError(msg) {
+  localStorage.removeItem('combined_active_jid');
   resetUI();
   setStatus('Error: ' + msg, true);
 }

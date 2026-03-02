@@ -149,6 +149,28 @@
         </li>
       </ul>
       <ul class="navbar-nav gap-1">
+        <!-- ── Global scan progress indicator ──────────────────────────────── -->
+        <li class="nav-item d-none" id="globalScanIndicator">
+          <div class="d-flex align-items-center gap-2 px-3 py-1"
+               style="background:#1a2030; border-radius:6px; border:1px solid #30363d;">
+            <div class="spinner-border spinner-border-sm" role="status" id="globalScanSpinner"
+                 style="width:16px; height:16px; border-width:2px; color:var(--accent); animation:spin 1s linear infinite;">
+              <span class="visually-hidden">Scanning…</span>
+            </div>
+            <div style="font-size:12px; min-width:180px;">
+              <div id="globalScanType" style="color:#8b949e; font-weight:600; margin-bottom:2px;">SEPA Scan</div>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <div style="flex:1; background:#0d1117; border-radius:3px; height:4px; border:1px solid #30363d; overflow:hidden;">
+                  <div id="globalScanBar" style="width:0%; height:100%; background:var(--accent); transition:width 0.3s ease;"></div>
+                </div>
+                <span id="globalScanPct" style="color:var(--accent); font-weight:600; min-width:30px;">0%</span>
+              </div>
+              <div id="globalScanMsg" style="color:#6e7681; font-size:10px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary py-0 px-2" id="globalScanCancel"
+                    style="white-space:nowrap; font-size:11px;" title="Cancel scan">Cancel</button>
+          </div>
+        </li>
         <li class="nav-item"><a class="nav-link" href="/latest-report" target="_blank"><i class="bi bi-file-earmark-text me-1"></i>Report</a></li>
       </ul>
     </div>
@@ -242,6 +264,118 @@ document.body.addEventListener('showToast', function(e) {
   const msg = (typeof e.detail === 'string') ? e.detail : (e.detail.value || String(e.detail));
   toast(msg, !msg.startsWith('❌'));
 });
+
+// ── Global scan progress monitor ───────────────────────────────────────────────
+// Polls for running SEPA or Combined scans in background
+let _globalScanPoller = null;
+let _activeGlobalSjid = null; // scan job id
+let _activeGlobalCjid = null; // combined job id
+
+function initGlobalScanMonitor() {
+  const sepaJid = sessionStorage.getItem('sepa_active_jid');
+  const combJid = localStorage.getItem('combined_active_jid');
+  
+  if (sepaJid) startGlobalScanPolling(sepaJid, 'sepa');
+  else if (combJid) startGlobalScanPolling(combJid, 'combined');
+}
+
+function startGlobalScanPolling(jid, type) {
+  const indicator = document.getElementById('globalScanIndicator');
+  const scanType = document.getElementById('globalScanType');
+  const scanBar = document.getElementById('globalScanBar');
+  const scanPct = document.getElementById('globalScanPct');
+  const scanMsg = document.getElementById('globalScanMsg');
+  const cancelBtn = document.getElementById('globalScanCancel');
+  
+  _activeGlobalSjid = type === 'sepa' ? jid : null;
+  _activeGlobalCjid = type === 'combined' ? jid : null;
+  
+  scanType.textContent = type === 'sepa' ? 'SEPA Scan 掃描' : 'Combined Scan 組合掃描';
+  indicator.classList.remove('d-none');
+  
+  function pollStatus() {
+    const endpoint = type === 'sepa' 
+      ? `/api/scan/status/${jid}` 
+      : `/api/combined/scan/status/${jid}`;
+    
+    fetch(endpoint)
+      .then(r => r.json())
+      .then(job => {
+        if (job.status === 'done') {
+          // Scan completed
+          scanBar.style.width = '100%';
+          scanPct.textContent = '100%';
+          scanMsg.textContent = 'Completed ✓';
+          clearTimeout(_globalScanPoller);
+          setTimeout(() => {
+            indicator.classList.add('d-none');
+            const storageKey = type === 'sepa' ? 'sepa_active_jid' : 'combined_active_jid';
+            const store = type === 'sepa' ? sessionStorage : localStorage;
+            store.removeItem(storageKey);
+            _activeGlobalSjid = null;
+            _activeGlobalCjid = null;
+            const notifMsg = type === 'sepa' 
+              ? '✅ SEPA Scan 完成' 
+              : '✅ Combined Scan 完成';
+            toast(notifMsg, true);
+          }, 1500);
+        } else if (job.status === 'error') {
+          clearTimeout(_globalScanPoller);
+          indicator.classList.add('d-none');
+          const storageKey = type === 'sepa' ? 'sepa_active_jid' : 'combined_active_jid';
+          const store = type === 'sepa' ? sessionStorage : localStorage;
+          store.removeItem(storageKey);
+          _activeGlobalSjid = null;
+          _activeGlobalCjid = null;
+          toast('❌ 掃描失敗: ' + (job.error || 'Unknown error'), false);
+        } else if (job.status === 'pending' || job.status === 'running') {
+          const p = job.progress || {};
+          const pct = p.pct || 0;
+          scanBar.style.width = Math.max(pct, 2) + '%';
+          scanPct.textContent = pct + '%';
+          scanMsg.textContent = p.msg || (p.stage || '…');
+          _globalScanPoller = setTimeout(pollStatus, 3000);
+        }
+      })
+      .catch(() => {
+        _globalScanPoller = setTimeout(pollStatus, 3000);
+      });
+  }
+  
+  pollStatus();
+  
+  // Cancel button handler
+  cancelBtn.onclick = async () => {
+    clearTimeout(_globalScanPoller);
+    const endpoint = type === 'sepa'
+      ? `/api/scan/cancel/${jid}`
+      : `/api/combined/scan/cancel/${jid}`;
+    await fetch(endpoint, {method: 'POST'}).catch(() => {});
+    indicator.classList.add('d-none');
+    const storageKey = type === 'sepa' ? 'sepa_active_jid' : 'combined_active_jid';
+    const store = type === 'sepa' ? sessionStorage : localStorage;
+    store.removeItem(storageKey);
+    _activeGlobalSjid = null;
+    _activeGlobalCjid = null;
+  };
+}
+
+// Listen for scan start/stop events from scan page
+window.addEventListener('storage', (e) => {
+  if (e.key === 'sepa_active_jid' && e.newValue && !_activeGlobalSjid) {
+    startGlobalScanPolling(e.newValue, 'sepa');
+  } else if (e.key === 'combined_active_jid' && e.newValue && !_activeGlobalCjid) {
+    startGlobalScanPolling(e.newValue, 'combined');
+  } else if ((e.key === 'sepa_active_jid' || e.key === 'combined_active_jid') && !e.newValue) {
+    // Job was cleared (completed/cancelled)
+    _activeGlobalSjid = null;
+    _activeGlobalCjid = null;
+    document.getElementById('globalScanIndicator').classList.add('d-none');
+  }
+});
+
+// Initialize on page load
+window.addEventListener('DOMContentLoaded', initGlobalScanMonitor);
 </script>
 {% block extra_js %}{% endblock %}
 </body>
