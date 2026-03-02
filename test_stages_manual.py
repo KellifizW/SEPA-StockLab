@@ -26,12 +26,12 @@ try:
     # Stage 1
     print("\n[1] Running Stage 1...")
     candidates = run_ml_stage1()
-    print(f"✓ Stage 1: {len(candidates)} candidates")
+    print(f"[OK] Stage 1: {len(candidates)} candidates")
     
     # Stage 2
     print("\n[2] Running Stage 2...")
     s2_rows = run_ml_stage2(candidates)
-    print(f"✓ Stage 2: {len(s2_rows)} passed")
+    print(f"[OK] Stage 2: {len(s2_rows)} passed")
     
     if len(s2_rows) == 0:
         print("[ERROR] No Stage 2 candidates, cannot test Stage 3")
@@ -43,12 +43,12 @@ try:
     
     try:
         df_all = run_ml_stage3(s2_test)
-        print(f"✓ Stage 3: {len(df_all)} results")
+        print(f"[OK] Stage 3: {len(df_all)} results")
         if not df_all.empty:
             print(f"  Columns: {list(df_all.columns)}")
             print(f"  First row:\n{df_all.iloc[0]}")
     except Exception as e:
-        print(f"✗ Stage 3 CRASHED: {e}")
+        print(f"[CRASH] Stage 3 CRASHED: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
