@@ -158,23 +158,42 @@ def get_day2_stop(entry_price: float, current_price: float) -> dict:
 
 def get_day3_trail_stop(df: pd.DataFrame,
                          entry_price: float,
-                         current_stop: float) -> dict:
+                         current_stop: float,
+                         r_multiple: float = 0.0) -> dict:
     """
-    Day 3+: Trail stop using 9 EMA (close-based).
+    Day 3+: Adaptive EMA trailing — upgrades from 9→21→50 EMA as R grows.
 
-    Martin Luk uses 9 EMA for trailing (tighter than QM's 10 SMA).
-    Sell all remaining shares when price closes below 9 EMA.
-    Never lower the stop.
+    Martin Luk explicitly teaches upgrading the trail EMA to give winners
+    more room once they prove themselves:
+      - Default / < ML_EXIT_TRAIL_21_EMA_R  → trail 9 EMA  (tight)
+      - ≥ ML_EXIT_TRAIL_21_EMA_R (5R)       → trail 21 EMA (medium)
+      - ≥ ML_EXIT_TRAIL_50_EMA_R (10R)      → trail 50 EMA (wide, let winners run)
+
+    HK timezone note: use compute_hk_timezone_stop() for live sessions.
 
     Args:
-        df:            OHLCV DataFrame with EMA_9 column
+        df:            OHLCV DataFrame with EMA_9/EMA_21/EMA_50 columns
         entry_price:   Original entry price
         current_stop:  Existing stop (never lower)
+        r_multiple:    Current floating R gain (used for EMA tier selection)
 
     Returns:
-        dict with trail_stop, trail_signal, ema_value
+        dict with trail_stop, trail_signal, ema_value, trail_ema_period
     """
-    trail_ema_period = getattr(C, "ML_TRAIL_EMA", 9)
+    # ── Select EMA tier based on R gain ──────────────────────────────────
+    r_for_21 = getattr(C, "ML_EXIT_TRAIL_21_EMA_R", 5.0)
+    r_for_50 = getattr(C, "ML_EXIT_TRAIL_50_EMA_R", 10.0)
+
+    if r_multiple >= r_for_50:
+        trail_ema_period = 50
+        tier_label = "50 EMA (大贏追蹤)"
+    elif r_multiple >= r_for_21:
+        trail_ema_period = 21
+        tier_label = "21 EMA (中期追蹤)"
+    else:
+        trail_ema_period = getattr(C, "ML_TRAIL_EMA", 9)
+        tier_label = "9 EMA (標準追蹤)"
+
     ema_col = f"EMA_{trail_ema_period}"
 
     result = {
@@ -182,7 +201,9 @@ def get_day3_trail_stop(df: pd.DataFrame,
         "trail_stop": current_stop,
         "trail_signal": "HOLD",
         "ema_value": None,
-        "description_zh": "Day 3+ 9 EMA 追蹤止損",
+        "trail_ema_period": trail_ema_period,
+        "tier_label_zh": tier_label,
+        "description_zh": f"Day 3+ {tier_label} 追蹤止損",
     }
 
     if df.empty or len(df) < 5:
@@ -191,40 +212,90 @@ def get_day3_trail_stop(df: pd.DataFrame,
 
     close = float(df["Close"].iloc[-1])
 
-    # Find 9 EMA value
+    # Find EMA value (compute if column absent)
     if ema_col in df.columns:
         ema_val = float(df[ema_col].iloc[-1])
     else:
-        # Fallback: compute in-place
         ema_val = float(df["Close"].ewm(span=trail_ema_period, adjust=False).mean().iloc[-1])
 
     result["ema_value"] = round(ema_val, 2)
 
-    # Trail stop = max(current_stop, 9 EMA) — never lower the stop
-    new_trail = max(current_stop, ema_val)
+    # HK timezone stop: add buffer to avoid HK off-hours whipsaw
+    if getattr(C, "ML_HK_TIMEZONE_MODE", True):
+        hk_stop = compute_hk_timezone_stop(ema_val, entry_price)
+        trail_level = hk_stop["stop_price"]
+    else:
+        trail_level = ema_val
+
+    # Trail stop = max(current_stop, ema-based level) — never lower the stop
+    new_trail = max(current_stop, trail_level)
     result["trail_stop"] = round(new_trail, 2)
 
-    # Signal: sell if close below 9 EMA
+    # Signal: sell if close below EMA
     if close < ema_val:
         result["trail_signal"] = "SELL_ALL"
         result["description_zh"] = (
-            f"⚠ 收盤 ${close:.2f} < 9 EMA ${ema_val:.2f} — 出場全部剩餘持倉"
+            f"⚠ 收盤 ${close:.2f} < {tier_label} ${ema_val:.2f} — 出場全部剩餘持倉"
         )
     else:
         pct_above = (close / ema_val - 1.0) * 100.0
         result["trail_signal"] = "HOLD"
         result["description_zh"] = (
-            f"收盤 ${close:.2f} 高於 9 EMA ${ema_val:.2f} (+{pct_above:.1f}%) — 繼續持有"
+            f"收盤 ${close:.2f} 高於 {tier_label} ${ema_val:.2f} (+{pct_above:.1f}%) — 繼續持有"
         )
 
     result["tooltip"] = (
-        "Martin Luk Day 3+ 追蹤止損\n"
-        "= 9 EMA (收盤價計算)\n"
-        "收盤跌穿 9 EMA → 出場剩餘全部持倉\n"
-        "這是較緊的追蹤（QM 用 10 SMA）\n"
-        "配合 3R/5R 部分了結後，追蹤剩餘 70%"
+        f"Martin Luk 自適應 EMA 追蹤止損\n"
+        f"< {r_for_21:.0f}R → 9 EMA (緊)\n"
+        f"≥ {r_for_21:.0f}R → 21 EMA (中)\n"
+        f"≥ {r_for_50:.0f}R → 50 EMA (寬，讓贏家跑)\n"
+        f"當前: {tier_label} (浮盈 {r_multiple:.1f}R)\n"
+        "收盤跌穿選定 EMA → 出場剩餘全部持倉"
     )
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HK Timezone Stop Helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_hk_timezone_stop(ema_value: float,
+                              entry_price: float,
+                              buffer_pct: float = None) -> dict:
+    """
+    Compute a HK-timezone-aware stop level by adding a small buffer below the EMA.
+
+    Martin Luk is based in Hong Kong. US market is open in HK overnight
+    (9:30pm – 4:00am HKT). Having a stop exactly at the EMA risks being
+    stopped out by minor pre-market noise. The buffer gives a small cushion.
+
+    Args:
+        ema_value:   Current EMA price level (9/21/50 depending on tier)
+        entry_price: Original entry price (for R-based buffer scaling)
+        buffer_pct:  Override buffer percentage below EMA (default from config)
+
+    Returns:
+        dict with stop_price, buffer_applied_pct, note_zh
+    """
+    if buffer_pct is None:
+        buffer_pct = getattr(C, "ML_HK_EMA_STOP_BUFFER_PCT", 0.5)
+
+    stop_price = ema_value * (1.0 - buffer_pct / 100.0)
+
+    # Sanity: stop must always be below entry
+    if entry_price > 0 and stop_price >= entry_price:
+        stop_price = entry_price * 0.99  # Fallback: 1% below entry
+
+    return {
+        "stop_price": round(stop_price, 2),
+        "ema_value": round(ema_value, 2),
+        "buffer_applied_pct": buffer_pct,
+        "note_zh": (
+            f"HK 時區止損 = EMA ${ema_value:.2f} × (1 - {buffer_pct:.1f}%) "
+            f"= ${stop_price:.2f}\n"
+            "(美股在 HK 深夜開市，EMA 緩衝防止隔夜雜訊觸發)"
+        ),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,37 +334,88 @@ def get_current_phase(entry_date: str | date) -> int:
 def get_profit_action(entry_price: float,
                       current_price: float,
                       stop_price: float,
-                      shares: int) -> dict:
+                      shares: int,
+                      vol_ratio: float = 0.0,
+                      is_parabolic: bool = False) -> dict:
     """
-    Martin Luk R-multiple partial sell system:
+    Martin Luk R-multiple partial sell system with contextual exit overrides.
+
+    Standard schedule:
       - At 3R: sell 15% of shares
       - At 5R: sell another 15% of shares
-      - Remaining 70%: trail on 9 EMA
+      - Remaining 70%: trail on adaptive EMA
+
+    Contextual overrides (Chapter 14 — Selling into Strength):
+      - Extreme volume surge (≥ ML_EXIT_EXTREME_VOL_MULT): SELL_ALL_EXTREME_VOL
+        → Climactic action signal; never hold through a volume spike reversal
+      - Parabolic flag: SELL_ALL_PARABOLIC
+        → Price gone parabolic per Appendix E checklist; distribute immediately
+      - 10R+ confirmed trend: switch to EMA trail ONLY (no more scheduled partials)
+        → Let the winner run; let EMA trail manage the exit
 
     Args:
         entry_price:   Original entry price
         current_price: Current market price
         stop_price:    Initial stop price (for R calculation)
         shares:        Current shares held
+        vol_ratio:     Today's volume / 20-day avg volume (for climax detection)
+        is_parabolic:  Flag from compute_parabolic_checklist() Appendix E output
 
     Returns:
-        dict with action, R level, shares_to_sell
+        dict with action, R level, shares_to_sell, exit_type
     """
     r1 = entry_price - stop_price if stop_price and entry_price > stop_price else 0
     r_mult = (current_price - entry_price) / r1 if r1 > 0 else 0
     gain_pct = (current_price / entry_price - 1.0) * 100.0 if entry_price > 0 else 0
 
-    partial_1_r = getattr(C, "ML_PARTIAL_SELL_1_R", 3.0)
+    partial_1_r  = getattr(C, "ML_PARTIAL_SELL_1_R",  3.0)
     partial_1_pct = getattr(C, "ML_PARTIAL_SELL_1_PCT", 15.0)
-    partial_2_r = getattr(C, "ML_PARTIAL_SELL_2_R", 5.0)
+    partial_2_r  = getattr(C, "ML_PARTIAL_SELL_2_R",  5.0)
     partial_2_pct = getattr(C, "ML_PARTIAL_SELL_2_PCT", 15.0)
+    extreme_vol_mult = getattr(C, "ML_EXIT_EXTREME_VOL_MULT", 3.0)
+    trail_only_r = getattr(C, "ML_EXIT_TRAIL_50_EMA_R", 10.0)
 
     action = "HOLD"
     shares_out = 0
     reason_zh = ""
     target_label = ""
+    exit_type = "SCHEDULED"
 
-    if r_mult >= partial_2_r:
+    # ── Priority 1: Parabolic — full exit immediately ──────────────────────
+    if is_parabolic and getattr(C, "ML_PARABOLIC_FULL_EXIT", True):
+        action = "SELL_ALL_PARABOLIC"
+        shares_out = shares
+        exit_type = "PARABOLIC"
+        reason_zh = (
+            f"⚠ 拋物線啟動 ({r_mult:.1f}R, +{gain_pct:.1f}%) — "
+            "附錄E核對清單觸發，立即出場全部"
+        )
+        target_label = "PARABOLIC"
+
+    # ── Priority 2: Climactic volume — full exit on volume spike ──────────
+    elif vol_ratio >= extreme_vol_mult:
+        action = "SELL_ALL_EXTREME_VOL"
+        shares_out = shares
+        exit_type = "EXTREME_VOL"
+        reason_zh = (
+            f"⚠ 極端量 {vol_ratio:.1f}x 均量 (閾值 {extreme_vol_mult:.1f}x, {r_mult:.1f}R) — "
+            "高潮量能出現，分批出場全部"
+        )
+        target_label = "EXTREME_VOL"
+
+    # ── Priority 3: 10R+ confirmed trend — trail ONLY, no more partials ────
+    elif r_mult >= trail_only_r:
+        action = "TRAIL_ONLY"
+        shares_out = 0
+        exit_type = "TRAIL_ONLY"
+        reason_zh = (
+            f"大贏家 {r_mult:.1f}R (+{gain_pct:.1f}%) ≥ {trail_only_r:.0f}R — "
+            "切換 50 EMA 追蹤，不再主動了結，讓贏家繼續跑"
+        )
+        target_label = f"≥{trail_only_r:.0f}R TRAIL"
+
+    # ── Standard partial sell schedule ────────────────────────────────────
+    elif r_mult >= partial_2_r:
         action = "TAKE_PARTIAL_5R"
         shares_out = max(1, int(shares * partial_2_pct / 100.0))
         reason_zh = (
@@ -323,13 +445,15 @@ def get_profit_action(entry_price: float,
         "shares_to_sell": shares_out,
         "shares_remaining": shares - shares_out,
         "target_label": target_label,
+        "exit_type": exit_type,
         "reason_zh": reason_zh,
         "tooltip": (
-            "Martin Luk 部分了結規則 (R-Multiple Partial Sells)\n"
-            f"Step 1: 達 {partial_1_r:.0f}R → 出 {partial_1_pct:.0f}% (鎖定第一筆利潤)\n"
-            f"Step 2: 達 {partial_2_r:.0f}R → 再出 {partial_2_pct:.0f}% (再鎖利)\n"
-            "Step 3: 剩餘 70% 用 9 EMA 追蹤，直到收盤跌穿\n"
-            "勝率只需 22%，靠大 R 多回報來賺錢"
+            "Martin Luk 部分了結規則 (情境式退場)\n"
+            f"拋物線 → 立即出場 100%\n"
+            f"極端成交量 (≥{extreme_vol_mult:.1f}x) → 出場 100%\n"
+            f"≥{trail_only_r:.0f}R → 純追蹤，不再了結\n"
+            f"標準: {partial_1_r:.0f}R → -{partial_1_pct:.0f}%, "
+            f"{partial_2_r:.0f}R → -{partial_2_pct:.0f}%, 其餘 EMA 追蹤"
         ),
     }
 

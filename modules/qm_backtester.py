@@ -206,14 +206,15 @@ def run_qm_backtest(
         # ── QM Stage 2 gate ──────────────────────────────────────────────────
         stage2 = _qm_stage2_check(ticker, df_slice, debug_mode=debug_mode)
         if stage2 is None:
+            # Log Stage 2 failures (sample every 50 bars)
+            if step_i % 50 == 0:
+                logger.debug(f"[QM BT Stage2] Bar {bar_i}/{total_bars} REJECTED (ADR/DV/momentum/consolidation gate)")
             continue
 
-        # Log Stage 2 pass (sample every 20 bars to avoid spam)
-        if step_i % 20 == 0:
-            adr_val = stage2.get('adr')
-            dv_val = stage2.get('dollar_volume_m')
-            if adr_val is not None and dv_val is not None:
-                logger.debug(f"[QM BT] Bar {bar_i} passed Stage 2: ADR={adr_val:.1f}%, DV=${dv_val:.1f}M")
+        # Log Stage 2 pass (every bar)
+        adr_val = stage2.get('adr')
+        dv_val = stage2.get('dollar_volume_m')
+        logger.debug(f"[QM BT Stage2 PASS] Bar {bar_i}: ADR={adr_val:.2f}%, DV=${dv_val:.1f}M")
 
         # ── QM Stage 3 — star rating ─────────────────────────────────────────
         star_info = _qm_stage3_score(ticker, df_slice, stage2, debug_mode=debug_mode)
@@ -241,6 +242,17 @@ def run_qm_backtest(
             df_full, bar_i, breakout_level, star_rating, max_hold_days
         )
 
+        # Simplify setup_type for table display (extract only type_code + primary_type)
+        setup_display = setup_type
+        if isinstance(setup_type, dict):
+            type_code = setup_type.get("type_code", "?")
+            primary = setup_type.get("primary_type", "")
+            # Show as: "HTF" or "🏆 High Tight Flag" if primary is available
+            setup_display = primary if primary else type_code
+            logger.debug(f"[QM BT] Signal {sig_date_key}: simplified setup_type from dict → '{setup_display}'")
+        else:
+            logger.debug(f"[QM BT] Signal {sig_date_key}: setup_type already simplified → '{setup_type}'")
+
         signals.append({
             "ticker":        ticker,
             "signal_date":   sig_date_key,
@@ -248,7 +260,8 @@ def run_qm_backtest(
             "signal_close":  round(sig_close, 2),
             "star_rating":   round(star_rating, 1),
             "star_label":    _star_label(star_rating),
-            "setup_type":    setup_type,
+            "setup_type":    setup_display,
+            "setup_type_code": setup_type.get("type_code", "?") if isinstance(setup_type, dict) else setup_type,
             "adr":           stage2.get("adr"),
             "dollar_vol_m":  stage2.get("dollar_volume_m"),
             "mom_1m":        stage2.get("mom_1m"),
@@ -326,8 +339,7 @@ def _qm_stage2_check(ticker: str, df: pd.DataFrame, debug_mode: bool = False) ->
     if debug_mode:
         min_adr = 1.0  # Very relaxed for testing
     if adr < min_adr:
-        if debug_mode:
-            logger.debug(f"[QM BT Stage2] ADR veto: {adr:.2f}% < {min_adr}%")
+        logger.debug(f"[QM BT Stage2] ADR VETO: {adr:.2f}% < {min_adr}%")
         return None
 
     try:
@@ -338,6 +350,7 @@ def _qm_stage2_check(ticker: str, df: pd.DataFrame, debug_mode: bool = False) ->
     if debug_mode:
         min_dv = 100_000  # Very relaxed for testing
     if dv < min_dv:
+        logger.debug(f"[QM BT Stage2] DOLLAR VOL VETO: ${dv:,.0f} < ${min_dv:,.0f}")
         return None
 
     try:
@@ -356,6 +369,7 @@ def _qm_stage2_check(ticker: str, df: pd.DataFrame, debug_mode: bool = False) ->
         passes_3m = m3 is not None and m3 >= 0.0
         passes_6m = m6 is not None and m6 >= 0.0
     if not (passes_1m or passes_3m or passes_6m):
+        logger.debug(f"[QM BT Stage2] MOMENTUM VETO: 1M={m1}% 3M={m3}% 6M={m6}% (need >=25%/50%/150%)")
         return None
 
     try:
@@ -363,9 +377,14 @@ def _qm_stage2_check(ticker: str, df: pd.DataFrame, debug_mode: bool = False) ->
     except Exception:
         return None
     
-    # In debug mode, disable consolidation check to allow more signals through
+    # Consolidation check: relax for backtest to include trending stocks
+    # Debug mode: completely disabled
+    # Non-debug mode: require proximity to high OR low (not both) to allow uptrends
     if not debug_mode:
-        if not (rng.get("near_high", False) and rng.get("near_low", False)):
+        if not (rng.get("near_high", False) or rng.get("near_low", False)):
+            pct_from_high = rng.get("pct_from_high")
+            pct_from_low = rng.get("pct_from_low")
+            logger.debug(f"[QM BT Stage2] CONSOLIDATION VETO: near_high={rng.get('near_high')} near_low={rng.get('near_low')} pct_from_high={pct_from_high}% pct_from_low={pct_from_low}%")
             return None
 
     close = float(df["Close"].iloc[-1])
@@ -428,7 +447,7 @@ def _qm_stage3_score(ticker: str, df: pd.DataFrame, stage2: dict, debug_mode: bo
 
     # Note: analyze_qm returns 'stars' (not 'star_rating') and 'setup_type'
     star_rating = float(result.get("stars", result.get("capped_stars", 0.0)) or 0.0)
-    setup_type  = str(result.get("setup_type", "FLAG") or "FLAG")
+    setup_type  = result.get("setup_type", "FLAG") or "FLAG"  # Keep as dict, don't stringify
     
     # In debug mode, override vetoes and provide a minimum viable star rating
     if debug_mode and result.get("veto") and star_rating <= 0.0:
@@ -694,7 +713,11 @@ def _compute_qm_summary(signals: list[dict]) -> dict:
     # By-setup-type breakdown
     setup_bd: dict[str, dict] = {}
     for s in breakout_sigs:
-        st  = s.get("setup_type", "UNKNOWN") or "UNKNOWN"
+        # Handle setup_type if it's a dict
+        st = s.get("setup_type", "UNKNOWN")
+        if isinstance(st, dict) and 'type_code' in st:
+            st = st['type_code']
+        st = str(st or "UNKNOWN")
         g   = s["exit_gain_pct"]
         hit = s["outcome"] in ("WIN", "SMALL_WIN")
         if st not in setup_bd:
@@ -742,10 +765,12 @@ def _compute_qm_summary(signals: list[dict]) -> dict:
     else:
         avg_gain_str = f"{avg_gain:+.2f}" if abs(avg_gain) >= 1 else f"{avg_gain:+.4f}"
     
+    pf_str = f"{pf:.2f}" if pf is not None else "N/A"
+    
     if win_rate >= 50 and avg_gain is not None and avg_gain >= 10:
         verdict = f"✅ 策略有效 — 勝率 {win_rate}%，平均實現回報 +{avg_gain}%"
     elif win_rate >= 40 and (pf or 0) >= 1.0:
-        verdict = f"⚠️ 結果參差 — 勝率 {win_rate}%，平均回報 {avg_gain_str}%。Profit Factor {pf}"
+        verdict = f"⚠️ 結果參差 — 勝率 {win_rate}%，平均回報 {avg_gain_str}%。Profit Factor {pf_str}"
     else:
         verdict = f"❌ 策略效果偏弱 — 勝率 {win_rate}%，平均回報 {avg_gain_str}%"
 
@@ -859,13 +884,29 @@ def _log_signal_details(signals: list[dict], summary: dict, ticker: str) -> None
         hd = sig.get('holding_days')
         hd_str = str(hd) if hd is not None else "─"
         
+        # Setup type - handle if it's a dict or string
+        setup_type_raw = sig.get('setup_type', '?')
+        if isinstance(setup_type_raw, dict) and 'type_code' in setup_type_raw:
+            setup_str = setup_type_raw['type_code']
+        else:
+            setup_str = str(setup_type_raw or '?')
+        setup_str = (setup_str or '?')[:7]
+        
+        # Signal close - protect None
+        sig_close = sig.get('signal_close')
+        sc_str = f"${sig_close:7.2f}" if sig_close is not None else "    N/A"
+        
+        # Breakout level - protect None
+        bo_level = sig.get('breakout_level')
+        bo_str = f"${bo_level:7.2f}" if bo_level is not None else "    N/A"
+        
         row = (
             f"{sig.get('signal_date','?')} │ "
             f"{sr_str} │"
-            f"{(sig.get('setup_type','?') or '─'):<7s}│"
-            f"${sig.get('signal_close',0):7.2f} │"
-            f"${sig.get('breakout_level',0):7.2f} │"
-            f"{sig.get('breakout_date','─'):<10s} │"
+            f"{setup_str:<7s}│"
+            f"{sc_str} │"
+            f"{bo_str} │"
+            f"{(sig.get('breakout_date','─') or '─'):<10s} │"
             f"{bp_str:<9s}│"
             f"{hd_str:<4s}│"
             f"{r_str} │"

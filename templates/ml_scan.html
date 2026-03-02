@@ -3,9 +3,9 @@
 
 {% block extra_head %}
 <style>
-  .star-5  { color: #3fb950; font-weight: 700; }
-  .star-4  { color: #3fb950; }
-  .star-3  { color: #e3b341; }
+  .star-5   { color: #3fb950; font-weight: 700; }
+  .star-4   { color: #3fb950; }
+  .star-3   { color: #e3b341; }
   .star-low { color: #f85149; }
   .badge-pb   { background: #0e4429; color: #3fb950; }
   .badge-br   { background: #1a3060; color: #58a6ff; }
@@ -14,37 +14,69 @@
   .badge-chg  { background: #003040; color: #00d4ff; }
   .badge-para { background: #3a0a0a; color: #f85149; }
   .badge-uk   { background: #1c2128; color: #8b949e; }
+  .badge-gap    { background: #1a3060; color: #58a6ff; }
+  .badge-gainer { background: #0e4429; color: #3fb950; }
+  .badge-leader { background: #4a3800; color: #e3b341; }
+  .scanner-mode-tab { cursor:pointer; padding:6px 16px; border-radius:6px; font-size:13px; border:1px solid #30363d; color:#8b949e; }
+  .scanner-mode-tab.active { background:#238636; color:#fff; border-color:#2ea043; }
+  .scanner-mode-tab:hover:not(.active) { background:#21262d; color:#c9d1d9; }
   .ml-row:hover { background: #0a1a12 !important; cursor: pointer; }
-  .progress-stage { font-size: 12px; color: #8b949e; margin-top: 4px; }
   .filter-bar { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .situation-panel, .theme-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; font-size:12px; }
+  .regime-pill { display:inline-block; padding:2px 8px; border-radius:12px; font-weight:600; font-size:11px; }
+  .regime-uptrend   { background:#0e4429; color:#3fb950; }
+  .regime-pressure  { background:#4a3800; color:#e3b341; }
+  .regime-choppy    { background:#2a2060; color:#9a80ff; }
+  .regime-correct   { background:#3a2000; color:#ff9230; }
+  .regime-downtrend { background:#3a0a0a; color:#f85149; }
+  .theme-badge { display:inline-block; padding:2px 8px; border-radius:4px; background:#1a3060; color:#58a6ff; font-size:11px; margin:1px; }
+  .role-leader   { color:#3fb950; font-weight:700; }
+  .role-follower { color:#e3b341; }
+  .role-laggard  { color:#8b949e; }
+  .progress-stage { font-size:12px; color:#8b949e; margin-top:4px; }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="d-flex align-items-center mb-3 gap-3">
-  <h4 class="mb-0"><i class="bi bi-graph-up-arrow me-2" style="color:#3fb950"></i>
-    Martin Luk 回調買入掃描 <span style="color:#8b949e;font-size:13px">Pullback Buy Scanner</span>
+  <h4 class="mb-0">
+    <i class="bi bi-graph-up-arrow me-2" style="color:#3fb950"></i>
+    Martin Luk 掃描 <span style="color:#8b949e;font-size:13px">ML Scanner</span>
   </h4>
-  <span class="badge bg-secondary ms-auto">每日收盤後使用 • Use after market close</span>
+  <span class="badge bg-secondary ms-auto">盤後更新 After Market Close</span>
 </div>
 
-<!-- Controls -->
+<div class="d-flex gap-2 mb-3">
+  <span class="scanner-mode-tab active" id="tab-standard" onclick="setScannerMode('standard')">
+    <i class="bi bi-funnel me-1"></i>現時 Standard
+  </span>
+  <span class="scanner-mode-tab" id="tab-triple" onclick="setScannerMode('triple')">
+    <i class="bi bi-collection me-1"></i>頻道掃描 Triple Scanner
+  </span>
+  <span class="scanner-mode-tab" id="tab-combined" onclick="setScannerMode('combined')">
+    <i class="bi bi-layers me-1"></i>合併 Combined
+  </span>
+  <span class="ms-auto text-secondary" style="font-size:12px;align-self:center">
+    <i class="bi bi-info-circle me-1"></i>頻道 = 頂部缺口箭選 + 最強漲幅股 + 趨勢領頭羊
+  </span>
+</div>
+
 <div class="row g-3 mb-4">
   <div class="col-12">
     <div class="filter-bar">
       <div class="row g-3 align-items-end">
         <div class="col-auto">
-          <label class="form-label text-secondary" style="font-size:12px">最低星級 Min Stars</label>
+          <label class="form-label text-secondary" style="font-size:12px">最低星數 Min Stars</label>
           <select id="minStar" class="form-select form-select-sm" style="width:110px;background:#0d1117;color:#c9d1d9;border-color:#30363d">
-            <option value="2.5">★★½ 2.5+</option>
-            <option value="3" selected>★★★ 3+</option>
-            <option value="3.5">★★★½ 3.5+</option>
-            <option value="4">★★★★ 4+</option>
-            <option value="4.5">★★★★½ 4.5+</option>
+            <option value="2.5">寬鬆 2.5+</option>
+            <option value="3" selected>標準 3+</option>
+            <option value="3.5">嚴格 3.5+</option>
+            <option value="4">精選 4+</option>
+            <option value="4.5">最嚴 4.5+</option>
           </select>
         </div>
         <div class="col-auto">
-          <label class="form-label text-secondary" style="font-size:12px">顯示數量 Top N</label>
+          <label class="form-label text-secondary" style="font-size:12px">顯示前幾名 Top N</label>
           <select id="topN" class="form-select form-select-sm" style="width:100px;background:#0d1117;color:#c9d1d9;border-color:#30363d">
             <option value="25">25</option>
             <option value="50" selected>50</option>
@@ -52,73 +84,125 @@
           </select>
         </div>
         <div class="col-auto">
-          <button class="btn px-4" id="btnScan" onclick="startScan()"
-                  style="background:#238636;color:#fff;border:1px solid #2ea043">
+          <button class="btn px-4" id="btnScan" onclick="startScan()" style="background:#238636;color:#fff;border:1px solid #2ea043">
             <i class="bi bi-graph-up-arrow me-1"></i>開始掃描 Run Scan
           </button>
           <button class="btn btn-outline-secondary btn-sm ms-2 d-none" id="btnCancel" onclick="cancelScan()">
-            <i class="bi bi-stop-circle me-1"></i>取消 Cancel
+            <i class="bi bi-stop-circle me-1"></i>取消
           </button>
         </div>
         <div class="col-auto">
           <button class="btn btn-outline-secondary btn-sm" onclick="loadLast()">
-            <i class="bi bi-clock-history me-1"></i>上次結果 Load Last
+            <i class="bi bi-clock-history me-1"></i>載入上次
           </button>
         </div>
-        <div class="col ms-auto text-end">
-          <small class="text-secondary">
-            <i class="bi bi-info-circle me-1"></i>
-            篩選條件：EMA(9>21>50>150)排列、ADR≥4%、回調至EMA支撐、AVWAP匯合
-          </small>
-        </div>
       </div>
-
-      <!-- Progress bar -->
       <div id="progressArea" class="mt-3 d-none">
         <div class="progress" style="height:6px;background:#21262d">
           <div id="progressBar" class="progress-bar" style="background:#3fb950;width:0%;transition:width .4s"></div>
         </div>
-        <div class="progress-stage" id="progressStage">準備中…</div>
+        <div class="progress-stage" id="progressStage">初始化...</div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Summary -->
-<div class="row g-3 mb-3" id="summaryRow" style="display:none!important">
-  <div class="col-6 col-md-3">
-    <div class="metric-card">
-      <div class="metric-val" id="metPassCount">—</div>
-      <div class="metric-lbl">通過股票 Passed</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="metric-card">
-      <div class="metric-val" id="met4Star" style="color:#3fb950">—</div>
-      <div class="metric-lbl">4★ 以上</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="metric-card">
-      <div class="metric-val" id="metAvgStar" style="color:#e3b341">—</div>
-      <div class="metric-lbl">平均星級 Avg Stars</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="metric-card">
-      <div class="metric-val" id="metScanTime" style="color:#8b949e">—</div>
-      <div class="metric-lbl">掃描時間 Scan Time</div>
+<div class="row g-3 mb-3" id="situationRow" style="display:none!important">
+  <div class="col-12">
+    <div class="situation-panel">
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <i class="bi bi-radar text-info"></i>
+        <strong style="font-size:13px">情境感知 Situational Awareness</strong>
+        <small class="text-secondary ms-auto">Martin Luk 三層市場分析 (Chapter 6)</small>
+      </div>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <div style="font-size:11px;color:#8b949e">市場環境 (第一層)</div>
+          <div id="saRegime">&mdash;</div>
+        </div>
+        <div class="col-md-4">
+          <div style="font-size:11px;color:#8b949e">小盤股對比 IWM vs SPY</div>
+          <div id="saIWM">&mdash;</div>
+        </div>
+        <div class="col-md-4">
+          <div style="font-size:11px;color:#8b949e">交易偏向</div>
+          <div id="saBias">&mdash;</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- Results table -->
+<div class="row g-3 mb-3" id="summaryRow" style="display:none!important">
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="metPassCount">&mdash;</div>
+      <div class="metric-lbl">已通過 Passed</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="met4Star" style="color:#3fb950">&mdash;</div>
+      <div class="metric-lbl">4星以上股票</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="metAvgStar" style="color:#e3b341">&mdash;</div>
+      <div class="metric-lbl">平均星數</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="metScanTime" style="color:#8b949e">&mdash;</div>
+      <div class="metric-lbl">掃描時間</div>
+    </div>
+  </div>
+</div>
+
+<div id="themePanel" class="mb-3" style="display:none">
+  <div class="theme-panel">
+    <div class="d-flex align-items-center gap-2 mb-2">
+      <i class="bi bi-diagram-3 text-warning"></i>
+      <strong style="font-size:13px">板塊輪動追蹤 Theme Tracker</strong>
+      <small class="text-secondary ms-auto">Martin Luk Chapter 7 &mdash; 識別主題動力與板塊領頭羊</small>
+    </div>
+    <div id="themeContent" class="row g-2"></div>
+  </div>
+</div>
+
+<div id="tripleChannelPanel" class="mb-3" style="display:none">
+  <div class="row g-2">
+    <div class="col-md-4">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;font-size:12px">
+        <div style="color:#58a6ff"><i class="bi bi-arrow-up-circle me-1"></i>頂部缺口通道 Gap Channel</div>
+        <div id="chanGapCount" class="fw-bold" style="color:#58a6ff;font-size:1.2rem">&mdash;</div>
+        <div class="text-secondary">當天跳空缺口 &ge;3%</div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;font-size:12px">
+        <div style="color:#3fb950"><i class="bi bi-trophy me-1"></i>最強漲幅股 Gainers</div>
+        <div id="chanGainerCount" class="fw-bold" style="color:#3fb950;font-size:1.2rem">&mdash;</div>
+        <div class="text-secondary">前一天最大升幅</div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;font-size:12px">
+        <div style="color:#e3b341"><i class="bi bi-star-fill me-1"></i>趨勢領頭羊 Leaders</div>
+        <div id="chanLeaderCount" class="fw-bold" style="color:#e3b341;font-size:1.2rem">&mdash;</div>
+        <div class="text-secondary">52週高位持續趨升</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-header d-flex align-items-center gap-2">
-    <i class="bi bi-table me-1"></i>掃描結果 Results
-    <span id="resultCount" class="badge bg-secondary ms-auto">—</span>
+    <i class="bi bi-table me-1"></i>篩選結果 Results
+    <span id="resultCount" class="badge bg-secondary ms-auto">&mdash;</span>
     <button class="btn btn-outline-secondary btn-sm" onclick="exportCSV()" id="btnExport" disabled>
-      <i class="bi bi-download me-1"></i>匯出 CSV
+      <i class="bi bi-download me-1"></i>CSV
     </button>
   </div>
   <div class="card-body p-0">
@@ -126,34 +210,26 @@
       <table class="table table-hover mb-0" id="resultTable">
         <thead>
           <tr>
-            <th style="width:40px">#</th>
-            <th>股票 Ticker</th>
-            <th>⭐ 星級 Stars
-              <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip"
-                 title="Martin Luk 7維評分：EMA結構、回調品質、AVWAP匯合、成交量、風險回報、相對強度、市場環境。5★滿分。"></i>
-            </th>
-            <th>ADR%
-              <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip"
-                 title="平均日波動幅 ≥4% 才有足夠空間。"></i>
-            </th>
-            <th>成交額 $Vol</th>
+            <th style="width:35px">#</th>
+            <th>股票</th>
+            <th>星級評分 <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip" title="7維綜合評分 (EMA結構+回調+AVWAP匯合+成交量+R/R+RS+市場) 滿分5星"></i></th>
+            <th>通道</th>
+            <th>形態</th>
+            <th>ADR%</th>
+            <th>日成交額</th>
             <th>3M%</th>
-            <th>6M%</th>
-            <th>形態 Setup
-              <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip"
-                 title="PB_EMA=EMA回調買入, BR_RETEST=突破回測, BREAKOUT=突破, EP=跳空缺口, CHAR_CHG=走勢轉變, PARABOLIC=拋物線"></i>
-            </th>
-            <th>EMA結構</th>
-            <th>回調 PB</th>
+            <th>EMA</th>
+            <th>回調</th>
             <th>AVWAP</th>
-            <th>成交量 Vol</th>
+            <th>量</th>
+            <th>決策樹</th>
           </tr>
         </thead>
         <tbody id="resultBody">
-          <tr><td colspan="12" class="text-center text-secondary py-5">
+          <tr><td colspan="13" class="text-center text-secondary py-5">
             <i class="bi bi-graph-up-arrow" style="font-size:2rem;opacity:0.3;color:#3fb950"></i>
-            <div class="mt-2">點擊「開始掃描」以篩選 Martin Luk 回調買入設置</div>
-            <div style="font-size:12px;margin-top:4px">Click "Run Scan" to find pullback buy setups</div>
+            <div class="mt-2">點擊「開始掃描」以現時／頻道／合併模式搜尋設置</div>
+            <div style="font-size:12px;margin-top:4px">標準 / 頻道掃描 / 合併</div>
           </td></tr>
         </tbody>
       </table>
@@ -161,14 +237,13 @@
   </div>
 </div>
 
-<!-- Info footer -->
 <div class="mt-3 p-3" style="background:#161b22;border:1px solid #30363d;border-radius:8px;font-size:12px;color:#8b949e">
   <i class="bi bi-lightbulb me-1 text-warning"></i>
-  <strong>Martin Luk 掃描說明：</strong>
-  此掃描器基於 Martin Luk 的系統化回調買入法。
-  篩選 EMA(9/21/50/150) 排列良好、回調至 EMA 支撐、AVWAP 匯合、
-  和成交量萎縮的理想回調買入點。
-  <span class="ms-2" style="color:#3fb950">止損上限 2.5%，每筆風險 0.5%，公式化倉位管理。</span>
+  <strong>Martin Luk 三通道掃描：</strong>
+  <strong style="color:#58a6ff">頂部缺口通道</strong> &mdash; 當天跳空缺口+V型反彈+ORH 突破候選 |
+  <strong style="color:#3fb950">最強漲幅股</strong> &mdash; 前一天最大升幅且有EMA回調結構 |
+  <strong style="color:#e3b341">領頭羊</strong> &mdash; 52週高位附近趨升，週線 EMA確認
+  <br>止損規則：最大 2.5%，建議 0.5%風險/R，日線用21 EMA追蹤止損，10R+用50 EMA追蹤止損
 </div>
 {% endblock %}
 
@@ -178,45 +253,102 @@ let _jobId = null;
 let _pollInterval = null;
 let _scanStartTime = null;
 let _lastRows = [];
+let _scannerMode = "standard";
 
-document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el =>
-    new bootstrap.Tooltip(el, { placement: 'top' })
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll("[data-bs-toggle=\"tooltip\"]").forEach(el =>
+    new bootstrap.Tooltip(el, { placement: "top" })
   );
   loadLast();
+  loadSituationalAwareness();
 });
 
-async function startScan() {
-  const minStar = parseFloat(document.getElementById('minStar').value);
-  const topN = parseInt(document.getElementById('topN').value);
+function setScannerMode(mode) {
+  _scannerMode = mode;
+  ["standard","triple","combined"].forEach(m => {
+    document.getElementById("tab-" + m).classList.toggle("active", m === mode);
+  });
+  document.getElementById("tripleChannelPanel").style.display = (mode !== "standard") ? "" : "none";
+}
 
-  document.getElementById('btnScan').disabled = true;
-  document.getElementById('btnCancel').classList.remove('d-none');
-  document.getElementById('progressArea').classList.remove('d-none');
-  document.getElementById('progressBar').style.width = '0%';
-  document.getElementById('progressStage').textContent = '啟動掃描… Starting…';
-  document.getElementById('btnExport').disabled = true;
-  _scanStartTime = Date.now();
-
+async function loadSituationalAwareness() {
   try {
-    const resp = await fetch('/api/ml/scan/run', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ min_star: minStar, top_n: topN })
+    const data = await fetch("/api/market/env").then(r => r.json());
+    if (!data) return;
+    const regime = data.regime || "";
+    const regimeClass = {
+      "CONFIRMED_UPTREND":      "regime-uptrend",
+      "UPTREND_UNDER_PRESSURE": "regime-pressure",
+      "CHOPPY":                 "regime-choppy",
+      "MARKET_IN_CORRECTION":   "regime-correct",
+      "DOWNTREND":              "regime-downtrend"
+    }[regime] || "";
+    const regimeZh = {
+      "CONFIRMED_UPTREND":      "確認上升趨勢",
+      "UPTREND_UNDER_PRESSURE": "趨勢受壓",
+      "CHOPPY":                 "震盪市",
+      "MARKET_IN_CORRECTION":   "市場回調",
+      "DOWNTREND":              "下降趨勢"
+    }[regime] || regime;
+    document.getElementById("saRegime").innerHTML =
+      '<span class="regime-pill ' + regimeClass + '">' + regimeZh + '</span>';
+    const iwmChg = parseFloat(data.iwm_change_pct || 0).toFixed(1);
+    const spyChg = parseFloat(data.spy_change_pct || 0).toFixed(1);
+    const lag    = (parseFloat(data.iwm_change_pct||0) - parseFloat(data.spy_change_pct||0)).toFixed(1);
+    const lagCls = lag >= 0 ? "text-success" : "text-danger";
+    document.getElementById("saIWM").innerHTML =
+      "IWM " + '<span class="' + (parseFloat(iwmChg)>=0?"text-success":"text-danger") + '">' + (iwmChg>0?"+":"") + iwmChg + "%</span>" +
+      " SPY " + '<span class="' + (parseFloat(spyChg)>=0?"text-success":"text-danger") + '">' + (spyChg>0?"+":"") + spyChg + "%</span>" +
+      '<span class="' + lagCls + ' ms-1">' + (lag>=0?"+":"") + lag + "%</span>";
+    const biasMap = {
+      "CONFIRMED_UPTREND":      "全倉 Full Size &#10003;",
+      "UPTREND_UNDER_PRESSURE": "縮半倉 Size",
+      "CHOPPY":                 "縮倉觀望 Size",
+      "MARKET_IN_CORRECTION":   "保留現金 Cash",
+      "DOWNTREND":              "避免做多 No Longs &#10007;"
+    };
+    const biasClsMap = {
+      "CONFIRMED_UPTREND":      "text-success",
+      "UPTREND_UNDER_PRESSURE": "text-warning",
+      "CHOPPY":                 "text-info",
+      "MARKET_IN_CORRECTION":   "text-warning",
+      "DOWNTREND":              "text-danger"
+    };
+    document.getElementById("saBias").innerHTML =
+      '<span class="fw-bold ' + (biasClsMap[regime]||"") + '">' + (biasMap[regime]||"&mdash;") + '</span>';
+    document.getElementById("situationRow").style.display = "";
+  } catch(e) { console.debug("SA load failed", e); }
+}
+
+async function startScan() {
+  const minStar = parseFloat(document.getElementById("minStar").value);
+  const topN    = parseInt(document.getElementById("topN").value);
+  document.getElementById("btnScan").disabled = true;
+  document.getElementById("btnCancel").classList.remove("d-none");
+  document.getElementById("progressArea").classList.remove("d-none");
+  document.getElementById("progressBar").style.width = "0%";
+  document.getElementById("progressStage").textContent = "正在初始化...";
+  document.getElementById("btnExport").disabled = true;
+  _scanStartTime = Date.now();
+  try {
+    const resp = await fetch("/api/ml/scan/run", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ min_star: minStar, top_n: topN, scanner_mode: _scannerMode })
     });
     const data = await resp.json();
     _jobId = data.job_id;
     pollProgress();
   } catch(e) {
-    toast('掃描請求失敗：' + e, false);
+    toast("掃描啟動失敗：" + e, false);
     resetScanUI();
   }
 }
 
 function cancelScan() {
   if (_jobId) {
-    fetch('/api/ml/scan/cancel/' + _jobId, { method: 'POST' });
-    toast('已發送取消請求 Cancel request sent');
+    fetch("/api/ml/scan/cancel/" + _jobId, { method: "POST" });
+    toast("已取消掃描");
     resetScanUI();
   }
 }
@@ -224,145 +356,216 @@ function cancelScan() {
 function pollProgress() {
   _pollInterval = setInterval(async () => {
     try {
-      const r = await fetch('/api/ml/scan/status/' + _jobId).then(x => x.json());
-      const p = await fetch('/api/ml/scan/progress').then(x => x.json()).catch(() => null);
+      const r = await fetch("/api/ml/scan/status/" + _jobId).then(x => x.json());
+      const p = await fetch("/api/ml/scan/progress").then(x => x.json()).catch(() => null);
       if (p) {
-        document.getElementById('progressBar').style.width = (p.pct || 0) + '%';
-        let stageText = p.stage || '';
-        if (p.ticker) stageText += ' — ' + p.ticker;
-        if (p.msg) stageText += ': ' + p.msg;
-        document.getElementById('progressStage').textContent = stageText;
+        document.getElementById("progressBar").style.width = (p.pct || 0) + "%";
+        let stageText = p.stage || "";
+        if (p.ticker) stageText += " > " + p.ticker;
+        if (p.msg)    stageText += ": " + p.msg;
+        document.getElementById("progressStage").textContent = stageText;
       }
-
-      if (r.status === 'done') {
+      if (r.status === "done") {
         clearInterval(_pollInterval);
         const elapsed = ((Date.now() - _scanStartTime) / 1000).toFixed(0);
-        renderResults(r.result || []);
-        document.getElementById('progressBar').style.width = '100%';
-        document.getElementById('progressStage').textContent = `掃描完成 (${elapsed}秒)`;
+        const rows = r.result || [];
+        renderResults(rows);
+        renderThemes(r.themes || null);
+        if (r.triple_summary) renderTripleSummary(r.triple_summary);
+        document.getElementById("progressBar").style.width = "100%";
+        document.getElementById("progressStage").textContent =
+          "掃描完成 (" + elapsed + "s) — 找到 " + rows.length + " 隻符合條件股票";
         resetScanUI(true);
-        toastCompletion(`✓ ML 掃描完成！找到 ${(r.result||[]).length} 個回調買入設置`, true);
-      } else if (r.status === 'error') {
+      } else if (r.status === "error") {
         clearInterval(_pollInterval);
-        toast('掃描錯誤：' + (r.error || ''), false);
+        toast("掃描出錯：" + (r.error || ""), false);
         resetScanUI();
       }
     } catch(e) {}
   }, 2000);
 }
 
-function resetScanUI(done=false) {
-  document.getElementById('btnScan').disabled = false;
-  document.getElementById('btnCancel').classList.add('d-none');
-  if (!done) document.getElementById('progressArea').classList.add('d-none');
+function resetScanUI(done) {
+  done = done || false;
+  document.getElementById("btnScan").disabled = false;
+  document.getElementById("btnCancel").classList.add("d-none");
+  if (!done) document.getElementById("progressArea").classList.add("d-none");
   _jobId = null;
 }
 
 async function loadLast() {
   try {
-    const data = await fetch('/api/ml/scan/last').then(r => r.json());
+    const data = await fetch("/api/ml/scan/last").then(r => r.json());
     if (data.rows && data.rows.length > 0) {
       renderResults(data.rows);
-      toast(`已載入上次掃描結果（${data.rows.length} 個設置）`, true);
+      if (data.themes) renderThemes(data.themes);
+      toast("已載入上次掃描結果 (" + data.rows.length + " 隻)", true);
     }
   } catch(e) {}
 }
 
 function renderResults(rows) {
   _lastRows = rows;
-  const tbody = document.getElementById('resultBody');
+  const tbody = document.getElementById("resultBody");
   if (!rows || rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="12" class="text-center text-secondary py-4">未找到符合條件的股票</td></tr>';
-    document.getElementById('resultCount').textContent = '0';
+    tbody.innerHTML = '<tr><td colspan="13" class="text-center text-secondary py-4">沒有找到符合條件的股票</td></tr>';
+    document.getElementById("resultCount").textContent = "0";
     return;
   }
-
-  const stars4 = rows.filter(r => (r.ml_star || r.stars || 0) >= 4).length;
-  const avgStar = (rows.reduce((s, r) => s + (r.ml_star || r.stars || 0), 0) / rows.length).toFixed(1);
-  document.getElementById('metPassCount').textContent = rows.length;
-  document.getElementById('met4Star').textContent = stars4;
-  document.getElementById('metAvgStar').textContent = avgStar + '★';
-  document.getElementById('metScanTime').textContent = new Date().toLocaleTimeString('zh-HK');
-  document.getElementById('summaryRow').style.display = '';
-  document.getElementById('resultCount').textContent = rows.length;
-  document.getElementById('btnExport').disabled = false;
-
-  tbody.innerHTML = rows.map((r, i) => {
-    const star = parseFloat(r.ml_star ?? r.stars ?? 0);
-    const starClass = star >= 4.5 ? 'star-5' : star >= 4 ? 'star-4' : star >= 3 ? 'star-3' : 'star-low';
-    const starStr = renderStars(star);
-    const setup = (r.setup_type || '').toUpperCase();
-    const setupBadge = setupBadgeHtml(setup);
-    const adr = r.adr != null ? parseFloat(r.adr).toFixed(1) + '%' : '—';
-    const dvol = r.dollar_volume_m != null ? '$' + parseFloat(r.dollar_volume_m).toFixed(1) + 'M' : '—';
-    const m3 = r.mom_3m != null ? fmtMom(r.mom_3m) : '—';
-    const m6 = r.mom_6m != null ? fmtMom(r.mom_6m) : '—';
-    const ema = fmtScore(r.ema_structure);
-    const pb = fmtScore(r.pullback_quality);
-    const avw = fmtScore(r.avwap_score);
-    const vol = fmtScore(r.volume_score);
-
-    return `<tr class="ml-row" onclick="window.location='/ml/analyze?ticker=${r.ticker}'">
-      <td class="text-secondary">${i+1}</td>
-      <td><a href="/ml/analyze?ticker=${r.ticker}" class="fw-bold" style="color:#3fb950" onclick="event.stopPropagation()">${r.ticker}</a></td>
-      <td class="${starClass}">${starStr}</td>
-      <td>${adr}</td>
-      <td>${dvol}</td>
-      <td>${m3}</td>
-      <td class="fw-bold">${m6}</td>
-      <td>${setupBadge}</td>
-      <td>${ema}</td>
-      <td>${pb}</td>
-      <td>${avw}</td>
-      <td>${vol}</td>
-    </tr>`;
-  }).join('');
+  const stars4  = rows.filter(r => (r.ml_star || 0) >= 4).length;
+  const avgStar = (rows.reduce((s, r) => s + (r.ml_star || 0), 0) / rows.length).toFixed(1);
+  document.getElementById("metPassCount").textContent = rows.length;
+  document.getElementById("met4Star").textContent     = stars4;
+  document.getElementById("metAvgStar").textContent   = avgStar + "★";
+  document.getElementById("metScanTime").textContent  = new Date().toLocaleTimeString("zh-HK");
+  document.getElementById("summaryRow").style.display = "";
+  document.getElementById("resultCount").textContent  = rows.length;
+  document.getElementById("btnExport").disabled       = false;
+  tbody.innerHTML = rows.map(function(r, i) {
+    const star      = parseFloat(r.ml_star != null ? r.ml_star : (r.stars != null ? r.stars : 0));
+    const starClass = star >= 4.5 ? "star-5" : star >= 4 ? "star-4" : star >= 3 ? "star-3" : "star-low";
+    const starStr   = renderStars(star);
+    const setup     = (r.setup_type || "").toUpperCase();
+    const adr       = r.adr != null ? parseFloat(r.adr).toFixed(1) + "%" : "&mdash;";
+    const dvol      = r.dollar_volume_m != null ? "$" + parseFloat(r.dollar_volume_m).toFixed(1) + "M" : "&mdash;";
+    const m3        = r.mom_3m != null ? fmtMom(r.mom_3m) : "&mdash;";
+    return "<tr class=\"ml-row\" onclick=\"window.location='/ml/analyze?ticker=" + r.ticker + "'\">"+
+      "<td class=\"text-secondary\">" + (i+1) + "</td>"+
+      "<td><a href=\"/ml/analyze?ticker=" + r.ticker + "\" class=\"fw-bold\" style=\"color:#3fb950\" onclick=\"event.stopPropagation()\">" + r.ticker + "</a></td>"+
+      "<td class=\"" + starClass + "\">" + starStr + "</td>"+
+      "<td>" + channelBadgeHtml(r.channel || "") + "</td>"+
+      "<td>" + setupBadgeHtml(setup) + "</td>"+
+      "<td>" + adr + "</td>"+
+      "<td>" + dvol + "</td>"+
+      "<td>" + m3 + "</td>"+
+      "<td>" + fmtFlag(r.ema_stacked, r.ema_all_rising) + "</td>"+
+      "<td>" + fmtPullback(r.pullback_quality) + "</td>"+
+      "<td>" + fmtConfluence(r.above_avwap_low, r.above_avwap_high) + "</td>"+
+      "<td>" + fmtVol(r.vol_ratio, r.vol_dry_ratio) + "</td>"+
+      "<td>" + dtBadgeHtml(r.decision_tree) + "</td>"+
+      "</tr>";
+  }).join("");
 }
 
 function renderStars(val) {
   const full = Math.floor(val);
   const half = (val - full) >= 0.5;
-  let s = '';
-  for (let i = 0; i < full; i++) s += '★';
-  if (half) s += '½';
-  return s + ` <small>(${val.toFixed(1)})</small>`;
+  let s = "";
+  for (let i = 0; i < full; i++) s += "&#11088;";
+  if (half) s += "&frac12;";
+  return s + " <small>(" + val.toFixed(1) + ")</small>";
+}
+
+function channelBadgeHtml(ch) {
+  const map = {
+    "GAP":    ["badge-gap",    "缺口"],
+    "GAINER": ["badge-gainer", "升幅"],
+    "LEADER": ["badge-leader", "領頭"]
+  };
+  const info = map[(ch||"").toUpperCase()];
+  if (!info) return "<span class=\"text-secondary\" style=\"font-size:11px\">現時</span>";
+  return "<span class=\"badge " + info[0] + "\">" + info[1] + "</span>";
 }
 
 function setupBadgeHtml(code) {
   const map = {
-    'PB_EMA':   ['badge-pb',  'PB',   'EMA回調買入'],
-    'BR_RETEST':['badge-br',  'BR',   '突破回測'],
-    'BREAKOUT': ['badge-bo',  'BO',   '突破'],
-    'EP':       ['badge-ep',  'EP',   '跳空缺口'],
-    'CHAR_CHG': ['badge-chg', 'CHG',  '走勢轉變'],
-    'PARABOLIC':['badge-para','PARA', '拋物線'],
+    "PB_EMA":    ["badge-pb",   "PB"],
+    "BR_RETEST": ["badge-br",   "BR"],
+    "BREAKOUT":  ["badge-bo",   "BO"],
+    "EP":        ["badge-ep",   "EP"],
+    "CHAR_CHG":  ["badge-chg",  "CHG"],
+    "PARABOLIC": ["badge-para", "PARA"]
   };
-  const info = map[code] || ['badge-uk', code || '?', '未分類'];
-  return `<span class="badge ${info[0]}" data-bs-toggle="tooltip" title="${info[2]}">${info[1]}</span>`;
+  const info = map[code] || ["badge-uk", code || "?"];
+  return "<span class=\"badge " + info[0] + "\">" + info[1] + "</span>";
+}
+
+function dtBadgeHtml(dt) {
+  if (!dt) return "<span class=\"text-secondary\" style=\"font-size:11px\">&mdash;</span>";
+  const verdict = dt.verdict || "";
+  const pass    = dt.pass_count != null ? dt.pass_count : "?";
+  const cls     = verdict === "GO" ? "text-success" : verdict === "CAUTION" ? "text-warning" : "text-danger";
+  const icon    = verdict === "GO" ? "&#10003;" : verdict === "CAUTION" ? "&#9651;" : "&#10007;";
+  return "<span class=\"" + cls + " fw-bold\" style=\"font-size:11px\" data-bs-toggle=\"tooltip\" title=\"" + pass + "/9 步通過\">" + icon + " " + pass + "/9</span>";
 }
 
 function fmtMom(v) {
   const n = parseFloat(v);
-  const cls = n >= 30 ? 'text-success fw-bold' : n >= 0 ? 'text-success' : 'text-danger';
-  return `<span class="${cls}">${n >= 0 ? '+' : ''}${n.toFixed(1)}%</span>`;
+  const cls = n >= 30 ? "text-success fw-bold" : n >= 0 ? "text-success" : "text-danger";
+  return "<span class=\"" + cls + "\">" + (n >= 0 ? "+" : "") + n.toFixed(1) + "%</span>";
 }
 
-function fmtScore(v) {
-  if (v == null) return '<span class="text-secondary">—</span>';
-  const n = parseFloat(v);
-  const cls = n > 0 ? 'text-success' : n < 0 ? 'text-danger' : 'text-secondary';
-  return `<span class="${cls}">${n >= 0 ? '+' : ''}${n.toFixed(1)}</span>`;
+function fmtFlag(stacked, allRising) {
+  if (stacked && allRising) return "<span class=\"text-success\">9&gt;21&gt;50&gt;150 &#10003;</span>";
+  if (stacked) return "<span class=\"text-warning\">排列中...</span>";
+  return "<span class=\"text-secondary\">未對齊</span>";
+}
+
+function fmtPullback(q) {
+  if (!q) return "<span class=\"text-secondary\">&mdash;</span>";
+  const clsMap = {"ideal":"text-success","acceptable":"text-warning","broken":"text-danger","too_extended":"text-secondary"};
+  const zhMap  = {"ideal":"理想","acceptable":"可接受","broken":"破位","too_extended":"過深"};
+  return "<span class=\"" + (clsMap[q]||"text-secondary") + "\">" + (zhMap[q]||q) + "</span>";
+}
+
+function fmtConfluence(aboveLow, aboveHigh) {
+  if (aboveLow && aboveHigh) return "<span class=\"text-success\">雙VWAP &#10003;</span>";
+  if (aboveLow) return "<span class=\"text-warning\">低位AVWAP</span>";
+  return "<span class=\"text-secondary\">&mdash;</span>";
+}
+
+function fmtVol(ratio, dryRatio) {
+  if (!ratio) return "<span class=\"text-secondary\">&mdash;</span>";
+  const r = parseFloat(ratio);
+  const d = parseFloat(dryRatio || 1);
+  if (d < 0.5 && r < 1.5) return "<span class=\"text-success\">縮量 &#10003;</span>";
+  if (r >= 1.5) return "<span class=\"text-info\">" + r.toFixed(1) + "x 放量</span>";
+  return "<span class=\"text-secondary\">&mdash;</span>";
+}
+
+function renderThemes(themes) {
+  if (!themes || !themes.themes || !themes.themes.length) {
+    document.getElementById("themePanel").style.display = "none";
+    return;
+  }
+  document.getElementById("themePanel").style.display = "";
+  const stageBadge = {
+    "GROWTH":    "bg-success",
+    "EARLY":     "bg-primary",
+    "MATURE":    "bg-secondary",
+    "EXHAUSTED": "bg-warning text-dark",
+    "DEAD":      "bg-danger"
+  };
+  const html = themes.themes.slice(0, 4).map(function(t) {
+    const bc = stageBadge[t.stage] || "bg-secondary";
+    const leaderHtml = t.leader
+      ? "<div class=\"mt-1 role-leader\" style=\"font-size:12px\"><a href=\"/ml/analyze?ticker=" + t.leader.ticker + "\" style=\"color:inherit;text-decoration:none\">" + t.leader.ticker + "</a> <span class=\"text-secondary ms-1\" style=\"font-size:11px\">&#9733;" + (t.leader.ml_star||0).toFixed(1) + "</span></div>"
+      : "";
+    return "<div class=\"col-md-3\"><div style=\"background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px\">" +
+      "<div class=\"fw-bold\" style=\"font-size:12px;color:#c9d1d9\">" + t.theme + "</div>" +
+      "<div class=\"mt-1\"><span class=\"badge " + bc + "\" style=\"font-size:10px\">" + (t.stage_zh||t.stage) + "</span>" +
+      "<span class=\"text-secondary ms-1\" style=\"font-size:11px\">" + t.n_stocks + "隻</span></div>" +
+      "<div class=\"mt-1\" style=\"font-size:11px;color:#8b949e\">" + (t.recommendation_zh||"") + "</div>" +
+      leaderHtml + "</div></div>";
+  }).join("");
+  document.getElementById("themeContent").innerHTML = html;
+}
+
+function renderTripleSummary(summary) {
+  document.getElementById("chanGapCount").textContent    = summary.GAP    != null ? summary.GAP    : "&mdash;";
+  document.getElementById("chanGainerCount").textContent = summary.GAINER != null ? summary.GAINER : "&mdash;";
+  document.getElementById("chanLeaderCount").textContent = summary.LEADER != null ? summary.LEADER : "&mdash;";
 }
 
 function exportCSV() {
   if (!_lastRows.length) return;
-  const keys = ['ticker','ml_star','setup_type','adr','dollar_volume_m','mom_3m','mom_6m','ema_structure','pullback_quality','avwap_score','volume_score','recommendation'];
-  let csv = keys.join(',') + '\n';
-  csv += _lastRows.map(r => keys.map(k => r[k] ?? '').join(',')).join('\n');
-  const blob = new Blob([csv], {type:'text/csv'});
-  const a = document.createElement('a');
+  const keys = ["ticker","ml_star","channel","setup_type","adr","dollar_volume_m","mom_3m","mom_6m","ema_stacked","pullback_quality","above_avwap_low"];
+  let csv = keys.join(",") + "\n";
+  csv += _lastRows.map(function(r) { return keys.map(function(k) { return r[k] != null ? r[k] : ""; }).join(","); }).join("\n");
+  const blob = new Blob([csv], {type:"text/csv"});
+  const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `ml_scan_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = "ml_scan_" + new Date().toISOString().slice(0,10) + ".csv";
   a.click();
 }
 </script>

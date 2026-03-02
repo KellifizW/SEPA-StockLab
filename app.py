@@ -1362,10 +1362,11 @@ def api_qm_analyze():
 
 @app.route("/api/ml/scan/run", methods=["POST"])
 def api_ml_scan_run():
-    data     = request.get_json(silent=True) or {}
-    min_star = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
-    top_n    = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
-    jid      = _new_job()
+    data         = request.get_json(silent=True) or {}
+    min_star     = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
+    top_n        = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
+    scanner_mode = str(data.get("scanner_mode", "standard")).strip().lower()
+    jid          = _new_job()
     cancel_ev = _get_cancel(jid)
     _ml_job_ids.add(jid)
 
@@ -1386,7 +1387,7 @@ def api_ml_scan_run():
         try:
             from modules.ml_screener import run_ml_scan, set_ml_scan_cancel
             set_ml_scan_cancel(cancel_ev)
-            result = run_ml_scan(min_star=min_star, top_n=top_n)
+            result = run_ml_scan(min_star=min_star, top_n=top_n, scanner_mode=scanner_mode)
             if isinstance(result, tuple):
                 df_passed, df_all = result
             else:
@@ -1419,8 +1420,30 @@ def api_ml_scan_run():
             rows = _to_rows(df_passed)
             all_rows = _to_rows(df_all)
             _save_ml_last_scan(rows, all_rows=all_rows)
+
+            # Theme report and triple channel summary
+            themes = []
+            triple_summary = {}
+            try:
+                from modules.ml_theme_tracker import get_theme_report
+                theme_rpt = get_theme_report(rows if isinstance(rows, list) else [])
+                themes = _clean(theme_rpt.get("themes", []))
+            except Exception as _te:
+                logging.warning("ML theme report failed: %s", _te)
+            if scanner_mode != "standard":
+                channel_counts = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+                for row in (rows if isinstance(rows, list) else []):
+                    ch = str(row.get("channel", "")).upper()
+                    if ch in channel_counts:
+                        channel_counts[ch] += 1
+                triple_summary = channel_counts
+
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
+            # Attach extra data to job dict (status endpoint returns full job dict)
+            with _jobs_lock:
+                _jobs[jid]["themes"] = _sanitize_for_json(themes)
+                _jobs[jid]["triple_summary"] = _sanitize_for_json(triple_summary)
         except Exception as exc:
             logging.exception("ML scan thread error")
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""

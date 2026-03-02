@@ -363,19 +363,37 @@ function renderQmBacktestResults(result) {
   document.getElementById('progressMsg').textContent = 'Backtest completed!';
   
   if (!result.signals || result.signals.length === 0) {
-    // Show message instead of alert, keep log visible
+    // Show message but preserve structure - don't clear innerHTML
     document.getElementById('resultsContainer').style.display = 'block';
-    const noSignalsDiv = document.createElement('div');
-    noSignalsDiv.className = 'alert alert-info mt-3';
-    noSignalsDiv.innerHTML = `
-      <strong>ℹ️ No signals found</strong> for this ticker with current parameters.
-      <br />
-      <small class="text-muted">Check the debug log above to see Stage 2 and Stage 3 results.</small>
-    `;
-    document.getElementById('resultsContainer').innerHTML = '';
-    document.getElementById('resultsContainer').appendChild(noSignalsDiv);
+    
+    // Hide all the normal content sections
+    document.querySelectorAll('#resultsContainer > .row, #resultsContainer > .card').forEach(el => {
+      el.style.display = 'none';
+    });
+    
+    // Show info alert at top
+    let infoDiv = document.getElementById('noSignalsAlert');
+    if (!infoDiv) {
+      infoDiv = document.createElement('div');
+      infoDiv.id = 'noSignalsAlert';
+      infoDiv.className = 'alert alert-info mt-3';
+      infoDiv.innerHTML = `
+        <strong>ℹ️ No signals found</strong> for this ticker with current parameters.
+        <br />
+        <small class="text-muted">Check the debug log above to see Stage 2 and Stage 3 results.</small>
+      `;
+      document.getElementById('resultsContainer').insertBefore(infoDiv, document.getElementById('resultsContainer').firstChild);
+    }
+    infoDiv.style.display = 'block';
     return;
   }
+  
+  // Hide no-signals alert if it exists, show normal sections
+  const noSignalsAlert = document.getElementById('noSignalsAlert');
+  if (noSignalsAlert) noSignalsAlert.style.display = 'none';
+  document.querySelectorAll('#resultsContainer > .row, #resultsContainer > .card').forEach(el => {
+    el.style.display = '';
+  });
 
   document.getElementById('resultsContainer').style.display = 'block';
 
@@ -385,25 +403,32 @@ function renderQmBacktestResults(result) {
   let verdictIcon = 'bi-x-circle';
   let verdictText = 'Verdict: ❌ Not Recommended';
 
-  if (summary.win_rate >= 0.50 && summary.avg_realized_gain >= 10) {
-    verdictClass = 'alert-success';
-    verdictIcon = 'bi-check-circle';
-    verdictText = 'Verdict: ✅ Looks Promising';
-  } else if (summary.win_rate >= 0.40 && summary.profit_factor >= 1) {
-    verdictClass = 'alert-warning';
-    verdictIcon = 'bi-exclamation-circle';
-    verdictText = 'Verdict: ⚠️ Moderate';
+  if (summary && summary.win_rate !== null && summary.avg_realized_gain !== null) {
+    if (summary.win_rate >= 0.50 && summary.avg_realized_gain >= 10) {
+      verdictClass = 'alert-success';
+      verdictIcon = 'bi-check-circle';
+      verdictText = 'Verdict: ✅ Looks Promising';
+    } else if (summary.win_rate >= 0.40 && summary.profit_factor !== null && summary.profit_factor >= 1) {
+      verdictClass = 'alert-warning';
+      verdictIcon = 'bi-exclamation-circle';
+      verdictText = 'Verdict: ⚠️ Moderate';
+    }
   }
 
-  document.getElementById('verdictBanner').className = 'alert ' + verdictClass + ' mb-4';
-  document.getElementById('verdictIcon').className = 'bi ' + verdictIcon + ' me-2';
-  document.getElementById('verdictText').textContent = verdictText;
+  const verdictBannerEl = document.getElementById('verdictBanner');
+  const verdictIconEl = document.getElementById('verdictIcon');
+  const verdictTextEl = document.getElementById('verdictText');
+  
+  if (verdictBannerEl) verdictBannerEl.className = 'alert ' + verdictClass + ' mb-4';
+  if (verdictIconEl) verdictIconEl.className = 'bi ' + verdictIcon + ' me-2';
+  if (verdictTextEl) verdictTextEl.textContent = verdictText;
 
   document.getElementById('summaryTotalSignals').textContent = summary.total_signals || 0;
-  document.getElementById('summaryWinRate').textContent = (summary.win_rate * 100).toFixed(1) + '%';
-  document.getElementById('summaryAvgGain').textContent = summary.avg_realized_gain.toFixed(2) + '%';
-  document.getElementById('summaryProfitFactor').textContent = summary.profit_factor.toFixed(2);
-  document.getElementById('summaryBestWorst').textContent = summary.best_gain.toFixed(2) + '% / ' + summary.worst_gain.toFixed(2) + '%';
+  document.getElementById('summaryWinRate').textContent = (summary.win_rate !== null && summary.win_rate !== undefined) ? (summary.win_rate * 100).toFixed(1) + '%' : 'N/A';
+  document.getElementById('summaryAvgGain').textContent = (summary.avg_realized_gain !== null && summary.avg_realized_gain !== undefined) ? summary.avg_realized_gain.toFixed(2) + '%' : 'N/A';
+  document.getElementById('summaryProfitFactor').textContent = (summary.profit_factor !== null && summary.profit_factor !== undefined) ? summary.profit_factor.toFixed(2) : 'N/A';
+  const bestWorst = (summary.best_gain !== null && summary.best_gain !== undefined && summary.worst_gain !== null && summary.worst_gain !== undefined) ? summary.best_gain.toFixed(2) + '% / ' + summary.worst_gain.toFixed(2) + '%' : 'N/A';
+  document.getElementById('summaryBestWorst').textContent = bestWorst;
   document.getElementById('summaryBreakoutsConfirmed').textContent = summary.breakouts_confirmed || 0;
 
   renderSetupTypeTable(summary.by_setup_type || {});
@@ -423,11 +448,13 @@ function renderSetupTypeTable(bySetupType) {
     if (!data) continue;
     hasData = true;
     const row = document.createElement('tr');
+    const setupWinRate = (data.win_rate !== null && data.win_rate !== undefined) ? (data.win_rate * 100).toFixed(1) + '%' : 'N/A';
+    const setupAvgGain = (data.avg_gain !== null && data.avg_gain !== undefined) ? data.avg_gain.toFixed(2) + '%' : 'N/A';
     row.innerHTML = `
       <td>${setupType}</td>
       <td class="text-end">${data.count}</td>
-      <td class="text-end">${(data.win_rate * 100).toFixed(1)}%</td>
-      <td class="text-end">${data.avg_gain.toFixed(2)}%</td>
+      <td class="text-end">${setupWinRate}</td>
+      <td class="text-end">${setupAvgGain}</td>
     `;
     tbody.appendChild(row);
   }
@@ -449,11 +476,13 @@ function renderStarRatingTable(byStarRating) {
     if (!data) continue;
     hasData = true;
     const row = document.createElement('tr');
+    const starWinRate = (data.win_rate !== null && data.win_rate !== undefined) ? (data.win_rate * 100).toFixed(1) + '%' : 'N/A';
+    const starAvgGain = (data.avg_gain !== null && data.avg_gain !== undefined) ? data.avg_gain.toFixed(2) + '%' : 'N/A';
     row.innerHTML = `
       <td>${starLevel}★</td>
       <td class="text-end">${data.count}</td>
-      <td class="text-end">${(data.win_rate * 100).toFixed(1)}%</td>
-      <td class="text-end">${data.avg_gain.toFixed(2)}%</td>
+      <td class="text-end">${starWinRate}</td>
+      <td class="text-end">${starAvgGain}</td>
     `;
     tbody.appendChild(row);
   }
@@ -470,22 +499,34 @@ function renderSignalTable(signals) {
   for (const sig of signals) {
     const outcomeClass = getOutcomeClass(sig.outcome);
     const row = document.createElement('tr');
+    
+    // Format individual fields with null checks
+    const starRating = (sig.star_rating !== null && sig.star_rating !== undefined) ? sig.star_rating.toFixed(1) : 'N/A';
+    const signalClose = (sig.signal_close !== null && sig.signal_close !== undefined) ? '$' + sig.signal_close.toFixed(2) : '$N/A';
+    const breakoutLevel = (sig.breakout_level !== null && sig.breakout_level !== undefined) ? '$' + sig.breakout_level.toFixed(2) : '$N/A';
+    const breakoutPrice = (sig.breakout_price !== null && sig.breakout_price !== undefined) ? '$' + sig.breakout_price.toFixed(2) : 'N/A';
+    const maxGain = (sig.max_gain !== null && sig.max_gain !== undefined) ? sig.max_gain.toFixed(2) + '%' : 'N/A';
+    const realizedGain = (sig.realized_gain !== null && sig.realized_gain !== undefined) ? sig.realized_gain.toFixed(2) + '%' : 'N/A';
+    const horizonGain10d = (sig.horizon_10d_gain !== null && sig.horizon_10d_gain !== undefined) ? sig.horizon_10d_gain.toFixed(2) + '%' : 'N/A';
+    const horizonGain20d = (sig.horizon_20d_gain !== null && sig.horizon_20d_gain !== undefined) ? sig.horizon_20d_gain.toFixed(2) + '%' : 'N/A';
+    const horizonGain60d = (sig.horizon_60d_gain !== null && sig.horizon_60d_gain !== undefined) ? sig.horizon_60d_gain.toFixed(2) + '%' : 'N/A';
+    
     row.innerHTML = `
       <td>${sig.signal_date}</td>
-      <td class="text-end">${sig.star_rating.toFixed(1)}</td>
+      <td class="text-end">${starRating}</td>
       <td><span class="badge bg-secondary">${sig.setup_type}</span></td>
-      <td class="text-end">$${sig.signal_close.toFixed(2)}</td>
-      <td class="text-end">$${sig.breakout_level.toFixed(2)}</td>
+      <td class="text-end">${signalClose}</td>
+      <td class="text-end">${breakoutLevel}</td>
       <td>${sig.breakout_date || 'N/A'}</td>
-      <td class="text-end">${sig.breakout_price ? '$' + sig.breakout_price.toFixed(2) : 'N/A'}</td>
+      <td class="text-end">${breakoutPrice}</td>
       <td class="text-end">${sig.holding_days || 0}</td>
       <td>${sig.exit_date || 'N/A'}</td>
       <td>${sig.exit_reason || 'N/A'}</td>
-      <td class="text-end">${sig.horizon_10d_gain !== null ? sig.horizon_10d_gain.toFixed(2) + '%' : 'N/A'}</td>
-      <td class="text-end">${sig.horizon_20d_gain !== null ? sig.horizon_20d_gain.toFixed(2) + '%' : 'N/A'}</td>
-      <td class="text-end">${sig.horizon_60d_gain !== null ? sig.horizon_60d_gain.toFixed(2) + '%' : 'N/A'}</td>
-      <td class="text-end">${sig.max_gain.toFixed(2)}%</td>
-      <td class="text-end fw-bold">${sig.realized_gain.toFixed(2)}%</td>
+      <td class="text-end">${horizonGain10d}</td>
+      <td class="text-end">${horizonGain20d}</td>
+      <td class="text-end">${horizonGain60d}</td>
+      <td class="text-end">${maxGain}</td>
+      <td class="text-end fw-bold">${realizedGain}</td>
       <td><span class="badge ${outcomeClass}">${sig.outcome}</span></td>
     `;
     tbody.appendChild(row);

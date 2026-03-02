@@ -111,6 +111,33 @@ def _score_dim_a(df: pd.DataFrame) -> dict:
 
     detail["ema_alignment"] = ema
     detail["slope_21"] = slope_21
+
+    # ── Weekly chart check (Chapter 12 — "trust weekly over daily") ────────
+    # Fetch weekly data and apply compute_weekly_trend()
+    try:
+        from modules.ml_setup_detector import compute_weekly_trend
+        # Resample daily df to weekly
+        df_weekly = df.resample("W").agg({
+            "Open":   "first",
+            "High":   "max",
+            "Low":    "min",
+            "Close":  "last",
+            "Volume": "sum",
+        }).dropna()
+        wt = compute_weekly_trend(df_weekly)
+        detail["weekly_trend"] = wt
+        adj += wt["adjustment"]
+        if wt.get("is_veto"):
+            detail["weekly_veto"] = True
+            # Propagate veto status to caller via is_veto flag
+            adj = max(-2.0, min(adj, 2.0))
+            detail["adjustment"] = round(adj, 2)
+            return {"score": round(adj, 2), "detail": detail,
+                    "is_veto": True, "veto_reason": "WEEKLY_CONFLICT"}
+    except Exception as exc:
+        logger.debug("[ML DimA] Weekly trend check skipped: %s", exc)
+        detail["weekly_trend"] = {"weekly_trend": "unknown", "detail_zh": "週線計算跳過"}
+
     adj = max(-2.0, min(adj, 2.0))
     detail["adjustment"] = round(adj, 2)
     return {"score": round(adj, 2), "detail": detail, "is_veto": False}
@@ -168,6 +195,15 @@ def _score_dim_b(df: pd.DataFrame) -> dict:
         adj -= 0.3
         detail["depth"] = f"深度回調 {depth:.1f}% — 注意"
 
+    # ── Higher-low structure (Chapter 5 — ascending lows = sellers exhausting) ──
+    try:
+        from modules.ml_setup_detector import detect_higher_lows
+        hl_data = detect_higher_lows(df)
+        detail["higher_lows"] = hl_data
+        adj += hl_data.get("adjustment", 0.0)
+    except Exception as exc:
+        logger.debug("[ML DimB] Higher-low detection failed: %s", exc)
+
     detail["pullback"] = pb
     adj = max(-2.0, min(adj, 2.0))
     detail["adjustment"] = round(adj, 2)
@@ -180,15 +216,17 @@ def _score_dim_b(df: pd.DataFrame) -> dict:
 
 def _score_dim_c(df: pd.DataFrame) -> dict:
     """
-    C: AVWAP Confluence scoring.
-    Martin Luk's core indicator: AVWAP from swing high (overhead supply)
-    and swing low (dynamic support).
+    C: Support Confluence scoring (expanded from AVWAP-only).
+    Martin Luk (Chapter 5, 6): "Multiple support confluence is the MOST
+    IMPORTANT factor for a high-probability pullback entry."
 
-    Bullish: Price above both AVWAPs; Reclaiming supply AVWAP.
+    Now counts ALL support levels (EMA + AVWAP + Prior High + Gap Fill)
+    converging at the same price zone. 3+ = high-probability entry bonus.
 
-    Adjustment range: [-1.5, +1.5]
+    Adjustment range: [-2.0, +2.5]  (expanded from original [-1.5, +1.5])
     """
     from modules.data_pipeline import get_avwap_from_swing_high, get_avwap_from_swing_low
+    from modules.ml_setup_detector import count_support_confluence
 
     avwap_h = get_avwap_from_swing_high(df)
     avwap_l = get_avwap_from_swing_low(df)
@@ -196,7 +234,8 @@ def _score_dim_c(df: pd.DataFrame) -> dict:
     adj = 0.0
     detail = {}
 
-    above_supply = avwap_h.get("above_avwap", False)
+    # ── Original AVWAP directional check (retained) ──────────────────────
+    above_supply  = avwap_h.get("above_avwap", False)
     above_support = avwap_l.get("above_avwap", False)
 
     if above_supply and above_support:
@@ -212,17 +251,33 @@ def _score_dim_c(df: pd.DataFrame) -> dict:
         adj -= 0.3
         detail["avwap_status"] = "低於兩條 AVWAP"
 
-    # Proximity to AVWAP (near = potential bounce point)
-    h_pct = avwap_h.get("price_vs_avwap_pct")
+    # AVWAP proximity bonus (near support = potential bounce)
     l_pct = avwap_l.get("price_vs_avwap_pct")
     if l_pct is not None and 0 <= l_pct <= 2.0:
         adj += 0.3
         detail["support_proximity"] = f"接近支撐 AVWAP ({l_pct:.1f}%) — 潛在反彈點"
 
-    detail["avwap_high"] = {k: v for k, v in avwap_h.items() if k != "avwap_series"}
-    detail["avwap_low"] = {k: v for k, v in avwap_l.items() if k != "avwap_series"}
+    # Break-and-Retest bonus (Martin's favorite AVWAP pattern)
+    # Price was below AVWAP supply, broke above, now testing from above
+    h_pct = avwap_h.get("price_vs_avwap_pct")
+    if h_pct is not None and above_supply and 0 <= h_pct <= 3.0:
+        adj += 0.4
+        detail["break_retest"] = f"Break & Retest 形態 — 前供給 AVWAP 轉支撐 (+{h_pct:.1f}%) ✓"
 
-    adj = max(-1.5, min(adj, 1.5))
+    # ── NEW: Full support confluence count ───────────────────────────────
+    try:
+        confluence = count_support_confluence(df)
+        detail["confluence"] = confluence
+        adj += confluence.get("adjustment", 0.0)
+        detail["confluence_count"] = confluence.get("count", 0)
+        detail["confluence_levels"] = confluence.get("levels", [])
+    except Exception as exc:
+        logger.debug("[ML DimC] Confluence count failed: %s", exc)
+
+    detail["avwap_high"] = {k: v for k, v in avwap_h.items() if k != "avwap_series"}
+    detail["avwap_low"]  = {k: v for k, v in avwap_l.items() if k != "avwap_series"}
+
+    adj = max(-2.0, min(adj, 2.5))
     detail["adjustment"] = round(adj, 2)
     return {"score": round(adj, 2), "detail": detail, "is_veto": False}
 
@@ -343,6 +398,20 @@ def _score_dim_e(df: pd.DataFrame) -> dict:
         detail["rr_3r_target"] = f"3R 目標: +{potential_gain:.1f}%"
     else:
         detail["rr_3r_target"] = "N/A"
+
+    # ── LOD Chase Check (Chapter 4, 9 — ">3% from LOD → SKIP") ──────────
+    # Using intraday low as proxy for LOD when only daily data available
+    try:
+        from modules.ml_setup_detector import check_chase_lod
+        lod = float(df["Low"].iloc[-1])
+        chase_data = check_chase_lod(close, lod)
+        detail["chase_check"] = chase_data
+        if chase_data.get("is_chase") and getattr(C, "ML_CHASE_WARNING_ENABLED", True):
+            chase_penalty = getattr(C, "ML_CHASE_DIM_E_PENALTY", -0.8)
+            adj += chase_penalty
+            detail["chase_warning"] = chase_data["warning"]
+    except Exception as exc:
+        logger.debug("[ML DimE] Chase check failed: %s", exc)
 
     detail["stop_pct"] = round(stop_pct, 2)
     adj = max(-2.0, min(adj, 2.0))
@@ -468,9 +537,19 @@ def compute_star_rating(dim_scores: dict[str, dict],
         "G": getattr(C, "ML_DIM_G_WEIGHT", 0.05),
     }
 
-    # Check vetoes
-    risk_veto = dim_scores.get("E", {}).get("is_veto", False)
-    mkt_veto = dim_scores.get("G", {}).get("is_veto", False)
+    # Check vetoes (including new weekly veto from Dim A)
+    weekly_veto = dim_scores.get("A", {}).get("is_veto", False)
+    risk_veto   = dim_scores.get("E", {}).get("is_veto", False)
+    mkt_veto    = dim_scores.get("G", {}).get("is_veto", False)
+
+    if weekly_veto and getattr(C, "ML_WEEKLY_EMA_CONFLICT_HARD", True):
+        return {
+            "stars": 0.0, "capped_stars": 0.0,
+            "recommendation": "PASS",
+            "recommendation_zh": "放棄 — 週線趨勢衝突 (日線與週線背道)",
+            "position_pct": 0.0, "shares": 0,
+            "veto": "WEEKLY",
+        }
 
     if risk_veto:
         return {
@@ -689,9 +768,421 @@ def analyze_ml(ticker: str,
         "mom_6m":            mom.get("6m"),
     }
 
+    # ── NEW Phase 1: Pullback Quality Scorecard ─────────────────────────────
+    try:
+        result["pullback_scorecard"] = compute_pullback_scorecard(result)
+    except Exception as exc:
+        logger.debug("[ML Analyze] Pullback scorecard failed: %s", exc)
+        result["pullback_scorecard"] = None
+
+    # ── NEW Phase 1: 9-Step Entry Decision Tree ─────────────────────────────
+    if getattr(C, "ML_DTQ_ENABLED", True):
+        try:
+            result["decision_tree"] = evaluate_entry_decision_tree(result)
+        except Exception as exc:
+            logger.debug("[ML Analyze] Decision tree failed: %s", exc)
+            result["decision_tree"] = None
+
+    # ── NEW Phase 1: Short Research Marker ──────────────────────────────────
+    if getattr(C, "ML_SHORT_RESEARCH_ENABLED", True):
+        try:
+            mkt_data = None
+            try:
+                from modules.market_env import assess as mkt_assess
+                mkt_data = mkt_assess(verbose=False)
+            except Exception:
+                pass
+            result["short_research"] = _evaluate_short_research(df, market_data=mkt_data)
+        except Exception as exc:
+            logger.debug("[ML Analyze] Short research failed: %s", exc)
+            result["short_research"] = None
+
     if print_report:
         _print_report(result)
 
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pullback Buy Quality Scorecard (Appendix C — Martin Luk 10-point system)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_pullback_scorecard(analysis_data: dict) -> dict:
+    """
+    Evaluate Martin Luk's Appendix C Pullback Buy Quality Scorecard.
+
+    10-point holistic quality assessment:
+      (1) EMA direction           — 0-2 pts
+      (2) Support confluence      — 0-2 pts
+      (3) Base structure          — 0-1 pt
+      (4) Weekly confirmation     — 0-1 pt
+      (5) Break and retest        — 0-1 pt
+      (6) First pullback in base  — 0-1 pt
+      (7) AVWAP proximity         — 0-1 pt
+      (8) Higher lows             — 0-1 pt
+
+    Scoring: 8-10 = high quality (full size), 6-7 = reduce size, ≤5 = skip.
+
+    Args:
+        analysis_data: Result dict from analyze_ml()
+
+    Returns:
+        dict with 'score', 'max_score', 'grade', 'items', 'size_multiplier'
+    """
+    dim_scores = analysis_data.get("dim_scores", {})
+    setup_type = analysis_data.get("setup_type", {})
+
+    items = []
+    total = 0
+
+    # ── (1) EMA Direction — 0-2 pts ───────────────────────────────────────
+    dim_a = dim_scores.get("A", {}).get("detail", {})
+    ema_align = dim_a.get("ema_alignment", {})
+    if ema_align.get("all_stacked") and ema_align.get("all_rising"):
+        score = 2; desc = "9>21>50>150 EMA 完美排列上升 ✓✓"
+    elif ema_align.get("all_stacked") or ema_align.get("ema_21_rising"):
+        score = 1; desc = "EMA 部分排列/上升 ✓"
+    else:
+        score = 0; desc = "EMA 方向未明或下降"
+    items.append({"item": "EMA方向", "score": score, "max": 2, "desc": desc})
+    total += score
+
+    # ── (2) Support Confluence — 0-2 pts ──────────────────────────────────
+    dim_c = dim_scores.get("C", {}).get("detail", {})
+    confluence_count = dim_c.get("confluence_count", 0) or dim_c.get("confluence", {}).get("count", 0)
+    if confluence_count >= 3:
+        score = 2; desc = f"{confluence_count} 個支撐層級匯聚 ✓✓ (高概率)"
+    elif confluence_count >= 2:
+        score = 1; desc = f"{confluence_count} 個支撐層級匯聚 ✓"
+    else:
+        score = 0; desc = "支撐匯聚不足"
+    items.append({"item": "支撐匯聚", "score": score, "max": 2, "desc": desc})
+    total += score
+
+    # ── (3) Base structure — 0-1 pt ───────────────────────────────────────
+    dim_b = dim_scores.get("B", {}).get("detail", {})
+    pb = dim_b.get("pullback", {})
+    pb_quality = pb.get("pullback_quality", "unknown")
+    if pb_quality == "ideal":
+        score = 1; desc = "理想底部結構 (EMA回調) ✓"
+    elif pb_quality == "acceptable":
+        score = 0; desc = "可接受底部結構"
+    else:
+        score = 0; desc = "底部結構偏差"
+    items.append({"item": "底部結構", "score": score, "max": 1, "desc": desc})
+    total += score
+
+    # ── (4) Weekly chart confirmation — 0-1 pt ─────────────────────────────
+    weekly_data = dim_a.get("weekly_trend", {})
+    weekly_trend = weekly_data.get("weekly_trend", "unknown")
+    if weekly_trend == "uptrend":
+        score = 1; desc = "週線確認上升趨勢 ✓"
+    elif weekly_trend in ("uptrend_weakening", "neutral"):
+        score = 0; desc = "週線趨勢不明確"
+    else:
+        score = 0; desc = "週線趨勢衝突 / 下降"
+    items.append({"item": "週線確認", "score": score, "max": 1, "desc": desc})
+    total += score
+
+    # ── (5) Break and Retest pattern — 0-1 pt ─────────────────────────────
+    has_br_retest = False
+    for setup in (setup_type.get("all_setups") or []):
+        if isinstance(setup, (list, tuple)) and setup[0] == "BR_RETEST":
+            has_br_retest = True
+            break
+    score = 1 if has_br_retest else 0
+    items.append({"item": "Break & Retest", "score": score, "max": 1,
+                  "desc": "Break & Retest 形態 ✓" if has_br_retest else "非 BR 形態"})
+    total += score
+
+    # ── (6) First pullback in base — 0-1 pt ───────────────────────────────
+    # Proxy: setup detected as PB_EMA with high confidence
+    primary = setup_type.get("primary_setup", "UNKNOWN")
+    conf = setup_type.get("confidence", 0)
+    first_pb = primary == "PB_EMA" and conf >= 0.65
+    score = 1 if first_pb else 0
+    items.append({"item": "底部首次回調", "score": score, "max": 1,
+                  "desc": "底部首次回調 (PB_EMA 高信心) ✓" if first_pb else "非底部首次回調"})
+    total += score
+
+    # ── (7) AVWAP proximity — 0-1 pt ──────────────────────────────────────
+    avwap_low = dim_c.get("avwap_low", {})
+    l_pct = avwap_low.get("price_vs_avwap_pct")
+    near_avwap = l_pct is not None and 0 <= l_pct <= 3.0
+    score = 1 if near_avwap else 0
+    items.append({"item": "AVWAP接近度", "score": score, "max": 1,
+                  "desc": f"接近支撐 AVWAP ({l_pct:.1f}%) ✓" if near_avwap else "距 AVWAP 較遠"})
+    total += score
+
+    # ── (8) Higher lows — 0-1 pt ──────────────────────────────────────────
+    hl_data = dim_b.get("higher_lows", {})
+    has_hl = hl_data.get("has_higher_lows", False)
+    score = 1 if has_hl else 0
+    items.append({"item": "遞升低點", "score": score, "max": 1,
+                  "desc": f"{hl_data.get('count', 0)} 個遞升低點 ✓" if has_hl else "無遞升低點結構"})
+    total += score
+
+    max_score = sum(i["max"] for i in items)
+    pct = total / max_score * 100.0 if max_score > 0 else 0.0
+
+    high_thresh = getattr(C, "ML_SCORECARD_HIGH_QUALITY", 8)
+    med_thresh  = getattr(C, "ML_SCORECARD_MED_QUALITY", 6)
+
+    if total >= high_thresh:
+        grade = "A"; size_mult = 1.0;  decision = "全倉 Full Size"
+    elif total >= med_thresh:
+        grade = "B"; size_mult = 0.7;  decision = "七成倉 Reduced (0.7×)"
+    else:
+        grade = "C"; size_mult = 0.0;  decision = "跳過 Skip"
+
+    return {
+        "score":          total,
+        "max_score":      max_score,
+        "pct":            round(pct, 1),
+        "grade":          grade,
+        "items":          items,
+        "size_multiplier": size_mult,
+        "decision":       decision,
+        "summary_zh":     f"回調品質計分卡: {total}/{max_score} ({grade}級) — {decision}",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9-Step Entry Decision Tree (Chapter 9 flowchart)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def evaluate_entry_decision_tree(analysis_data: dict) -> dict:
+    """
+    Evaluate Martin Luk's 9-step entry decision tree (Chapter 9).
+
+    9 questions:
+      Q1: Market environment supportive?
+      Q2: Stock in uptrend (EMA structure)?
+      Q3: Sufficient support confluence?
+      Q4: Higher lows present?
+      Q5: Is this the first pullback in the base?
+      Q6: Break and retest pattern?
+      Q7: Flush→V-recovery opening behavior?
+      Q8: Stop width acceptable (< 2.5%)?
+      Q9: Price NOT already up > 3% from LOD (no chase)?
+
+    Returns:
+        dict with 'signal' (GO/CAUTION/NO-GO), 'pass_count',
+                  'questions', 'summary_zh'
+    """
+    dim_scores = analysis_data.get("dim_scores", {})
+    setup_type = analysis_data.get("setup_type", {})
+    trade_plan = analysis_data.get("trade_plan", {})
+
+    questions = []
+
+    def q(num, label, passed, detail=""):
+        questions.append({"q": num, "label": label,
+                           "passed": passed, "detail": detail})
+
+    # Q1: Market environment
+    dim_g = dim_scores.get("G", {}).get("detail", {})
+    regime = dim_g.get("regime", "UNKNOWN")
+    q(1, "市場環境支持?",
+      regime in ("CONFIRMED_UPTREND", "BULL_CONFIRMED", "UPTREND_UNDER_PRESSURE"),
+      f"市場狀態: {regime}")
+
+    # Q2: Stock in uptrend
+    dim_a = dim_scores.get("A", {}).get("detail", {})
+    ema_align = dim_a.get("ema_alignment", {})
+    q(2, "股票處於上升趨勢?",
+      ema_align.get("all_stacked") or ema_align.get("ema_21_rising", False),
+      "EMA堆疊: " + ("%s" % ema_align.get("all_stacked", "N/A")))
+
+    # Q3: Support confluence ≥ 2
+    dim_c = dim_scores.get("C", {}).get("detail", {})
+    confluence_count = dim_c.get("confluence_count", 0) or 0
+    q(3, "支撐匯聚充足 (≥2)?",
+      confluence_count >= getattr(C, "ML_CONFLUENCE_MIN_SETUP", 2),
+      f"支撐層級: {confluence_count} 個")
+
+    # Q4: Higher lows
+    dim_b = dim_scores.get("B", {}).get("detail", {})
+    hl_data = dim_b.get("higher_lows", {})
+    q(4, "有遞升低點?",
+      hl_data.get("has_higher_lows", False),
+      hl_data.get("detail_zh", "未偵測"))
+
+    # Q5: First pullback in base
+    primary = setup_type.get("primary_setup", "UNKNOWN")
+    conf    = setup_type.get("confidence", 0)
+    q(5, "底部首次回調?",
+      primary == "PB_EMA" and conf >= 0.55,
+      f"形態: {primary} (信心: {conf:.0%})")
+
+    # Q6: Break and Retest
+    has_br = any(
+        (isinstance(s, (list, tuple)) and s[0] == "BR_RETEST")
+        for s in (setup_type.get("all_setups") or [])
+    )
+    q(6, "Break & Retest 形態?", has_br, "形態清單: " + str([s[0] for s in (setup_type.get("all_setups") or [])]))
+
+    # Q7: Opening behavior (flush→V-recovery) — uses intraday data if available
+    intraday_signals = analysis_data.get("intraday_signals", {})
+    flush_v = intraday_signals.get("flush_v_recovery", {})
+    orh    = intraday_signals.get("orh_breakout", {})
+    has_intraday_signal = (
+        flush_v.get("detected", False)
+        or orh.get("is_above_orh", False)
+        or orh.get("signal") == "AT_ORH"
+    )
+    q(7, "開盤行為: Flush→V反轉 / ORH突破?",
+      has_intraday_signal,
+      flush_v.get("detail_zh", "無日內信號數據 (盯盤模式可用)"))
+
+    # Q8: Stop width < 2.5%
+    stop_pct = dim_scores.get("E", {}).get("detail", {}).get("stop_pct", 99)
+    max_stop = getattr(C, "ML_MAX_STOP_LOSS_PCT", 2.5)
+    q(8, f"止損距離可接受 (< {max_stop}%)?",
+      stop_pct <= max_stop,
+      f"止損距離: {stop_pct:.1f}%")
+
+    # Q9: Not chasing (< 3% above LOD)
+    chase_data = dim_scores.get("E", {}).get("detail", {}).get("chase_check", {})
+    is_chase   = chase_data.get("is_chase", False)
+    pct_above  = chase_data.get("pct_above_lod", 0) or 0
+    q(9, "未追價 (距當日低 < 3%)?",
+      not is_chase,
+      f"距當日低: {pct_above:.1f}%")
+
+    # Signal assessment
+    pass_count = sum(1 for item in questions if item["passed"])
+    go_min     = getattr(C, "ML_DTQ_GO_MIN_PASS",      7)
+    caution_min = getattr(C, "ML_DTQ_CAUTION_MIN_PASS", 5)
+
+    if pass_count >= go_min:
+        signal = "GO";      signal_zh = "✅ 入場 — 條件達標"
+    elif pass_count >= caution_min:
+        signal = "CAUTION"; signal_zh = "⚠️  謹慎 — 部分條件未達"
+    else:
+        signal = "NO-GO";   signal_zh = "⛔ 不入場 — 條件不足"
+
+    failed = [item["label"] for item in questions if not item["passed"]]
+
+    return {
+        "signal":      signal,
+        "signal_zh":   signal_zh,
+        "pass_count":  pass_count,
+        "total":       len(questions),
+        "questions":   questions,
+        "failed_items": failed,
+        "summary_zh": f"9步決策樹: {pass_count}/9 通過 → {signal_zh}",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Short Research Marker (Chapter 16 — research only, not trading signal)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _evaluate_short_research(df: pd.DataFrame, market_data: dict = None) -> dict:
+    """
+    Detect Picture Perfect Short Setup characteristics for RESEARCH ONLY.
+
+    Martin Luk (Chapter 16): Does NOT generate trading signals.
+    Only flags when a stock exhibits the short setup pattern, to be used
+    as a market health indicator.
+
+    Picture Perfect Short pre-conditions:
+      - QQQ below 50 EMA (or market in correction/downtrend)
+      - IWM lagging QQQ significantly
+      - Stock: first break below 50 EMA → rally to declining 9/21 EMA
+        → rejection at AVWAP resistance → 5-min breakdown trigger
+
+    Returns:
+        dict with 'has_short_signal', 'prerequisites_met', 'setup_detail',
+                  'research_note' (never a trade recommendation)
+    """
+    result = {
+        "has_short_signal":       False,
+        "prerequisites_met":      False,
+        "missing_prerequisites":  [],
+        "setup_detail":           {},
+        "research_note": (
+            "📊 做空研究 (Martin Luk Chapter 16) — 僅供市場健康參考，非交易建議"
+        ),
+    }
+
+    if not getattr(C, "ML_SHORT_RESEARCH_ENABLED", True):
+        return result
+
+    if df is None or df.empty or len(df) < 60:
+        return result
+
+    missing = []
+
+    # Prerequisite 1: Market environment check
+    mkt_regime = (market_data or {}).get("regime", "UNKNOWN")
+    market_ok = mkt_regime in ("MARKET_IN_CORRECTION", "DOWNTREND")
+    if not market_ok:
+        missing.append("市場需處於修正/下跌趨勢")
+
+    # Prerequisite 2: Check if stock's weekly is weak (9 EMA < 21 EMA)
+    # Proxy using daily: if 50-day EMA is declining
+    ema50_col = "EMA_50"
+    weekly_weak = False
+    if ema50_col in df.columns and len(df) >= 20:
+        ema50_now   = float(df[ema50_col].iloc[-1])
+        ema50_prior = float(df[ema50_col].iloc[-20])
+        weekly_weak = ema50_now < ema50_prior
+    if not weekly_weak:
+        missing.append("股票週線需顯弱勢 (50 EMA 下行)")
+
+    # Setup detection: Picture Perfect Short pattern
+    # Step 1: Price was above 50 EMA, then broke below
+    ema50_val = float(df["EMA_50"].iloc[-1]) if ema50_col in df.columns else None
+    close = float(df["Close"].iloc[-1])
+    below_ema50 = ema50_val is not None and close < ema50_val
+
+    # Step 2: After breakdown, did price rally back to declining EMAs (9/21)?
+    ema9_val  = float(df["EMA_9"].iloc[-1])  if "EMA_9"  in df.columns else None
+    ema21_val = float(df["EMA_21"].iloc[-1]) if "EMA_21" in df.columns else None
+    ema9_declining  = (len(df) >= 10 and ema9_val  is not None
+                       and float(df["EMA_9"].iloc[-10])  > ema9_val)
+    ema21_declining = (len(df) >= 10 and ema21_val is not None
+                       and float(df["EMA_21"].iloc[-10]) > ema21_val)
+
+    # Price near declining EMA (potential resistance)
+    near_declining_ema = False
+    if ema21_val and ema21_declining and close > 0:
+        pct_vs_ema21 = abs(close / ema21_val - 1.0) * 100
+        near_declining_ema = pct_vs_ema21 <= 3.0
+
+    # IWM lagging check
+    iwm_lag_ok = True  # Default to not blocking (can't always get this)
+    min_lag = getattr(C, "ML_SHORT_IWM_LAG_MIN", -3.0)
+    # Would need IWM data which we can't easily get here without extra API call
+    # Flag as informational only
+
+    has_short_signal = (below_ema50 and ema21_declining and near_declining_ema
+                        and len(missing) == 0)
+    prerequisites_met = len(missing) == 0
+
+    result.update({
+        "has_short_signal":       has_short_signal,
+        "prerequisites_met":      prerequisites_met,
+        "missing_prerequisites":  missing,
+        "setup_detail": {
+            "below_ema50":         below_ema50,
+            "ema50_val":           round(ema50_val, 2) if ema50_val else None,
+            "ema21_declining":     ema21_declining,
+            "near_declining_ema":  near_declining_ema,
+            "weekly_weak":         weekly_weak,
+            "market_regime":       mkt_regime,
+        },
+        "research_note": (
+            "📊 [做空研究信號] 此股符合 Martin Luk Picture Perfect Short 模式特徵 — "
+            "僅供市場健康參考，本系統不執行做空交易建議"
+            if has_short_signal else
+            "📊 做空研究: 條件未達 (" + "; ".join(missing) + ")"
+            if missing else
+            "📊 做空研究: 形態條件不完整"
+        ),
+    })
     return result
 
 

@@ -260,6 +260,22 @@ def _check_ml_stage2(ticker: str, df: pd.DataFrame) -> dict | None:
         logger.debug("[ML S2 VETO] %s no rising EMAs", ticker)
         return None
 
+    # ── 3b. Weekly EMA veto (Chapter 12 — "Trust weekly over daily") ─────
+    # Resample daily df to weekly and check W-EMA10 vs W-EMA40
+    if getattr(C, "ML_WEEKLY_VETO_ENABLED", True):
+        try:
+            from modules.ml_setup_detector import compute_weekly_trend
+            df_weekly = df.resample("W").agg({
+                "Open": "first", "High": "max",
+                "Low": "min", "Close": "last", "Volume": "sum",
+            }).dropna()
+            wt = compute_weekly_trend(df_weekly)
+            if wt.get("is_veto"):
+                logger.debug("[ML S2 WEEKLY VETO] %s weekly downtrend (W-EMA10<W-EMA40)", ticker)
+                return None
+        except Exception as exc:
+            logger.debug("[ML S2] Weekly check failed for %s: %s", ticker, exc)
+
     # ── 4. Momentum filter ────────────────────────────────────────────────
     mom = get_momentum_returns(df)
     m3 = mom.get("3m")
@@ -409,64 +425,140 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         recent_vol = float(df["Volume"].tail(10).mean())
         dry_ratio = recent_vol / baseline if baseline > 0 else 1.0
 
-    # ── Preliminary star rating ───────────────────────────────────────────
+    # ── Consistent star rating via ml_analyzer.compute_star_rating() ────────
+    # Builds a 7-dimension dim_scores dict and delegates to the same function
+    # used by the single-stock analyzer — guarantees screener ↔ analyzer parity.
     star = getattr(C, "ML_STAR_BASE", 2.5)
+    try:
+        from modules.ml_analyzer import compute_star_rating as _csr
+        from modules.ml_setup_detector import (
+            detect_higher_lows, count_support_confluence,
+            compute_weekly_trend,
+        )
 
-    # Dim A: EMA Structure (0.20 weight)
-    if all_stacked and all_rising:
-        star += 1.0
-    elif all_stacked or all_rising:
-        star += 0.5
-    elif slope_direction in ("rising", "rising_fast"):
-        star += 0.25
+        # Dim A — EMA structure + optional weekly veto
+        _dim_a_score = 0.0
+        _dim_a_veto = False
+        if all_stacked and all_rising:
+            _dim_a_score = 2.0
+        elif all_stacked or all_rising:
+            _dim_a_score = 1.0
+        elif slope_direction in ("rising", "rising_fast"):
+            _dim_a_score = 0.5
+        if getattr(C, "ML_WEEKLY_VETO_ENABLED", True):
+            try:
+                _df_w = df.resample("W").agg({
+                    "Open": "first", "High": "max",
+                    "Low": "min", "Close": "last", "Volume": "sum",
+                }).dropna()
+                _wt = compute_weekly_trend(_df_w)
+                if _wt.get("is_veto"):
+                    _dim_a_veto = True
+            except Exception:
+                pass
 
-    # Dim B: Pullback Quality (0.20 weight)
-    if pb_quality == "ideal" and not too_extended:
-        star += 1.0
-    elif pb_quality == "acceptable" and not too_extended:
-        star += 0.5
-    elif too_extended:
-        star -= 0.5
-    elif pb_quality == "broken":
-        star -= 1.0
+        # Dim B — Pullback quality + higher lows
+        _dim_b_score = 0.0
+        if pb_quality == "ideal" and not too_extended:
+            _dim_b_score = 2.0
+        elif pb_quality == "acceptable" and not too_extended:
+            _dim_b_score = 1.0
+        elif too_extended:
+            _dim_b_score = -1.0
+        elif pb_quality == "broken":
+            _dim_b_score = -2.0
+        _hl = detect_higher_lows(df, lookback=getattr(C, "ML_HIGHER_LOW_LOOKBACK", 20))
+        _dim_b_score = max(-2.0, min(2.0, _dim_b_score + _hl.get("adjustment", 0.0)))
 
-    # Dim C: AVWAP Confluence (0.15 weight)
-    if above_avwap_high and above_avwap_low:
-        star += 0.5   # Above both supply and support AVWAPs
-    elif above_avwap_low:
-        star += 0.25  # Above support AVWAP at least
+        # Dim C — Support Confluence (AVWAP + EMA/prior levels)
+        _dim_c_score = 0.0
+        if above_avwap_high and above_avwap_low:
+            _dim_c_score = 1.5
+        elif above_avwap_low:
+            _dim_c_score = 0.5
+        _cf = count_support_confluence(df, close_price,
+                                       getattr(C, "ML_CONFLUENCE_RADIUS_PCT", 1.5))
+        _dim_c_score = max(-2.0, min(2.5, _dim_c_score + _cf.get("adjustment", 0.0)))
 
-    # Dim D: Volume Pattern (0.15 weight)
-    dry_up_thresh = getattr(C, "ML_VOLUME_DRY_UP_RATIO", 0.50)
-    surge_mult = getattr(C, "ML_VOLUME_SURGE_MULT", 1.5)
-    if dry_ratio < dry_up_thresh:
-        star += 0.25  # Volume dry-up during pullback (bullish)
-    if vol_ratio >= surge_mult:
-        star += 0.25  # Today's volume surge (confirmation)
+        # Dim D — Volume pattern (dry-up + surge)
+        _dim_d_score = 0.0
+        if dry_ratio < getattr(C, "ML_VOLUME_DRY_UP_RATIO", 0.50):
+            _dim_d_score += 1.0
+        if vol_ratio >= getattr(C, "ML_VOLUME_SURGE_MULT", 1.5):
+            _dim_d_score += 1.0
 
-    # Dim E: Risk/Reward
-    # Approximate stop distance (ATR-based)
-    if "ATR_14" in df.columns:
-        atr = float(df["ATR_14"].iloc[-1])
-        if atr > 0 and close_price > 0:
-            stop_pct = (atr / close_price) * 100.0
-            max_stop = getattr(C, "ML_MAX_STOP_LOSS_PCT", 2.5)
-            if stop_pct <= max_stop:
-                star += 0.25
-            elif stop_pct > max_stop * 1.5:
-                star -= 0.25
+        # Dim E — Risk/Reward (ATR-based stop estimate)
+        _dim_e_score = 0.0
+        _dim_e_veto = False
+        if "ATR_14" in df.columns:
+            _atr = float(df["ATR_14"].iloc[-1])
+            _max_stop = getattr(C, "ML_MAX_STOP_LOSS_PCT", 2.5)
+            if _atr > 0 and close_price > 0:
+                _stop_pct = (_atr / close_price) * 100.0
+                if _stop_pct <= _max_stop:
+                    _dim_e_score = 1.0
+                elif _stop_pct > _max_stop * 2:
+                    _dim_e_score = -2.0
+                    _dim_e_veto = True
+                else:
+                    _dim_e_score = -1.0
 
-    # Dim F: Relative Strength (placeholder — uses momentum as proxy)
-    mom_3m = row.get("mom_3m", 0) or 0
-    mom_6m = row.get("mom_6m", 0) or 0
-    if mom_3m >= 50 and mom_6m >= 100:
-        star += 0.25
-    elif mom_3m >= 30:
-        star += 0.15
+        # Dim F — Relative Strength (3M/6M momentum proxy)
+        _dim_f_score = 0.0
+        mom_3m = row.get("mom_3m", 0) or 0
+        mom_6m = row.get("mom_6m", 0) or 0
+        if mom_3m >= 50 and mom_6m >= 100:
+            _dim_f_score = 2.0
+        elif mom_3m >= 30:
+            _dim_f_score = 1.0
 
-    # Clamp to [0, ML_STAR_MAX]
-    star_max = getattr(C, "ML_STAR_MAX", 5.0)
-    star = max(0.0, min(star, star_max))
+        # Dim G — Market Environment gate
+        _dim_g_score = 0.0
+        _dim_g_veto = False
+        _mkt_env = row.get("market_env", "")
+        if _mkt_env == "CONFIRMED_UPTREND":
+            _dim_g_score = 1.0
+        elif _mkt_env == "UPTREND_UNDER_PRESSURE":
+            _dim_g_score = 0.0
+        elif _mkt_env == "CHOPPY":
+            _dim_g_score = -0.5
+        elif _mkt_env in ("MARKET_IN_CORRECTION", "DOWNTREND"):
+            _dim_g_score = -2.0
+            _dim_g_veto = True
+
+        _dim_scores = {
+            "A": {"score": _dim_a_score, "is_veto": _dim_a_veto},
+            "B": {"score": _dim_b_score},
+            "C": {"score": _dim_c_score},
+            "D": {"score": _dim_d_score},
+            "E": {"score": _dim_e_score, "is_veto": _dim_e_veto},
+            "F": {"score": _dim_f_score},
+            "G": {"score": _dim_g_score, "is_veto": _dim_g_veto},
+        }
+        _star_result = _csr(_dim_scores)
+        if _star_result.get("veto"):
+            # Hard veto — drop this stock (already passed weekly veto in S2;
+            # this catches late risk/market vetoes discovered during S3 data load)
+            logger.debug("[ML S3 VETO] %s vetoed by %s in Stage 3",
+                         ticker, _star_result.get("veto"))
+            return None
+        star = _star_result.get("capped_stars", star)
+    except Exception as exc:
+        logger.debug("[ML S3 star] %s using fallback star calc: %s", ticker, exc)
+        # Fallback: preserve previous inline logic
+        star = getattr(C, "ML_STAR_BASE", 2.5)
+        if all_stacked and all_rising:
+            star += 1.0
+        elif all_stacked or all_rising:
+            star += 0.5
+        if pb_quality == "ideal" and not too_extended:
+            star += 1.0
+        elif too_extended:
+            star -= 0.5
+        if above_avwap_low:
+            star += 0.25
+        star_max = getattr(C, "ML_STAR_MAX", 5.0)
+        star = max(0.0, min(star, star_max))
 
     # ── Build output dict ─────────────────────────────────────────────────
     row_out = dict(row)  # copy Stage 2 fields
@@ -561,17 +653,21 @@ def _save_scan_results_csv(df_passed: pd.DataFrame, df_all: pd.DataFrame,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
-                top_n: Optional[int] = None, stage1_source: Optional[str] = None
+                top_n: Optional[int] = None, stage1_source: Optional[str] = None,
+                scanner_mode: str = "standard",
                 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Full 3-stage Martin Luk pullback scan.
 
     Parameters
     ----------
-    verbose      : if True, print progress to console
-    min_star     : minimum star rating to include (default from config)
-    top_n        : limit results to top N (default from config)
-    stage1_source: "nasdaq_ftp" or "finviz"
+    verbose        : if True, print progress to console
+    min_star       : minimum star rating to include (default from config)
+    top_n          : limit results to top N (default from config)
+    stage1_source  : "nasdaq_ftp" or "finviz"
+    scanner_mode   : "standard" (existing 3-stage pipeline),
+                     "triple"   (Martin Luk 3-channel pre-scan builds universe),
+                     "combined" (triple + standard merged)
 
     Returns:
         (df_passed, df_all) where:
@@ -581,15 +677,18 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     scan_start = datetime.now()
     _progress("Initialising", 0, "Starting Martin Luk Pullback Scan…")
     logger.info("═" * 65)
-    logger.info("  MARTIN LUK PULLBACK SCAN — %s", scan_start.strftime("%Y-%m-%d %H:%M"))
+    logger.info("  MARTIN LUK PULLBACK SCAN [%s] — %s",
+                scanner_mode.upper(), scan_start.strftime("%Y-%m-%d %H:%M"))
     logger.info("═" * 65)
 
     # ── Market environment gate ───────────────────────────────────────────
+    market_env_label = ""
     if getattr(C, "ML_BLOCK_IN_BEAR", True):
         try:
             from modules.market_env import assess as mkt_assess
             mkt = mkt_assess(verbose=False)
             regime = mkt.get("regime", "")
+            market_env_label = regime
             if regime == "DOWNTREND":
                 logger.warning("[ML Scan] Market regime: %s — ML entries blocked", regime)
                 _progress("Blocked", 100, f"熊市阻擋 Bear market block ({regime})")
@@ -606,6 +705,41 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
         return pd.DataFrame(), pd.DataFrame()
     logger.info("[ML Scan] Stage1: %d candidates", len(candidates))
 
+    # ── Optional: Triple-scanner channel pre-scan ─────────────────────────
+    # Injects additional high-priority tickers from ML 3-channel system
+    if scanner_mode in ("triple", "combined") and getattr(C, "ML_TRIPLE_SCANNER_ENABLED", True):
+        try:
+            from modules.ml_scanner_channels import run_triple_scan
+            _progress("Triple Scan", 15, "Running Martin Luk 3-channel scanner…")
+            s1_tickers = [r["ticker"] for r in candidates]
+            triple = run_triple_scan(s1_tickers, include_gaps=True,
+                                     include_gainers=True, include_leaders=True)
+            # Merge channel tickers not already in candidates
+            existing = {r["ticker"] for r in candidates}
+            added = 0
+            for item in triple.get("merged", []):
+                if item["ticker"] not in existing:
+                    # Inject as minimal Stage 1 candidate —
+                    # Stage 2 will validate full EMA/ADR criteria
+                    candidates.append({
+                        "ticker":     item["ticker"],
+                        "channel":    item.get("channel", "TRIPLE"),
+                        "price":      item.get("price", 0),
+                        "source":     f"triple_{item.get('channel','?').lower()}",
+                    })
+                    existing.add(item["ticker"])
+                    added += 1
+                else:
+                    # Annotate existing candidate with channel badge
+                    for c in candidates:
+                        if c["ticker"] == item["ticker"]:
+                            c["channel"] = item.get("channel", c.get("channel", ""))
+                            break
+            logger.info("[ML TripleScan] Injected %d additional tickers (%d merged total)",
+                        added, len(triple.get("merged", [])))
+        except Exception as exc:
+            logger.warning("[ML Scan] Triple scanner failed (continuing with standard): %s", exc)
+
     # ── Stage 2 ───────────────────────────────────────────────────────────
     s2_rows = run_ml_stage2(candidates, verbose=verbose)
     if _is_cancelled():
@@ -613,6 +747,14 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     if not s2_rows:
         _progress("Done", 100, "沒有候選股票通過 ADR/EMA/動量過濾")
         return pd.DataFrame(), pd.DataFrame()
+    # Propagate channel badge into Stage 2 rows
+    ticker_to_channel = {r["ticker"]: r.get("channel", "") for r in candidates}
+    for row in s2_rows:
+        if not row.get("channel"):
+            row["channel"] = ticker_to_channel.get(row["ticker"], "")
+    # Attach market env label to all S2 rows (used by Stage 3 Dim G)
+    for row in s2_rows:
+        row.setdefault("market_env", market_env_label)
     logger.info("[ML Scan] Stage2: %d candidates", len(s2_rows))
 
     # ── Stage 3 ───────────────────────────────────────────────────────────

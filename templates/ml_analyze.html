@@ -176,6 +176,52 @@
     </div>
   </div>
 
+  <!-- Row 2b: Decision Tree + Scorecard + Short Research -->
+  <div class="row g-3 mb-3">
+
+    <!-- 9-Step Entry Decision Tree (Chapter 9) -->
+    <div class="col-12 col-md-4">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-signpost-2 me-1" style="color:#58a6ff"></i>
+          入場決策樹 Entry Decision Tree
+          <small class="text-secondary ms-1">Chapter 9</small>
+        </div>
+        <div class="card-body" id="dtArea">
+          <div class="text-secondary text-center" style="font-size:12px">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pullback Quality Scorecard (Appendix C) -->
+    <div class="col-12 col-md-5">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-clipboard2-check me-1" style="color:#e3b341"></i>
+          回調品質清單 Pullback Scorecard
+          <small class="text-secondary ms-1">Appendix C</small>
+        </div>
+        <div class="card-body" id="scorecardArea">
+          <div class="text-secondary text-center" style="font-size:12px">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Short Research Marker (Chapter 16) -->
+    <div class="col-12 col-md-3">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-arrow-down-circle me-1" style="color:#f85149"></i>
+          空倉研究 Short Research
+          <small class="text-secondary ms-1">Ch.16 研究用</small>
+        </div>
+        <div class="card-body" id="shortResearchArea">
+          <div class="text-secondary text-center" style="font-size:12px">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Row 3: Daily Chart -->
   <div class="row g-3 mb-3">
     <div class="col-12">
@@ -613,6 +659,95 @@ function renderAnalysis(r) {
   // Initialize watch mode with premarket plan if daily analysis available
   if (ticker && r) {
     renderPremktPlan(r);  // Populate premarket plan with daily analysis
+  }
+
+  // New areas: Decision Tree, Scorecard, Short Research
+  renderDecisionTree(r.decision_tree);
+  renderScorecard(r.pullback_scorecard);
+  renderShortResearch(r.short_research);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Decision Tree — 9-step entry gate (Chapter 9)
+ * ════════════════════════════════════════════════════════════════════════ */
+function renderDecisionTree(dt) {
+  const el = document.getElementById('dtArea');
+  if (!el) return;
+  if (!dt || !dt.steps) {
+    el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:13px">— 暫無數據 —</div>';
+    return;
+  }
+  const verdictCls = dt.verdict === 'GO' ? 'text-success' : dt.verdict === 'CAUTION' ? 'text-warning' : 'text-danger';
+  const verdictIcon = dt.verdict === 'GO' ? '✓' : dt.verdict === 'CAUTION' ? '△' : '✗';
+  const stepsHtml = (dt.steps || []).map((s, i) =>
+    `<div class="d-flex align-items-start mb-1" style="font-size:11px">
+      <span class="me-1 fw-bold ${s.passed ? 'text-success' : 'text-danger'}">${s.passed ? '✓' : '✗'}</span>
+      <span class="${s.passed ? '' : 'text-secondary'}">Q${i + 1}: ${s.question_zh || s.question || ''}</span>
+    </div>`
+  ).join('');
+  el.innerHTML = `
+    <div class="text-center mb-3">
+      <span class="fw-bold ${verdictCls}" style="font-size:1.6rem">${verdictIcon} ${dt.verdict}</span>
+      <div class="text-secondary mt-1" style="font-size:12px">${dt.pass_count || 0}/9 步通過</div>
+    </div>
+    <div>${stepsHtml}</div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Pullback Scorecard (Appendix C)
+ * ════════════════════════════════════════════════════════════════════════ */
+function renderScorecard(sc) {
+  const el = document.getElementById('scorecardArea');
+  if (!el) return;
+  if (!sc) {
+    el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:13px">— 暫無數據 —</div>';
+    return;
+  }
+  const gradeCls = sc.grade === 'A' ? 'text-success' : sc.grade === 'B' ? 'text-warning' : 'text-danger';
+  const criteriaHtml = (sc.criteria || []).map(c => {
+    const scoreCls = c.score > 0 ? 'text-success' : c.score < 0 ? 'text-danger' : 'text-secondary';
+    const sign = c.score >= 0 ? '+' : '';
+    return `<div class="d-flex justify-content-between align-items-center mb-1" style="font-size:11px">
+      <span class="${c.met ? '' : 'text-secondary'}">${c.name_zh || c.name || ''}</span>
+      <span class="${scoreCls} fw-bold">${sign}${c.score}</span>
+    </div>`;
+  }).join('');
+  const sizePct = ((sc.size_factor || 0) * 100).toFixed(0);
+  el.innerHTML = `
+    <div class="d-flex align-items-center gap-3 mb-3">
+      <span class="fw-bold ${gradeCls}" style="font-size:1.6rem">Grade ${sc.grade}</span>
+      <div>
+        <div style="font-size:12px;color:#8b949e">${sc.total_score || 0}/10 分</div>
+        <div style="font-size:12px;color:#8b949e">倉位 ${sizePct}%</div>
+      </div>
+    </div>
+    <div>${criteriaHtml}</div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Short Research — research note only, NOT a trading signal (Chapter 16)
+ * ════════════════════════════════════════════════════════════════════════ */
+function renderShortResearch(sr) {
+  const el = document.getElementById('shortResearchArea');
+  if (!el) return;
+  if (!sr) {
+    el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:12px">— 暫無數據 —</div>';
+    return;
+  }
+  if (sr.is_short_candidate) {
+    const condHtml = (sr.conditions_met || []).map(c =>
+      `<div style="font-size:10px;color:#f85149">• ${c}</div>`).join('');
+    el.innerHTML = `
+      <div class="text-danger fw-bold mb-2" style="font-size:13px">⚠ 可能空頭候選</div>
+      <div class="text-secondary mb-2" style="font-size:11px">${sr.research_note || ''}</div>
+      ${condHtml}
+      <div class="mt-3 p-2 rounded" style="background:#1c2128;font-size:10px;color:#8b949e">
+        <i class="bi bi-info-circle me-1"></i>此為研究標記，非交易建議。Martin Luk：「我不做空，但識別空頭特徵有助於對多頭保持警覺。」
+      </div>`;
+  } else {
+    el.innerHTML = `
+      <div class="text-success mb-2" style="font-size:13px">✓ 無空頭訊號</div>
+      <div class="text-secondary" style="font-size:11px">${sr.research_note || ''}</div>`;
   }
 }
 

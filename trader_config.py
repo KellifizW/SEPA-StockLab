@@ -238,7 +238,7 @@ QM_MOMENTUM_6M_MIN_PCT   = 150.0   # ≥150% gain in ~126 trading days (6 months
 # ── ADR (Average Daily Range) filters (Section 5.3) ──────────────────────────
 # ADR = avg of (High/Low - 1) over past 14 days
 QM_ADR_PERIOD            = 14      # 14-day ADR calculation window
-QM_MIN_ADR_PCT           = 5.0     # Hard veto: <5% → skip regardless of other scores
+QM_MIN_ADR_PCT           = 4.0     # Hard veto: <4% → skip regardless of other scores (loosened from 5% to include NVDA, QQQ, etc.)
 QM_IDEAL_ADR_PCT         = 8.0     # Ideal: ≥8% for maximum explosive potential
 QM_SMALL_ACCT_ADR_PCT    = 8.0     # For accounts < $100K, prefer ≥8%
 # ADR star-rating adjustments (Section 6.1 Dimension B)
@@ -707,3 +707,131 @@ ML_W_PULLBACK       = 0.25   # Pullback quality + AVWAP
 ML_W_VOLUME         = 0.15   # Volume pattern (dry-up + surge)
 ML_W_RISK_REWARD    = 0.15   # Risk/Reward quality
 ML_W_MARKET         = 0.10   # Market environment
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  ML PHASE 1 — CORE METHODOLOGY ENHANCEMENTS                            ║
+# ║  Reference: MartinLukStockGuidePart1 + Part2, MartinLukCore.md          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# ── Weekly chart veto (Chapter 12 — "When Daily and Weekly conflict → trust Weekly") ──
+ML_WEEKLY_VETO_ENABLED       = True    # Apply weekly chart as hard veto in Stage 2
+ML_WEEKLY_VETO_PENALTY       = -1.5    # Dim A adjustment when weekly conflicts with daily
+ML_WEEKLY_EMA_CONFLICT_HARD  = True    # True = hard Stage 2 veto; False = soft Dim A penalty only
+# Weekly EMA: W-EMA10 ≈ daily 50 EMA; W-EMA40 ≈ daily 200 EMA
+# Rule: if W-EMA10 < W-EMA40 AND both declining → weekly downtrend → veto
+ML_WEEKLY_UPTREND_MIN_WEEKS  = 4       # W-EMA10 must have been above W-EMA40 for N weeks
+
+# ── Support Confluence Counting (Chapter 5, 6 — "Multiple support confluence = highest probability") ──
+ML_CONFLUENCE_RADIUS_PCT     = 1.5     # Price window ±1.5% to count overlapping supports
+ML_CONFLUENCE_HIGH_PROB      = 3       # 3+ confluences = high-probability entry (bonus)
+ML_CONFLUENCE_MIN_SETUP      = 2       # < 2 confluences = reduce confidence
+ML_CONFLUENCE_BONUS_ADJ      = 0.4     # Star adjustment bonus per confluence ≥ ML_CONFLUENCE_HIGH_PROB
+ML_CONFLUENCE_LEVELS = [
+    "EMA_9",   # 9 EMA support
+    "EMA_21",  # 21 EMA support  (primary)
+    "EMA_50",  # 50 EMA support
+    "EMA_150", # 150 EMA support
+    "AVWAP_H", # AVWAP from swing high (supply turned support)
+    "AVWAP_L", # AVWAP from swing low (dynamic support)
+    "PRIOR_HIGH",  # Prior swing high (breakout retest)
+    "GAP_FILL",    # Unfilled gap (magnet support)
+]
+
+# ── Higher-low detection (Chapter 5 — "progressively higher lows approaching EMA") ──
+ML_HIGHER_LOW_LOOKBACK       = 20      # Bars to look back for swing lows
+ML_HIGHER_LOW_MIN_COUNT      = 2       # Minimum number of ascending lows to qualify
+ML_HIGHER_LOW_ADJ_PER        = 0.3     # Star adjustment per additional higher low
+ML_HIGHER_LOW_MAX_ADJ        = 0.6     # Maximum total adjustment from higher lows
+
+# ── LOD chase rule (Chapter 4, 9 — "Already up > 3% from LOD → SKIP") ──
+ML_MAX_CHASE_ABOVE_LOD_PCT   = 3.0     # If current price > LOD + 3% → CHASE RISK warning
+ML_CHASE_DIM_E_PENALTY       = -0.8    # Dim E adjustment if chase rule triggered
+ML_CHASE_WARNING_ENABLED     = True    # Enable chase warning in trade plan
+
+# ── Pullback Buy Quality Scorecard (Appendix C — 10-point system) ──────────
+# Martin's holistic pullback quality judge: 8-10 = high quality (full size)
+# 6-7 = reduce position; ≤5 = skip
+ML_SCORECARD_HIGH_QUALITY    = 8       # Scorecard ≥ 8 → full position size
+ML_SCORECARD_MED_QUALITY     = 6       # Scorecard 6-7 → 0.7× position size
+ML_SCORECARD_LOW_QUALITY     = 5       # Scorecard ≤ 5 → skip
+
+# ── 9-Step Entry Decision Tree (Chapter 9 flowchart) ──────────────────────
+ML_DTQ_ENABLED               = True    # Enable entry decision tree in analyzer
+ML_DTQ_GO_MIN_PASS           = 7       # Minimum passing questions for GO signal
+ML_DTQ_CAUTION_MIN_PASS      = 5       # Minimum passing questions for CAUTION signal
+
+# ── Three-Scanner System (Chapter 18, MartinLukCore Ch2) ──────────────────
+ML_TRIPLE_SCANNER_ENABLED    = True    # Enable three-channel scanning
+ML_GAP_SCANNER_MIN_GAP_PCT   = 3.0     # Pre-market gap minimum (%)
+ML_GAP_SCANNER_MIN_VOL_MULT  = 1.5     # Gap scanner minimum volume multiple
+ML_GAINER_SCANNER_TOP_N      = 50      # Biggest gainers: top N prior-day performers
+ML_GAINER_THEME_MIN_COUNT    = 2       # Min stocks in same sector to flag as theme
+ML_LEADER_MOMENTUM_PERIOD    = "1mo"   # Leader scanner: rank by 1-month performance
+ML_LEADER_MIN_WEEKS_ABOVE    = 3       # Min weeks W-EMA10 > W-EMA40 (leader quality)
+
+# ── Situational Awareness 3-Layer System (Chapter 17) ─────────────────────
+ML_SA_LAYER1_LOOKBACK        = 5       # Number of recent trades for Layer 1 P&L feedback
+ML_SA_IWM_LAG_THRESHOLD      = -5.0    # IWM vs QQQ 20-day relative performance to flag short risk
+ML_SA_IWM_PERIOD             = 20      # Days for IWM vs QQQ relative comparison
+ML_SA_WATCHLIST_CONTRACT_THR = -15.0   # Leader watchlist contraction % → market warning
+
+# ── Theme Identification & Stock Selection (Chapter 18) ───────────────────
+ML_THEME_LIFECYCLE = ["emerging", "leading", "mature", "declining"]
+ML_THEME_MIN_STOCKS          = 2       # Min stocks to declare a sector as theme
+ML_THEME_RS_WEIGHT           = 0.40    # Theme stock selection weight: RS rank
+ML_THEME_RECENCY_WEIGHT      = 0.35    # Theme stock selection weight: 1-3 day performance
+ML_THEME_DOLV_WEIGHT         = 0.15    # Theme stock selection weight: dollar volume
+ML_THEME_WEEKLY_WEIGHT       = 0.10    # Theme stock selection weight: weekly chart quality
+
+# ── Advanced Exit Strategy (Chapter 8, 15 — situational selling) ──────────
+ML_EXIT_EXTREME_VOL_MULT     = 3.0     # Volume multiple (vs avg) = "extreme volatility" → sell ALL
+ML_EXIT_TREND_CONFIRMED_DAYS = 5       # Days with upward price action to declare trend confirmed
+ML_EXIT_TRAIL_21_EMA_R       = 5.0     # R-multiple threshold to upgrade trail to 21 EMA
+ML_EXIT_TRAIL_50_EMA_R       = 10.0    # R-multiple threshold to upgrade trail to 50 EMA
+ML_EXIT_CLOSE_BELOW_EMA_EXIT = True    # Sell all remaining on first close below trailing EMA
+ML_PARTIAL_SELL_AGGRESSIVE_EARLY = True  # More aggressive partial selling early in position
+
+# ── HK Timezone Position Management (Part2 App G, Ch15) ───────────────────
+ML_HK_TIMEZONE_MODE          = True    # User is in HK timezone (can't watch US close)
+ML_HK_EMA_STOP_BUFFER_PCT    = 0.5     # Buffer below EMA for HK timezone limit stop
+#   (0.5% below 9 EMA = allows undercut-and-reclaim without triggering)
+ML_HK_STOP_ORDER_LOOKBACK    = 3       # Days to average EMA for HK pre-set stop
+
+# ── Parabolic Trade Framework (Chapter 14, Appendix E) ────────────────────
+ML_PARABOLIC_GAP_DOWN_COUNT  = 3       # Min consecutive gap-down days for long parabolic
+ML_PARABOLIC_IDX_BELOW_EMA9  = 15.0    # Index must be ≥ 15% below 9 EMA for long parabolic
+ML_PARABOLIC_FULL_EXIT       = True    # Parabolic trades = sell ALL into strength (no partial)
+ML_PARABOLIC_MAX_HOLD_DAYS   = 3       # Parabolic positions held max 3 days esp for shorts
+
+# ── Short Research Marker (Chapter 16 — NOT trading, research only) ───────
+ML_SHORT_RESEARCH_ENABLED    = True    # Flag Picture Perfect Short patterns in analyzer
+ML_SHORT_IWM_LAG_DAYS        = 20      # IWM vs QQQ lookback for short gate check
+ML_SHORT_IWM_LAG_MIN         = -3.0    # IWM must lag QQQ by at least -3% to consider short research
+
+# ── Flush→V-Recovery Intraday Detection (Chapter 7) ──────────────────────
+ML_FLUSH_MAX_MINUTES         = 15      # Flush must complete within first 15 minutes
+ML_FLUSH_MIN_DEPTH_PCT       = 1.0     # Minimum flush depth from open (%)
+ML_VRECOVERY_MIN_BARS        = 2       # Minimum recovery bars after flush
+ML_VRECOVERY_SPEED_RATIO     = 0.5     # Recovery must reclaim at least 50% of flush depth
+ML_ORH_RANGE_MINUTES         = 5       # Opening Range High: first 5 minutes
+
+# ── Intraday Time Phase Rules (Chapter 7) ─────────────────────────────────
+ML_INTRADAY_PHASE1_MINUTES   = 15      # 0-15 min: use 1-min prev bar high trigger
+ML_INTRADAY_PHASE2_MINUTES   = 60      # 15-60 min: use 5-min prev bar high trigger
+# > 60 min: use standard 5-min consolidation breakout
+
+# ── EMA Pullback Win Rate Hierarchy (Part2 Ch13.12) ───────────────────────
+# Martin's observation: deeper pullback = higher win rate (but fewer occurrences)
+# 9 EMA pullback: lowest win rate; 150 EMA pullback: highest win rate
+ML_PB_WIN_RATE_HIERARCHY = {9: 0.55, 21: 0.62, 50: 0.70, 150: 0.78}
+# Used to weight confidence scores in ml_setup_detector.py
+
+# ── Choppy Market Detection ────────────────────────────────────────────────
+ML_CHOPPY_ADX_THRESHOLD      = 20      # ADX < 20 = choppy (no clear trend)
+ML_CHOPPY_SIZE_MULT          = 0.25    # Position size multiplier in choppy market
+ML_CHOPPY_MAX_TRADES         = 2       # Maximum new trades per day in choppy market
+
+# ── DB / Persistence extensions ───────────────────────────────────────────
+ML_LEADER_HISTORY_DAYS       = 90      # Days of leader scanner history to retain in DB
+ML_THEME_HISTORY_DAYS        = 60      # Days of theme tracking history to retain
+ML_SCORECARD_HISTORY_DAYS    = 365     # Days of trade quality scorecard history
