@@ -21,7 +21,8 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from datetime import datetime, date
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
+import pandas as pd
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, make_response
 
@@ -99,7 +100,7 @@ def _set_cache(key, data):
 # ── last scan persistence ─────────────────────────────────────────────────────
 _LAST_SCAN_FILE = ROOT / C.DATA_DIR / "last_scan.json"
 
-def _save_last_scan(rows: list, all_rows: list = None):
+def _save_last_scan(rows: list, all_rows: Optional[list] = None):
     try:
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
@@ -158,7 +159,7 @@ def _load_last_scan() -> dict:
 _QM_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "qm_last_scan.json"
 
 
-def _save_qm_last_scan(rows: list, all_rows: list = None):
+def _save_qm_last_scan(rows: list, all_rows: Optional[list] = None):
     try:
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
@@ -198,7 +199,7 @@ def _load_qm_last_scan() -> dict:
 _ML_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "ml_last_scan.json"
 
 
-def _save_ml_last_scan(rows: list, all_rows: list = None):
+def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None):
     try:
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
@@ -379,7 +380,7 @@ def _sanitize_for_json(obj, depth=0, max_depth=5):
     return str(obj)
 
 
-def _finish_job(jid: str, result=None, error: str = None, log_file: str = ""):
+def _finish_job(jid: str, result: Any = None, error: Optional[str] = None, log_file: str = ""):
     # Sanitize result before storing to ensure JSON serialization won't fail
     if result is not None:
         import sys
@@ -1333,14 +1334,16 @@ def api_qm_analyze():
         from modules.qm_analyzer import analyze_qm
         result = analyze_qm(ticker, print_report=False)
         # DEBUG: Print trade plan before _clean
-        if result and 'trade_plan' in result:
+        if result and isinstance(result, dict) and 'trade_plan' in result:
             tp = result['trade_plan']
-            print(f"[DEBUG] Before _clean: day2_stop type = {type(tp.get('day2_stop'))}, value = {tp.get('day2_stop')}")
+            if isinstance(tp, dict):
+                print(f"[DEBUG] Before _clean: day2_stop type = {type(tp.get('day2_stop'))}, value = {tp.get('day2_stop')}")
         clean_result = _clean(result) if result else {}
         #DEBUG: Print trade plan after _clean
-        if clean_result and 'trade_plan' in clean_result:
+        if clean_result and isinstance(clean_result, dict) and 'trade_plan' in clean_result:
             tp = clean_result['trade_plan']
-            print(f"[DEBUG] After _clean: day2_stop type = {type(tp.get('day2_stop'))}, value = {tp.get('day2_stop')}")
+            if isinstance(tp, dict):
+                print(f"[DEBUG] After _clean: day2_stop type = {type(tp.get('day2_stop'))}, value = {tp.get('day2_stop')}")
         log_rel = str(analyze_log_file.relative_to(ROOT)) if analyze_log_file.exists() else ""
         return jsonify({"ok": True, "ticker": ticker,
                         "result": clean_result, "log_file": log_rel})
@@ -1661,7 +1664,7 @@ def _write_analyze_report(log_file: Path, r: dict, acct: float):
         ln(f"  Close:      ${float(scored.get('close') or 0):.2f}")
         ln(f"  ATR(14):    {float(scored.get('atr14') or 0):.2f}")
         if scored.get('pivot'):
-            ln(f"  Pivot:      ${float(scored.get('pivot')):.2f}")
+            ln(f"  Pivot:      ${float(scored.get('pivot') or 0):.2f}")
 
         # ── Trend Template TT1-TT10 ──────────────────────────────────────────
         ln()
@@ -1731,7 +1734,7 @@ def _write_analyze_report(log_file: Path, r: dict, acct: float):
         # ── News ─────────────────────────────────────────────────────────────
         news_raw = r.get("news")
         # news may be a list of dicts or a DataFrame — normalise to list
-        if hasattr(news_raw, "to_dict"):
+        if news_raw is not None and hasattr(news_raw, "to_dict"):
             news = news_raw.to_dict(orient="records") if not news_raw.empty else []
         else:
             news = news_raw if isinstance(news_raw, list) else []
@@ -2423,7 +2426,11 @@ def api_db_price_history(ticker: str):
         if not df_pd.empty:
             cutoff = pd.Timestamp.today() - pd.Timedelta(days=days)
             df_pd = df_pd[df_pd.index >= cutoff].copy()
-            df_pd.index = df_pd.index.date
+            # Convert index to date (ensure it's DatetimeIndex first)
+            if hasattr(df_pd.index, 'date'):
+                df_pd.index = df_pd.index.date
+            elif hasattr(df_pd.index, 'normalize'):
+                df_pd.index = df_pd.index.normalize()
             rows = [
                 {"date": str(idx), "open": round(float(row["Open"]), 4),
                  "high": round(float(row["High"]), 4),
@@ -2511,13 +2518,13 @@ def api_chart_enriched(ticker: str):
             pass
 
         # Historical signal tracking (for learning / validation overlays)
-        atr_raw = pd.to_numeric(df.get("ATR_14"), errors="coerce") if "ATR_14" in df.columns else None
+        atr_raw = pd.to_numeric(df["ATR_14"], errors="coerce") if "ATR_14" in df.columns else None
         if atr_raw is None:
-            atr_raw = pd.to_numeric(df.get("ATRr_14"), errors="coerce") if "ATRr_14" in df.columns else None
-        bbu_raw = pd.to_numeric(df.get("BBU_20_2.0"), errors="coerce") if "BBU_20_2.0" in df.columns else None
-        bbl_raw = pd.to_numeric(df.get("BBL_20_2.0"), errors="coerce") if "BBL_20_2.0" in df.columns else None
-        bbm_raw = pd.to_numeric(df.get("BBM_20_2.0"), errors="coerce") if "BBM_20_2.0" in df.columns else None
-        vol_raw = pd.to_numeric(df.get("Volume"), errors="coerce") if "Volume" in df.columns else None
+            atr_raw = pd.to_numeric(df["ATRr_14"], errors="coerce") if "ATRr_14" in df.columns else None
+        bbu_raw = pd.to_numeric(df["BBU_20_2.0"], errors="coerce") if "BBU_20_2.0" in df.columns else None
+        bbl_raw = pd.to_numeric(df["BBL_20_2.0"], errors="coerce") if "BBL_20_2.0" in df.columns else None
+        bbm_raw = pd.to_numeric(df["BBM_20_2.0"], errors="coerce") if "BBM_20_2.0" in df.columns else None
+        vol_raw = pd.to_numeric(df["Volume"], errors="coerce") if "Volume" in df.columns else None
 
         if atr_raw is not None:
             atr_fast = atr_raw.rolling(5, min_periods=5).mean()
@@ -2872,7 +2879,11 @@ def api_chart_intraday(ticker: str):
         
         # Reset VWAP daily at ET 9:30
         et_tz = pytz.timezone('US/Eastern')
-        df['date_et'] = df.index.tz_convert(et_tz).normalize()
+        # Ensure index is DatetimeIndex before calling tz_convert
+        if hasattr(df.index, 'tz_convert'):
+            df['date_et'] = df.index.tz_convert(et_tz).normalize()
+        else:
+            df['date_et'] = df.index.normalize() if hasattr(df.index, 'normalize') else df.index.date
         for date in df['date_et'].unique():
             date_mask = (df['date_et'] == date)
             date_df = df[date_mask]

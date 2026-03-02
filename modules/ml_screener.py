@@ -539,8 +539,8 @@ def _save_scan_results_csv(df_passed: pd.DataFrame, df_all: pd.DataFrame,
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_ml_scan(verbose: bool = True, min_star: float = None,
-                top_n: int = None, stage1_source: str = None
+def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
+                top_n: Optional[int] = None, stage1_source: Optional[str] = None
                 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Full 3-stage Martin Luk pullback scan.

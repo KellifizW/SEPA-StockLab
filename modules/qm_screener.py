@@ -679,8 +679,8 @@ def _save_scan_results_csv(df_passed: pd.DataFrame, df_all: pd.DataFrame,
                 pass
 
 
-def run_qm_scan(verbose: bool = True, min_star: float = None, top_n: int = None,
-                strict_rs: bool = False, stage1_source: str = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_qm_scan(verbose: bool = True, min_star: Optional[float] = None, top_n: Optional[int] = None,
+                strict_rs: bool = False, stage1_source: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Full 3-stage Qullamaggie breakout scan.
 

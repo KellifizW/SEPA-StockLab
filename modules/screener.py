@@ -702,10 +702,10 @@ def _parse_pct(val) -> Optional[float]:
 # Main pipeline
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_scan(custom_filters: dict = None,
+def run_scan(custom_filters: Optional[dict] = None,
              refresh_rs: bool = False,
              verbose: bool = True,
-             stage1_source: str = None) -> pd.DataFrame:
+             stage1_source: Optional[str] = None) -> pd.DataFrame:
     """
     Run the full 3-stage SEPA scan.
     Returns a ranked DataFrame of candidates with SEPA scores.

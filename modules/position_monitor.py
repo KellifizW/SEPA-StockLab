@@ -109,7 +109,7 @@ def _bg_db_save(data: dict):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def add_position(ticker: str, buy_price: float, shares: int,
-                 stop_loss: float, target: float = None, note: str = ""):
+                 stop_loss: float, target: Optional[float] = None, note: str = ""):
     """
     Record a new position.
     stop_loss: absolute price (not percentage).

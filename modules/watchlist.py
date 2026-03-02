@@ -105,7 +105,7 @@ def _bg_wl_db_save(data: dict):
 # Core operations
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def add(ticker: str, grade: str = None, note: str = ""):
+def add(ticker: str, grade: Optional[str] = None, note: str = ""):
     """
     Add a ticker to the watchlist.
     If grade is None, auto-assigns grade based on SEPA score.
