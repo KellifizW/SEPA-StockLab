@@ -589,8 +589,10 @@ def run_ml_stage3(s2_rows: list[dict]) -> pd.DataFrame:
     from modules.data_pipeline import get_enriched
 
     total = len(s2_rows)
+    logger.debug("[ML Stage3 DEBUG] Starting Stage 3 with %d candidates", total)
     _progress("Stage 3", 65, f"Scoring {total} candidates with ML pullback analysis…")
     logger.info("[ML Stage3] Scoring %d candidates", total)
+    logger.debug("[ML Stage3 DEBUG] _progress and logger calls completed")
 
     scored = []
     for i, row in enumerate(s2_rows):
@@ -758,7 +760,13 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     logger.info("[ML Scan] Stage2: %d candidates", len(s2_rows))
 
     # ── Stage 3 ───────────────────────────────────────────────────────────
-    df_all = run_ml_stage3(s2_rows)
+    logger.debug("[ML Scan] About to call run_ml_stage3 with %d candidates", len(s2_rows))
+    try:
+        df_all = run_ml_stage3(s2_rows)
+        logger.debug("[ML Scan] run_ml_stage3 returned %d results", len(df_all) if not df_all.empty else 0)
+    except Exception as e:
+        logger.error("[ML Scan] STAGE 3 CRASHED: %s", e, exc_info=True)
+        raise
 
     if df_all.empty:
         _progress("Done", 100, "沒有候選股票通過質量評分")
