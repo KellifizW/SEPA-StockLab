@@ -1362,10 +1362,11 @@ def api_qm_analyze():
 
 @app.route("/api/ml/scan/run", methods=["POST"])
 def api_ml_scan_run():
-    data         = request.get_json(silent=True) or {}
-    min_star     = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
-    top_n        = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
-    scanner_mode = str(data.get("scanner_mode", "standard")).strip().lower()
+    data          = request.get_json(silent=True) or {}
+    min_star      = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
+    top_n         = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
+    scanner_mode  = str(data.get("scanner_mode", "standard")).strip().lower()
+    stage1_source = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
     jid          = _new_job()
     cancel_ev = _get_cancel(jid)
     _ml_job_ids.add(jid)
@@ -1387,18 +1388,24 @@ def api_ml_scan_run():
         try:
             from modules.ml_screener import run_ml_scan, set_ml_scan_cancel
             set_ml_scan_cancel(cancel_ev)
-            result = run_ml_scan(min_star=min_star, top_n=top_n, scanner_mode=scanner_mode)
-            if isinstance(result, tuple):
+            result = run_ml_scan(min_star=min_star, top_n=top_n, scanner_mode=scanner_mode, stage1_source=stage1_source)
+            
+            # Defensive: ensure result is a valid tuple of DataFrames
+            if isinstance(result, tuple) and len(result) == 2:
                 df_passed, df_all = result
             else:
-                df_passed = result
-                df_all = result
+                # result is invalid (possibly string error or unexpected type)
+                logging.error(f"[ML Scan] Unexpected result type: {type(result).__name__}, value: {result}")
+                _finish_job(jid, error=f"Internal scan error: invalid result type {type(result).__name__}", log_file="")
+                return
 
             def _to_rows(df):
                 import pandas as pd
-                if df is None or not hasattr(df, "to_dict"):
+                # Early return for non-DataFrames
+                if not isinstance(df, pd.DataFrame):
+                    logging.debug(f"[_to_rows] Expected DataFrame, got {type(df).__name__}")
                     return []
-                if hasattr(df, "empty") and df.empty:
+                if df is None or df.empty:
                     return []
                 try:
                     records = []
@@ -1419,6 +1426,21 @@ def api_ml_scan_run():
 
             rows = _to_rows(df_passed)
             all_rows = _to_rows(df_all)
+            
+            # Defensive: validate rows is a list of dicts
+            if not isinstance(rows, list):
+                logging.error("[ML Scan] rows is not a list: %s", type(rows).__name__)
+                rows = []
+            else:
+                # Validate each row is a dict
+                clean_rows = []
+                for i, row in enumerate(rows):
+                    if not isinstance(row, dict):
+                        logging.warning("[ML Scan] row %d is not a dict: %s", i, type(row).__name__)
+                        continue
+                    clean_rows.append(row)
+                rows = clean_rows
+            
             _save_ml_last_scan(rows, all_rows=all_rows)
 
             # Theme report and triple channel summary
@@ -1427,23 +1449,41 @@ def api_ml_scan_run():
             try:
                 from modules.ml_theme_tracker import get_theme_report
                 theme_rpt = get_theme_report(rows if isinstance(rows, list) else [])
-                themes = _clean(theme_rpt.get("themes", []))
+                if isinstance(theme_rpt, dict):
+                    themes = _clean(theme_rpt.get("themes", []))
+                else:
+                    logging.warning("ML theme_rpt is not a dict: %s", type(theme_rpt).__name__)
             except Exception as _te:
                 logging.warning("ML theme report failed: %s", _te)
+            
+            # Triple channel summary (with error handling)
             if scanner_mode != "standard":
-                channel_counts = {"GAP": 0, "GAINER": 0, "LEADER": 0}
-                for row in (rows if isinstance(rows, list) else []):
-                    ch = str(row.get("channel", "")).upper()
-                    if ch in channel_counts:
-                        channel_counts[ch] += 1
-                triple_summary = channel_counts
+                try:
+                    channel_counts = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+                    for row in (rows if isinstance(rows, list) else []):
+                        if not isinstance(row, dict):
+                            logging.debug("Skipping non-dict row in triple summary: %s", type(row).__name__)
+                            continue
+                        ch = str(row.get("channel", "")).upper()
+                        if ch in channel_counts:
+                            channel_counts[ch] += 1
+                    triple_summary = channel_counts
+                except Exception as _tse:
+                    logging.warning("ML triple summary calculation failed: %s", _tse)
+                    triple_summary = {"GAP": 0, "GAINER": 0, "LEADER": 0}
 
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
             # Attach extra data to job dict (status endpoint returns full job dict)
-            with _jobs_lock:
-                _jobs[jid]["themes"] = _sanitize_for_json(themes)
-                _jobs[jid]["triple_summary"] = _sanitize_for_json(triple_summary)
+            try:
+                with _jobs_lock:
+                    _jobs[jid]["themes"] = _sanitize_for_json(themes)
+                    _jobs[jid]["triple_summary"] = _sanitize_for_json(triple_summary)
+            except Exception as _je:
+                logging.error("[ML Scan] Error attaching themes/triple_summary to job: %s", _je, exc_info=True)
+                with _jobs_lock:
+                    _jobs[jid]["themes"] = []
+                    _jobs[jid]["triple_summary"] = {"GAP": 0, "GAINER": 0, "LEADER": 0}
         except Exception as exc:
             logging.exception("ML scan thread error")
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
