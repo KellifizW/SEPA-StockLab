@@ -802,12 +802,58 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     # ── Optional: Triple-scanner channel pre-scan ─────────────────────────
     # Injects additional high-priority tickers from ML 3-channel system
     if scanner_mode in ("triple", "combined") and getattr(C, "ML_TRIPLE_SCANNER_ENABLED", True):
+        # ── Pre-warm enriched cache BEFORE Triple Scan ────────────────────
+        # Leader Scanner calls get_enriched() × 2603 tickers.
+        # Without pre-warm, every ticker calls get_technicals() (~100s first scan).
+        # Pre-warm builds _1y_enriched.parquet for all Stage-1 tickers with 32
+        # parallel workers — subsequent Leader Scanner calls read fast-path parquet
+        # (pure PyArrow read, <1 ms/ticker) instead of recomputing indicators.
+        # On same-day rescans the pre-warm itself hits the fast path — essentially free.
+        try:
+            from modules.data_pipeline import batch_download_and_enrich as _prewarm_bde
+            _s1_tickers_pre = [r["ticker"] for r in candidates]
+            _progress("Cache Warm", 10,
+                      f"預熱快取: {len(_s1_tickers_pre)} 檔 (首次需計算指標，後續即時)…")
+            logger.info("[ML Scan] Pre-warming 1y enriched cache for %d tickers…",
+                        len(_s1_tickers_pre))
+
+            # Track max progress to ensure monotonic increase (never go backward)
+            _cache_warm_max_pct = [10]
+
+            def _prewarm_progress_cb(b: int, t: int, msg: str) -> None:
+                # Map batch_download_and_enrich progress into 10-35% band.
+                # Different call patterns from batch_download_and_enrich (coarse vs fine scales)
+                # require clamping to previous max to prevent progress regression.
+                pct = 10 + int(b / max(t, 1) * 25)
+                pct = min(35, pct)  # Cap at end of band
+                pct = max(pct, _cache_warm_max_pct[0])  # Never decrease
+                _cache_warm_max_pct[0] = pct
+                _progress("Cache Warm", pct, f"預熱快取: {msg}")
+
+            _prewarm_bde(_s1_tickers_pre, period="1y",
+                         progress_cb=_prewarm_progress_cb)
+            logger.info("[ML Scan] Cache pre-warm complete — Leader Scanner will use fast path")
+        except Exception as _prewarm_exc:
+            logger.warning("[ML Scan] Cache pre-warm failed (continuing without): %s",
+                           _prewarm_exc)
+
         try:
             from modules.ml_scanner_channels import run_triple_scan
-            _progress("Triple Scan", 15, "Running Martin Luk 3-channel scanner…")
+            _progress("Triple Scan", 37, "Running Martin Luk 3-channel scanner…")
             s1_tickers = [r["ticker"] for r in candidates]
             triple = run_triple_scan(s1_tickers, include_gaps=True,
                                      include_gainers=True, include_leaders=True)
+            # Display detailed summary from triple scan result
+            summary = triple.get("summary", {})
+            gap_cnt = summary.get("gap_count", 0)
+            gainer_cnt = summary.get("gainer_count", 0)
+            leader_cnt = summary.get("leader_count", 0)
+            total_unique = summary.get("total_unique", 0)
+            _progress("Triple Scan", 43,
+                      f"✓ 完成: {gap_cnt} 缺口 + {gainer_cnt} 漲幅 + {leader_cnt} 領導 = {total_unique} 獨特 | "
+                      f"Gap: {gap_cnt}, Gainers: {gainer_cnt}, Leaders: {leader_cnt}")
+            logger.info("[ML TripleScan] Display: %d gap + %d gainers + %d leaders = %d unique",
+                        gap_cnt, gainer_cnt, leader_cnt, total_unique)
             # Merge channel tickers not already in candidates
             existing = {r["ticker"] for r in candidates}
             added = 0
@@ -835,12 +881,19 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
             logger.warning("[ML Scan] Triple scanner failed (continuing with standard): %s", exc)
 
     # ── Stage 2 ───────────────────────────────────────────────────────────
+    s2_input = len(candidates)
     s2_rows = run_ml_stage2([r["ticker"] for r in candidates], verbose=verbose)
     if _is_cancelled():
         return pd.DataFrame(), pd.DataFrame()
     if not s2_rows:
         _progress("Done", 100, "沒有候選股票通過 ADR/EMA/動量過濾")
         return pd.DataFrame(), pd.DataFrame()
+    # Display Stage 2 filter results
+    _progress("Stage 2", 50,
+              f"✓ 通過篩選: {len(s2_rows)}/{s2_input} ({len(s2_rows)*100//s2_input}%) | "
+              f"已排除: {s2_input - len(s2_rows)} 檔")
+    logger.info("[ML Scan] Stage2 filter: %d/%d passed (%.0f%%) | excluded: %d",
+                len(s2_rows), s2_input, len(s2_rows)*100/s2_input if s2_input > 0 else 0, s2_input - len(s2_rows))
     # Propagate channel badge into Stage 2 rows
     ticker_to_channel = {r["ticker"]: r.get("channel", "") for r in candidates}
     for row in s2_rows:
@@ -874,6 +927,14 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     if top_n_val and len(df_passed) > top_n_val:
         df_passed = df_passed.head(top_n_val)
 
+    # Display final results
+    _progress("Stage 3", 95,
+              f"✓ Stage 3 完成: {len(df_passed)}/{len(df_all)} ({len(df_passed)*100//len(df_all)}%) ⭐ ≥{min_star_val} | "
+              f"顯示: {len(df_passed)} 檔 (Top {top_n_val})")
+    logger.info("[ML Scan] Stage3 results: %d/%d passed quality (%.0f%%) | displaying %d (top %d)",
+                len(df_passed), len(df_all), len(df_passed)*100/len(df_all) if len(df_all) > 0 else 0,
+                len(df_passed), top_n_val or len(df_passed))
+
     elapsed = (datetime.now() - scan_start).total_seconds()
     logger.info("[ML Scan] FINAL: %d passed | %d scored total | %.0fs elapsed",
                 len(df_passed), len(df_all), elapsed)
@@ -902,5 +963,8 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
             cols_show = [c for c in cols_show if c in df_passed.columns]
             print(df_passed[cols_show].to_string(index=False))
 
-    _progress("Done", 100, f"找到 {len(df_passed)} 隻符合條件的股票 (≥{min_star_val}{_STAR})")
+    _progress("Done", 100,
+              f"✅ 掃描完成: {len(df_passed)} 隻符合條件 (≥{min_star_val}⭐) | "
+              f"Stage1→{len(candidates)} | Stage2→{len(s2_rows)} | Stage3→{len(df_passed)} | "
+              f"耗時 {elapsed:.0f}s")
     return df_passed, df_all

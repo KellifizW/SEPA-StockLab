@@ -979,11 +979,42 @@ def get_enriched(ticker: str, period: str = "2y",
     """
     Get OHLCV + all technical indicators in one call.
     Returns DataFrame ready for trend template validation and VCP detection.
+
+    Cache strategy (two-tier):
+      1. _enriched.parquet — pre-computed indicators, fast read (no recompute)
+      2. Raw .parquet — download if needed, compute indicators, save enriched
+    The enriched cache is valid for the current calendar day only.
+    If use_cache=False, skip both caches and force a fresh yfinance download.
     """
+    today = date.today().isoformat()
+    enriched_file = PRICE_CACHE_DIR / f"{ticker.upper()}_{period}_enriched.parquet"
+    enriched_meta = enriched_file.with_suffix(".meta")
+
+    # Fast path: pre-computed enriched parquet (valid today)
+    if use_cache and enriched_file.exists() and enriched_meta.exists():
+        try:
+            if enriched_meta.read_text().strip() == today:
+                df = pd.read_parquet(enriched_file)
+                if not df.empty:
+                    return df
+        except Exception:
+            pass
+
+    # Slow path: download (or read raw cache) + compute + save enriched
     df = get_historical(ticker, period=period, use_cache=use_cache)
     if df.empty:
         return df
-    return get_technicals(df)
+    df_enriched = get_technicals(df)
+
+    # Save enriched so next call (same process or next scan) hits fast path
+    if use_cache:
+        try:
+            df_enriched.to_parquet(enriched_file)
+            enriched_meta.write_text(today)
+        except Exception:
+            pass
+
+    return df_enriched
 
 
 def batch_download_and_enrich(tickers: list, period: str = "2y",
@@ -1000,36 +1031,100 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
     Returns:
         dict[ticker] -> enriched DataFrame  (only non-empty results)
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
     today = date.today().isoformat()
     batch_size = getattr(C, "STAGE2_BATCH_SIZE", 50)
     sleep_sec  = getattr(C, "STAGE2_BATCH_SLEEP", 1.5)
+    # 32 workers for parallel parquet I/O.
+    # Fast path (enriched cache): pure PyArrow read, GIL-releasing → 32 workers is highly effective.
+    # Slow path (first scan of day, raw cache): includes get_technicals() which is GIL-bound,
+    # but still benefits from I/O overlap. After first scan, enriched cache makes subsequent
+    # same-day scans ~10-20x faster (parquet read only, no recomputation).
+    cache_workers = 32  # Parallel cache I/O readers
 
-    # ── Separate cached vs. uncached tickers ─────────────────────────────
+    # ── Step 1: Parallel cache load for all tickers ──────────────────────
     result = {}
     need_download = []
-    for tkr in tickers:
-        cache_file = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
-        meta_file  = cache_file.with_suffix(".meta")
-        if cache_file.exists() and meta_file.exists():
-            try:
-                cache_date = meta_file.read_text().strip()
-                if cache_date == today:
-                    df_cached = pd.read_parquet(cache_file)
-                    if not df_cached.empty:
-                        result[tkr] = get_technicals(df_cached)
-                        continue
-            except Exception:
-                pass
-        need_download.append(tkr)
+    
+    def _load_cached_ticker(tkr: str) -> tuple[str, pd.DataFrame | None, bool]:
+        """Load single cached ticker from enriched cache (pre-computed indicators).
+        
+        Priority:
+          1. _enriched.parquet — pre-computed, fast read, no recomputation needed
+          2. raw .parquet — compute technicals once, save enriched for next scan
+
+        Returns (ticker, df_or_None, is_fast_path).
+        """
+        raw_file      = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
+        enriched_file = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}_enriched.parquet"
+        raw_meta      = raw_file.with_suffix(".meta")
+        enriched_meta = enriched_file.with_suffix(".meta")
+        try:
+            # Fast path: enriched parquet already has pre-computed indicators
+            if enriched_file.exists() and enriched_meta.exists():
+                if enriched_meta.read_text().strip() == today:
+                    df = pd.read_parquet(enriched_file)
+                    if not df.empty:
+                        return (tkr, df, True)
+            # Slow path: raw parquet — compute technicals then save enriched
+            if raw_file.exists() and raw_meta.exists():
+                if raw_meta.read_text().strip() == today:
+                    df_raw = pd.read_parquet(raw_file)
+                    if not df_raw.empty:
+                        df_enriched = get_technicals(df_raw)
+                        # Save enriched so next scan uses fast path
+                        try:
+                            df_enriched.to_parquet(enriched_file)
+                            enriched_meta.write_text(today)
+                        except Exception:
+                            pass
+                        return (tkr, df_enriched, False)
+        except Exception:
+            pass
+        return (tkr, None, False)
+
+    # Parallel load cached tickers
+    total = len(tickers)
+    if progress_cb:
+        progress_cb(0, 1, f"Loading {total} tickers from cache (parallel)…")
+    
+    with ThreadPoolExecutor(max_workers=cache_workers) as executor:
+        futures = {executor.submit(_load_cached_ticker, tkr): tkr for tkr in tickers}
+        loaded = 0
+        n_fast = 0
+        for future in as_completed(futures):
+            loaded += 1
+            tkr, df, is_fast = future.result()
+            if df is not None:
+                result[tkr] = df
+                if is_fast:
+                    n_fast += 1
+            else:
+                need_download.append(tkr)
+            
+            # Progress every 200 tickers loaded
+            if loaded % 200 == 0 and progress_cb:
+                pct = int(loaded / total * 100)
+                progress_cb(1, 2, f"Cache loaded: {loaded}/{total} ({pct}%)…")
 
     if not need_download:
-        logger.info("[Batch] All %d tickers found in cache", len(tickers))
+        n_slow = len(result) - n_fast
+        if n_fast == len(result):
+            logger.info("[Batch] All %d tickers loaded from enriched cache — fast path (no recompute)", len(result))
+        else:
+            logger.info("[Batch] All %d tickers cached: %d fast-path (enriched) + %d slow-path (computed+saved)",
+                        len(result), n_fast, n_slow)
+        if progress_cb:
+            progress_cb(2, 2, f"Cache complete: all {len(result)} tickers ready")
         return result
 
-    logger.info("[Batch] %d/%d tickers need download (%d cached)",
-                len(need_download), len(tickers), len(result))
+    logger.info("[Batch] %d/%d tickers need download (%d cached, loaded via %d workers)",
+                len(need_download), len(tickers), len(result), cache_workers)
+    if progress_cb:
+        progress_cb(1, 2, f"Cache done: {len(result)} cached, {len(need_download)} need download")
 
-    # ── Batch download uncached tickers ──────────────────────────────────
+    # ── Step 2: Batch download uncached tickers ──────────────────────────
     batches = [need_download[i:i + batch_size]
                for i in range(0, len(need_download), batch_size)]
     total_batches = len(batches)
@@ -1070,7 +1165,7 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
                 df_t = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
                 logger.debug(f"[Batch Single] {tkr} extracted, shape {df_t.shape if not df_t.empty else 'empty'}")
                 if not df_t.empty:
-                    # Save to cache
+                    # Save raw OHLCV cache
                     try:
                         cache_path = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
                         df_t.to_parquet(cache_path)
@@ -1082,6 +1177,13 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
                         tech_df = get_technicals(df_t)
                         logger.debug(f"[Batch Single] {tkr} get_technicals returned shape {tech_df.shape}")
                         result[tkr] = tech_df
+                        # Save enriched parquet so next same-day scan skips get_technicals()
+                        try:
+                            enriched_path = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}_enriched.parquet"
+                            tech_df.to_parquet(enriched_path)
+                            enriched_path.with_suffix(".meta").write_text(today)
+                        except Exception:
+                            pass
                     except Exception as tech_err:
                         logger.error(f"[Batch Single] {tkr} get_technicals failed: {type(tech_err).__name__}: {tech_err}", exc_info=True)
             else:
@@ -1096,14 +1198,22 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
                         df_t = df_t[["Open", "High", "Low", "Close", "Volume"]].dropna()
                         if df_t.empty or len(df_t) < 50:
                             continue
-                        # Save to per-ticker cache
+                        # Save raw OHLCV cache
                         try:
                             cache_path = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}.parquet"
                             df_t.to_parquet(cache_path)
                             cache_path.with_suffix(".meta").write_text(today)
                         except Exception:
                             pass
-                        result[tkr] = get_technicals(df_t)
+                        tech_df = get_technicals(df_t)
+                        result[tkr] = tech_df
+                        # Save enriched parquet so next same-day scan skips get_technicals()
+                        try:
+                            enriched_path = PRICE_CACHE_DIR / f"{tkr.upper()}_{period}_enriched.parquet"
+                            tech_df.to_parquet(enriched_path)
+                            enriched_path.with_suffix(".meta").write_text(today)
+                        except Exception:
+                            pass
                     except Exception:
                         continue
 

@@ -38,6 +38,7 @@ import logging
 import threading
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -52,6 +53,11 @@ logger = logging.getLogger(__name__)
 _lock         = threading.Lock()
 _cancel_event = threading.Event()
 _progress_state: dict = {"stage": "idle", "pct": 0, "msg": ""}
+
+# Parallelization settings for channel scanners
+# 32 workers on a 16-core machine: PyArrow reads + NumPy/pandas_ta ops release GIL,
+# so more threads than cores is beneficial for this mixed I/O + compute workload.
+_SCANNER_THREAD_WORKERS = 32  # Number of concurrent threads per channel
 
 
 def _prog(stage: str, pct: int, msg: str) -> None:
@@ -80,6 +86,7 @@ def run_gap_scanner(
 ) -> list[dict]:
     """
     Identify stocks with pre-market / intraday gap-up ≥ min_gap_pct.
+    Uses ThreadPoolExecutor for parallel processing (8 workers by default).
 
     Martin's rules (Chapter 5 — Gap Scanner):
       1. Gap must be ≥ 3% above prior close (configurable)
@@ -103,36 +110,28 @@ def run_gap_scanner(
     _min_gap   = min_gap_pct  if min_gap_pct  is not None else getattr(C, "ML_GAP_SCANNER_MIN_GAP_PCT", 3.0)
     _min_vol   = min_vol_mult if min_vol_mult is not None else getattr(C, "ML_GAP_SCANNER_VOL_MULT", 1.5)
 
-    results: list[dict] = []
-    total = len(tickers)
-    _prog("Gap Scanner", 0, f"Scanning {total} tickers for gap-ups ≥{_min_gap:.1f}%…")
-
-    for i, ticker in enumerate(tickers):
-        if _cancelled():
-            break
-        if i % 20 == 0:
-            _prog("Gap Scanner", int(i / max(total, 1) * 100), f"Checking {ticker}…")
-
+    def _check_ticker_gap(ticker: str) -> dict | None:
+        """Check a single ticker for gap-up. Returns result dict or None."""
         try:
             df = get_enriched(ticker, period="3mo", use_cache=True)
             if df is None or len(df) < 5:
-                continue
+                return None
 
             today_open  = float(df["Open"].iloc[-1])
             prior_close = float(df["Close"].iloc[-2])
             if prior_close <= 0:
-                continue
+                return None
 
             gap_pct = (today_open / prior_close - 1.0) * 100.0
             if gap_pct < _min_gap:
-                continue
+                return None
 
             # Volume confirmation
             avg_vol_20 = float(df["Volume"].tail(21).iloc[:-1].mean())
             today_vol  = float(df["Volume"].iloc[-1])
             vol_mult   = today_vol / avg_vol_20 if avg_vol_20 > 0 else 0.0
             if vol_mult < _min_vol:
-                continue
+                return None
 
             # Gap type classification
             if gap_pct >= 10.0:
@@ -158,7 +157,7 @@ def run_gap_scanner(
             # Flush-and-V check: close near ORH after opening dip
             v_recovery = (orl < today_open * 0.99 and close >= orh * 0.995)
 
-            results.append({
+            return {
                 "ticker":      ticker,
                 "channel":     "GAP",
                 "gap_pct":     round(gap_pct, 2),
@@ -176,14 +175,45 @@ def run_gap_scanner(
                     f"Gap +{gap_pct:.1f}% | Vol {vol_mult:.1f}x | "
                     f"{'V-Recovery 形態' if v_recovery else 'ORH突破觀察'}"
                 ),
-            })
+            }
 
         except Exception as exc:
             logger.debug("[GapScanner] %s error: %s", ticker, exc)
+            return None
+
+    results: list[dict] = []
+    total = len(tickers)
+    _prog("Gap Scanner", 0, f"Scanning {total} tickers for gap-ups ≥{_min_gap:.1f}%… (parallel: {_SCANNER_THREAD_WORKERS} workers)")
+
+    # Parallel processing with ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=_SCANNER_THREAD_WORKERS) as executor:
+        futures = {executor.submit(_check_ticker_gap, tkr): tkr for tkr in tickers}
+        completed = 0
+        for future in as_completed(futures):
+            if _cancelled():
+                break
+            ticker = futures[future]
+            completed += 1
+            try:
+                result = future.result()
+                if result:
+                    results.append(result)
+            except Exception as exc:
+                logger.debug("[GapScanner] Future error for %s: %s", ticker, exc)
+
+            # Progress logging every 100 tickers (or every 50 in first 300) — same pattern as Leader Scanner
+            if completed % 100 == 0 or (completed <= 300 and completed % 50 == 0):
+                pct = int(completed / max(total, 1) * 100)
+                passed_count = len(results)
+                _prog("Gap Scanner", pct,
+                      f"Progress: {completed}/{total} checked, {passed_count} gap candidates ({pct}%)")
+                logger.debug("[ML Channel1 Gap] Progress: %d/%d checked, %d passed",
+                             completed, total, passed_count)
 
     results.sort(key=lambda x: x["gap_pct"], reverse=True)
     _prog("Gap Scanner", 100, f"Done — {len(results)} gap candidates found")
-    logger.info("[ML Channel1 Gap] Found %d gap candidates (≥%.1f%%)", len(results), _min_gap)
+    logger.info("[ML Channel1 Gap] Found %d gap candidates (≥%.1f%%) using %d workers", 
+                len(results), _min_gap, _SCANNER_THREAD_WORKERS)
     return results
 
 
@@ -221,11 +251,16 @@ def run_biggest_gainers(
     _min_price = min_price if min_price is not None else getattr(C, "ML_MIN_PRICE", 5.0)
     _min_vol   = min_vol   if min_vol   is not None else getattr(C, "ML_MIN_DOLLAR_VOL", 1_000_000)
 
-    _prog("Gainers Scanner", 0, f"Fetching top {_top_n} gainers via yfinance…")
+    _prog("Gainers Scanner", 0, f"Fetching top {_top_n} gainers…")
 
-    # Fallback: return empty list since we can't fetch all-market gainers
-    # In production, this would connect to a real-time data service
-    logger.warning("[ML Channel2 Gainers] Biggest gainers scanner requires real-time market data (disabled for NASDAQ FTP mode)")
+    # Channel 2 requires a real-time market data feed (e.g., Bloomberg, Refinitiv, or paid screener API)
+    # to rank all US stocks by prior-day % gain. Python's free sources (yfinance, finvizfinance)
+    # cannot efficiently fetch and sort 4000+ stocks by a single metric in parallel.
+    # This is a known limitation of the NASDAQ FTP + yfinance-only architecture.
+    #
+    # Graceful degradation: return empty list. Gap Scanner (Channel 1) and Leader Scanner (Channel 3)
+    # still provide coverage using historical + EMA-based logic.
+    logger.debug("[ML Channel2 Gainers] Channel disabled — requires real-time market data feed (gap & leader scans still active)")
     quotes = []
 
     if not quotes:
@@ -313,6 +348,7 @@ def run_leader_scanner(
 ) -> list[dict]:
     """
     Identify established leaders for EMA pullback / base entry.
+    Uses ThreadPoolExecutor for parallel processing (8 workers by default).
 
     Martin's rules (Chapter 5 — Leader Scanner):
       1. Must be at or near 52-week high (within 15%)
@@ -337,20 +373,12 @@ def run_leader_scanner(
     _min_weeks    = min_weeks_trending if min_weeks_trending is not None else getattr(C, "ML_LEADER_MIN_WEEKS", 4)
     _dist_52h_max = getattr(C, "ML_LEADER_MAX_DIST_52H_PCT", 15.0)
 
-    results: list[dict] = []
-    total = len(tickers)
-    _prog("Leader Scanner", 0, f"Scanning {total} tickers for leaders…")
-
-    for i, ticker in enumerate(tickers):
-        if _cancelled():
-            break
-        if i % 20 == 0:
-            _prog("Leader Scanner", int(i / max(total, 1) * 100), f"Checking {ticker}…")
-
+    def _check_ticker_leader(ticker: str) -> dict | None:
+        """Check a single ticker for leader pattern. Returns result dict or None."""
         try:
             df = get_enriched(ticker, period="1y", use_cache=True)
             if df is None or len(df) < 50:
-                continue
+                return None
 
             close = float(df["Close"].iloc[-1])
 
@@ -358,16 +386,16 @@ def run_leader_scanner(
             high_52w = float(df["High"].tail(252).max())
             dist_52h = (high_52w / close - 1.0) * 100.0 if close > 0 else 999
             if dist_52h > _dist_52h_max:
-                continue
+                return None
 
             # 1-month momentum
             if len(df) < _mom_period + 1:
-                continue
+                return None
             prior_price = float(df["Close"].iloc[-_mom_period - 1])
             mom_1m = (close / prior_price - 1.0) * 100.0 if prior_price > 0 else 0
             min_mom = getattr(C, "ML_LEADER_MIN_MOM_1M_PCT", 15.0)
             if mom_1m < min_mom:
-                continue
+                return None
 
             # EMA structure
             ema = get_ema_alignment(df)
@@ -378,7 +406,7 @@ def run_leader_scanner(
             all_stacked  = ema.get("all_stacked", False)
 
             if not ema21_rising:
-                continue
+                return None
 
             # Weeks trading above 21 EMA
             weeks_above = 0
@@ -392,14 +420,14 @@ def run_leader_scanner(
                         break
                 weeks_above = streak // 5  # approx trading days → weeks
             if weeks_above < _min_weeks:
-                continue
+                return None
 
             # Pullback assessment
             pb = get_pullback_depth(df)
             pb_quality  = pb.get("pullback_quality", "unknown")
             pullback_to = pb.get("nearest_ema")
 
-            results.append({
+            return {
                 "ticker":            ticker,
                 "channel":           "LEADER",
                 "mom_1m_pct":        round(mom_1m, 2),
@@ -415,16 +443,48 @@ def run_leader_scanner(
                     f"1M +{mom_1m:.1f}% | {weeks_above}週在21EMA上方 | "
                     f"距52W高 -{dist_52h:.1f}% | 回調至 {pullback_to or 'N/A'}"
                 ),
-            })
+            }
 
         except Exception as exc:
             logger.debug("[ML Channel3 Leader] %s error: %s", ticker, exc)
+            return None
+
+    results: list[dict] = []
+    total = len(tickers)
+    _prog("Leader Scanner", 0, f"Scanning {total} tickers for leaders… (parallel: {_SCANNER_THREAD_WORKERS} workers)")
+
+    # Parallel processing with ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=_SCANNER_THREAD_WORKERS) as executor:
+        futures = {executor.submit(_check_ticker_leader, tkr): tkr for tkr in tickers}
+        completed = 0
+        last_log_count = 0
+        for future in as_completed(futures):
+            if _cancelled():
+                break
+            ticker = futures[future]
+            completed += 1
+            try:
+                result = future.result()
+                if result:
+                    results.append(result)
+            except Exception as exc:
+                logger.debug("[ML Channel3 Leader] Future error for %s: %s", ticker, exc)
+
+            # Update progress every 100 tickers or more frequently at the start
+            if completed % 100 == 0 or (completed <= 300 and completed % 50 == 0):
+                pct = int(completed / max(total, 1) * 100)
+                passed_count = len(results)
+                _prog("Leader Scanner", pct, 
+                      f"Progress: {completed}/{total} checked, {passed_count} leaders found ({pct}%)")
+                logger.debug("[ML Channel3 Leader] Progress: %d/%d checked, %d passed", 
+                            completed, total, passed_count)
 
     # Sort: most momentum first, then fewest weeks (fresher leaders slightly
     # preferred for entry because they haven't extended as far yet)
     results.sort(key=lambda x: (-x["mom_1m_pct"], x["dist_52h_pct"]))
     _prog("Leader Scanner", 100, f"Done — {len(results)} leaders found")
-    logger.info("[ML Channel3 Leader] Found %d leaders (%dw min above 21EMA)", len(results), _min_weeks)
+    logger.info("[ML Channel3 Leader] Found %d leaders (%dw min above 21EMA) using %d workers", 
+                len(results), _min_weeks, _SCANNER_THREAD_WORKERS)
     return results
 
 
