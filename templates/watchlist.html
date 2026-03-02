@@ -40,23 +40,23 @@
   </div>
 </div>
 
-<!-- Loading overlay -->
+<!-- Loading overlay (used by async add / refresh) -->
 <div id="wlLoading" class="text-center py-4 d-none">
   <div class="spinner-border text-info spinner-glow"></div>
   <div class="mt-2 text-muted small" id="wlLoadMsg">Working…</div>
 </div>
 
-<!-- Grade tabs -->
-<ul class="nav nav-tabs mb-0" style="border-color:#30363d">
+<!-- Grade tabs — switching applies CSS filter instantly, no round-trip needed -->
+<ul class="nav nav-tabs mb-0" id="wlTabs" style="border-color:#30363d">
   <li class="nav-item">
-    <a class="nav-link active" href="#" data-grade="all" onclick="showGrade('all',this)">
-      All <span class="badge bg-secondary ms-1" id="cnt-all">0</span>
+    <a class="nav-link active" href="#" onclick="setWlGrade('all',this)">
+      All <span class="badge bg-secondary ms-1" id="cnt-all">{{ wl.get('A',{})|length + wl.get('B',{})|length + wl.get('C',{})|length }}</span>
     </a>
   </li>
-  {% for g,colour in [('A','success'),('B','warning'),('C','info')] %}
+  {% for g, colour in [('A','success'),('B','warning'),('C','info')] %}
   <li class="nav-item">
-    <a class="nav-link" href="#" data-grade="{{ g }}" onclick="showGrade('{{ g }}',this)" style="color:var(--bs-body-color)">
-      Grade {{ g }} <span class="badge bg-{{ colour }} ms-1" id="cnt-{{g}}">{{ wl[g]|length }}</span>
+    <a class="nav-link" href="#" onclick="setWlGrade('{{ g }}',this)" style="color:var(--bs-body-color)">
+      Grade {{ g }} <span class="badge bg-{{ colour }} ms-1" id="cnt-{{ g }}">{{ wl[g]|length }}</span>
     </a>
   </li>
   {% endfor %}
@@ -72,7 +72,10 @@
           <th>Actions</th>
         </tr>
       </thead>
-      <tbody id="wlBody"></tbody>
+      {# data-grade-filter drives the CSS-based row show/hide; htmx preserves this attribute on swap #}
+      <tbody id="wlBody" data-grade-filter="all">
+        {% include '_watchlist_rows.html' %}
+      </tbody>
     </table>
   </div>
 </div>
@@ -80,52 +83,15 @@
 {% endblock %}
 {% block extra_js %}
 <script>
-let _wl = {{ wl | tojson }};
-let _currentGrade = 'all';
-
-function renderWatchlist(wl) {
-  _wl = wl;
-  const body = document.getElementById('wlBody');
-  body.innerHTML = '';
-  let total = 0;
-  ['A','B','C'].forEach(g => {
-    const stocks = wl[g] || {};
-    document.getElementById(`cnt-${g}`).textContent = Object.keys(stocks).length;
-    if (_currentGrade !== 'all' && _currentGrade !== g) return;
-    Object.entries(stocks).forEach(([ticker, d]) => {
-      total++;
-      const gradeClr = {A:'success',B:'warning',C:'info'}[g];
-      const vcp = d.vcp_grade && ['A','B'].includes(d.vcp_grade)
-        ? `<span class="tag-vcp">${d.vcp_grade}</span>` : (d.vcp_grade||'—');
-      body.innerHTML += `<tr>
-        <td><span class="badge bg-${gradeClr}">${g}</span></td>
-        <td><a href="/analyze?ticker=${ticker}" class="fw-bold text-decoration-none" style="color:var(--accent)">${ticker}</a></td>
-        <td>${d.rs_rank ? Math.round(d.rs_rank) : '—'}</td>
-        <td>${vcp}</td>
-        <td>${d.pivot_price ? `$${Number(d.pivot_price).toFixed(2)}` : '—'}</td>
-        <td class="text-muted small">${d.added_date||'—'}</td>
-        <td class="text-muted small">${d.note||''}</td>
-        <td>
-          <div class="btn-group btn-group-sm">
-            <a href="/vcp?ticker=${ticker}" class="btn btn-outline-secondary" title="VCP"><i class="bi bi-activity"></i></a>
-            <button class="btn btn-outline-success" onclick="promote('${ticker}')" title="Promote">↑</button>
-            <button class="btn btn-outline-warning" onclick="demote('${ticker}')" title="Demote">↓</button>
-            <button class="btn btn-outline-danger" onclick="removeStock('${ticker}')" title="Remove"><i class="bi bi-trash"></i></button>
-          </div>
-        </td>
-      </tr>`;
-    });
-  });
-  document.getElementById('cnt-all').textContent = Object.values(wl).reduce((s,v)=>s+Object.keys(v).length,0);
-}
-
-function showGrade(g, el) {
-  _currentGrade = g;
-  document.querySelectorAll('.nav-tabs .nav-link').forEach(a => a.classList.remove('active'));
+// ── Grade filter (CSS-driven, instant — no server round-trip) ─────────────────
+function setWlGrade(g, el) {
+  document.getElementById('wlBody').dataset.gradeFilter = g;
+  document.querySelectorAll('#wlTabs .nav-link').forEach(a => a.classList.remove('active'));
   el.classList.add('active');
-  renderWatchlist(_wl);
 }
 
+// ── Add stock (async background job) ─────────────────────────────────────────
+// htmx handles promote/demote/remove; JS only needed for the polling flow here.
 async function addStock() {
   const ticker = document.getElementById('addTicker').value.trim().toUpperCase();
   const grade  = document.getElementById('addGrade').value || null;
@@ -141,66 +107,38 @@ async function addStock() {
   }).then(x=>x.json());
 
   pollJob(`/api/watchlist/add/status/${r.job_id}`,
-    (res) => {
+    () => {
       document.getElementById('btnAdd').disabled = false;
       document.getElementById('wlLoading').classList.add('d-none');
       document.getElementById('addTicker').value = '';
-      renderWatchlist(res.watchlist);
-      toast(`${ticker} added to watchlist`);
+      // Refresh table via htmx — server returns rows + OOB badge updates
+      htmx.ajax('GET', '/htmx/watchlist/body', {target: '#wlBody', swap: 'innerHTML'});
+      toast(`✅ ${ticker} added to watchlist`);
     },
     err => {
       document.getElementById('btnAdd').disabled = false;
       document.getElementById('wlLoading').classList.add('d-none');
-      toast(`Failed: ${err}`, false);
+      toast(`❌ Failed: ${err}`, false);
     }
   );
 }
 
-async function removeStock(ticker) {
-  if (!confirm(`Remove ${ticker} from watchlist?`)) return;
-  const r = await fetch('/api/watchlist/remove', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ticker})
-  }).then(x=>x.json());
-  if (r.ok) { toast(`${ticker} removed`); renderWatchlist(r.watchlist); }
-  else toast(`Error: ${r.error}`, false);
-}
-
-async function promote(ticker) {
-  const r = await fetch('/api/watchlist/promote', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ticker})
-  }).then(x=>x.json());
-  if (r.ok) { toast(`${ticker} promoted`); renderWatchlist(r.watchlist); }
-  else toast(`Error: ${r.error}`, false);
-}
-
-async function demote(ticker) {
-  const r = await fetch('/api/watchlist/demote', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ticker})
-  }).then(x=>x.json());
-  if (r.ok) { toast(`${ticker} demoted`); renderWatchlist(r.watchlist); }
-  else toast(`Error: ${r.error}`, false);
-}
-
+// ── Refresh all (async background job) ────────────────────────────────────────
 async function refreshWatchlist() {
   document.getElementById('wlLoading').classList.remove('d-none');
   document.getElementById('wlLoadMsg').textContent = 'Re-analyzing all watchlist stocks…';
   const r = await fetch('/api/watchlist/refresh', {method:'POST'}).then(x=>x.json());
   pollJob(`/api/watchlist/refresh/status/${r.job_id}`,
-    res => {
+    () => {
       document.getElementById('wlLoading').classList.add('d-none');
-      renderWatchlist(res.watchlist);
+      htmx.ajax('GET', '/htmx/watchlist/body', {target: '#wlBody', swap: 'innerHTML'});
       toastCompletion('✅ 觀察列表已重新分析完成', true);
     },
     err => {
       document.getElementById('wlLoading').classList.add('d-none');
-      toast(`Error: ${err}`, false);
+      toast(`❌ Error: ${err}`, false);
     }
   );
 }
-
-renderWatchlist(_wl);
 </script>
 {% endblock %}

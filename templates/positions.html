@@ -16,38 +16,45 @@
   </div>
   <div class="collapse" id="addForm">
     <div class="card-body">
+      {# htmx form: replaces the manual addPosition() JS function #}
+      <form id="addPosForm"
+            hx-post="/htmx/positions/add"
+            hx-target="#posBody"
+            hx-swap="beforeend"
+            hx-on::after-request="handlePosAdded(event)">
       <div class="row g-2 align-items-end">
         <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Ticker</label>
-          <input class="form-control" id="pTicker" placeholder="NVDA"
-                 oninput="this.value=this.value.toUpperCase()" style="text-transform:uppercase">
+          <input class="form-control" id="pTicker" name="ticker" placeholder="NVDA"
+                 required oninput="this.value=this.value.toUpperCase()" style="text-transform:uppercase">
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Entry Price</label>
-          <input class="form-control" id="pEntry" type="number" step="0.01" placeholder="500.00">
+          <input class="form-control" id="pEntry" name="buy_price" type="number" step="0.01" placeholder="500.00" required>
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Shares</label>
-          <input class="form-control" id="pShares" type="number" placeholder="10">
+          <input class="form-control" id="pShares" name="shares" type="number" placeholder="10" required>
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Stop Loss</label>
-          <input class="form-control" id="pStop" type="number" step="0.01" placeholder="480.00">
+          <input class="form-control" id="pStop" name="stop_loss" type="number" step="0.01" placeholder="480.00" required>
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Target (optional)</label>
-          <input class="form-control" id="pTarget" type="number" step="0.01" placeholder="560.00">
+          <input class="form-control" id="pTarget" name="target" type="number" step="0.01" placeholder="560.00">
         </div>
         <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Note</label>
-          <input class="form-control" id="pNote" placeholder="VCP breakout">
+          <input class="form-control" id="pNote" name="note" placeholder="VCP breakout">
         </div>
         <div class="col-12 col-md-2">
-          <button class="btn btn-accent w-100" onclick="addPosition()">
+          <button type="submit" class="btn btn-accent w-100">
             <i class="bi bi-plus me-1"></i>Add
           </button>
         </div>
       </div>
+      </form>
     </div>
   </div>
 </div>
@@ -143,115 +150,22 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-async function addPosition() {
-  const t = document.getElementById('pTicker').value.trim().toUpperCase();
-  const e = parseFloat(document.getElementById('pEntry').value);
-  const s = parseInt(document.getElementById('pShares').value);
-  const sl= parseFloat(document.getElementById('pStop').value);
-  const tg= parseFloat(document.getElementById('pTarget').value) || null;
-  const n = document.getElementById('pNote').value;
-  if (!t||!e||!s||!sl) { toast('Fill in Ticker, Entry, Shares, Stop Loss', false); return; }
-
-  // Show loading state
-  const btn = event?.target;
-  if (btn) btn.disabled = true;
-
-  try {
-    console.log(`[addPosition] Starting for ${t}...`);
-    const fetchStart = Date.now();
-    
-    const r = await Promise.race([
-      fetch('/api/positions/add', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ticker:t, buy_price:e, shares:s, stop_loss:sl, target:tg, note:n})
-      }).then(x=>x.json()),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Request timeout (10s)')), 10000)
-      )
-    ]);
-    
-    const fetchTime = Date.now() - fetchStart;
-    console.log(`[addPosition] API response: ${fetchTime}ms, ok=${r.ok}`);
-
-    if (r.ok && r.positions && r.positions[t]) {
-      const p = r.positions[t];
-      const tbody = document.getElementById('posBody');
-      
-      // Remove empty placeholder row if exists
-      const emptyRows = tbody.querySelectorAll('tr');
-      for (const row of emptyRows) {
-        if (row.textContent.includes('No open positions')) {
-          row.remove();
-          break;
-        }
-      }
-      
-      // Build new row HTML
-      const newRowHTML = `<tr id="pos-${t}" class="table-primary" style="opacity:0.7; animation: fadeIn 0.5s;">
-        <td><a href="/analyze?ticker=${t}" class="fw-bold text-decoration-none" style="color:var(--accent)">${t}</a></td>
-        <td>$${p.buy_price.toFixed(2)}</td>
-        <td class="text-danger">$${p.stop_loss.toFixed(2)}</td>
-        <td class="text-success">$${p.target.toFixed(2)}</td>
-        <td>${p.rr.toFixed(1)}:1</td>
-        <td>${p.shares.toLocaleString()}</td>
-        <td>$${p.risk_dollar.toLocaleString()}</td>
-        <td>${p.days_held || 0}</td>
-        <td class="text-muted small">${p.note}</td>
-        <td>
-          <button class="btn btn-sm btn-outline-danger" onclick="closePos('${t}')">
-            <i class="bi bi-door-open me-1"></i>Close
-          </button>
-        </td>
-      </tr>`;
-      
-      // Add or update row
-      const existingRow = document.getElementById(`pos-${t}`);
-      if (existingRow) {
-        existingRow.outerHTML = newRowHTML;
-      } else {
-        tbody.insertAdjacentHTML('beforeend', newRowHTML);
-      }
-      
-      // Clear and collapse form
-      document.getElementById('pTicker').value = '';
-      document.getElementById('pEntry').value = '';
-      document.getElementById('pShares').value = '';
-      document.getElementById('pStop').value = '';
-      document.getElementById('pTarget').value = '';
-      document.getElementById('pNote').value = '';
-      
-      const addForm = document.getElementById('addForm');
-      if (addForm.classList.contains('show')) {
-        addForm.classList.remove('show');
-      }
-      
-      toastCompletion(`✅ ${t} 持倉已新增`, true);
-      console.log(`[addPosition] Row updated, total time: ${Date.now() - fetchStart}ms`);
-    }
-    else {
-      const err = r.error || 'Unknown error';
-      console.log(`[addPosition] API error: ${err}`);
-      toast(`Error: ${err}`, false);
-    }
-    if (btn) btn.disabled = false;
-  } catch(e) {
-    console.error('[addPosition] Exception:', e);
-    toast(`Error: ${e.message}`, false);
-    if (btn) btn.disabled = false;
+// ── htmx add-position callback ────────────────────────────────────────────────
+// Called via hx-on::after-request on the #addPosForm form.
+// Clears form fields and collapses the panel on success.
+// The new <tr> is already injected into #posBody by htmx (hx-swap="beforeend").
+function handlePosAdded(event) {
+  if (!event.detail.successful) return;
+  // Remove "No open positions" placeholder if present
+  const empty = document.querySelector('#posBody tr td[colspan]');
+  if (empty) empty.closest('tr').remove();
+  // Reset form fields
+  document.getElementById('addPosForm').reset();
+  // Collapse the add-form panel
+  const collapseEl = document.getElementById('addForm');
+  if (collapseEl.classList.contains('show')) {
+    bootstrap.Collapse.getInstance(collapseEl)?.hide();
   }
-}
-
-// CSS for animation
-if (!document.querySelector('style[data-animation]')) {
-  const style = document.createElement('style');
-  style.setAttribute('data-animation', 'true');
-  style.textContent = `
-    @keyframes fadeIn {
-      from { opacity: 0.3; background-color: var(--bs-primary); }
-      to { opacity: 1; background-color: transparent; }
-    }
-  `;
-  document.head.appendChild(style);
 }
 
 function closePos(ticker) {

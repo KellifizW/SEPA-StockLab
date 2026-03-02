@@ -1,0 +1,56 @@
+{#─────────────────────────────────────────────────────────────────────────────
+  _watchlist_rows.html
+  Pure <tr> rows for the watchlist tbody.
+  Used two ways:
+    1. Initial page render — {% include '_watchlist_rows.html' %} inside <tbody>
+    2. htmx response body — rendered by _htmx_wl_rows() helper in app.py,
+       prepended with OOB <span> elements that update the badge counts.
+  Action buttons use hx-* attributes; no per-page JS functions needed.
+─────────────────────────────────────────────────────────────────────────────#}
+{%- set _gc = {'A':'success','B':'warning','C':'info'} -%}
+{%- set _total = wl.get('A',{})|length + wl.get('B',{})|length + wl.get('C',{})|length -%}
+{% for g in ['A','B','C'] %}
+  {% for ticker, d in wl.get(g, {}).items() %}
+  <tr data-grade="{{ g }}" id="wl-row-{{ ticker }}">
+    <td><span class="badge bg-{{ _gc[g] }}">{{ g }}</span></td>
+    <td>
+      <a href="/analyze?ticker={{ ticker }}"
+         class="fw-bold text-decoration-none" style="color:var(--accent)">{{ ticker }}</a>
+    </td>
+    <td>{{ (d.rs_rank|int) if d.rs_rank else '—' }}</td>
+    <td>
+      {%- if d.vcp_grade and d.vcp_grade in ['A','B'] -%}
+        <span class="tag-vcp">{{ d.vcp_grade }}</span>
+      {%- else -%}{{ d.vcp_grade or '—' }}{%- endif -%}
+    </td>
+    <td>{% if d.pivot_price %}${{ "%.2f"|format(d.pivot_price|float) }}{% else %}—{% endif %}</td>
+    <td class="text-muted small">{{ d.added_date or '—' }}</td>
+    <td class="text-muted small">{{ d.note or '' }}</td>
+    <td>
+      <div class="btn-group btn-group-sm">
+        <a href="/vcp?ticker={{ ticker }}" class="btn btn-outline-secondary" title="VCP">
+          <i class="bi bi-activity"></i></a>
+        <button class="btn btn-outline-success" title="Promote to higher grade"
+                hx-post="/htmx/watchlist/promote"
+                hx-vals='{"ticker":"{{ ticker }}"}'
+                hx-target="#wlBody" hx-swap="innerHTML">↑</button>
+        <button class="btn btn-outline-warning" title="Demote to lower grade"
+                hx-post="/htmx/watchlist/demote"
+                hx-vals='{"ticker":"{{ ticker }}"}'
+                hx-target="#wlBody" hx-swap="innerHTML">↓</button>
+        <button class="btn btn-outline-danger" title="Remove from watchlist"
+                hx-post="/htmx/watchlist/remove"
+                hx-vals='{"ticker":"{{ ticker }}"}'
+                hx-target="#wlBody" hx-swap="innerHTML"
+                hx-confirm="Remove {{ ticker }} from watchlist?">
+          <i class="bi bi-trash"></i></button>
+      </div>
+    </td>
+  </tr>
+  {% endfor %}
+{% endfor %}
+{% if _total == 0 %}
+<tr><td colspan="8" class="text-center text-muted py-4">
+  <i class="bi bi-inbox fs-2 d-block mb-2"></i>Watchlist is empty.
+</td></tr>
+{% endif %}

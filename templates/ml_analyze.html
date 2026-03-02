@@ -2,81 +2,6 @@
 {% block title %}ML 個股分析{% endblock %}
 
 {% block extra_head %}
-<!-- Fallback styles for CSS CDN failure - Ensure visibility -->
-<style>
-  /* ════ Critical: Make content visible even if Bootstrap fails ════ */
-  html, body {
-    background: #0d1117 !important;
-    color: #c9d1d9 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    width: 100% !important;
-    min-height: 100vh !important;
-  }
-  
-  /* Navbar styling */
-  nav, .navbar {
-    display: block !important;
-    background: #161b22 !important;
-    border-bottom: 1px solid #30363d !important;
-    width: 100% !important;
-    padding: 0.5rem 1rem !important;
-  }
-  
-  /* Main content must be visible */
-  .container-fluid {
-    display: block !important;
-    width: 100% !important;
-    padding: 1rem !important;
-    margin: 0 !important;
-    background: #0d1117 !important;
-    color: #c9d1d9 !important;
-  }
-  
-  /* Row and col */
-  .row {
-    display: block !important;
-    width: 100% !important;
-    margin: 1rem 0 !important;
-  }
-  
-  .col-12, .col-6, .col-md-2, .col-md-3 {
-    display: block !important;
-    width: 100% !important;
-    margin-bottom: 1rem !important;
-  }
-  
-  /* Form elements */
-  input, textarea, select, button {
-    background: #0d1117 !important;
-    color: #c9d1d9 !important;
-    border: 1px solid #30363d !important;
-    padding: 0.5rem !important;
-    margin: 0.25rem 0 !important;
-    display: inline-block !important;
-  }
-  
-  button {
-    cursor: pointer !important;
-    background: #238636 !important;
-    color: white !important;
-  }
-  
-  /* Text must be visible */
-  h1, h2, h3, h4, h5, h6, p {
-    color: #c9d1d9 !important;
-  }
-  
-  /* Cards */
-  .card {
-    display: block !important;
-    background: #161b22 !important;
-    border: 1px solid #30363d !important;
-    margin: 1rem 0 !important;
-    padding: 0.5rem !important;
-  }
-</style>
-
 <style>
   .star-val { font-size: 2rem; font-weight: 700; }
   .star-5  { color: #3fb950; }
@@ -104,6 +29,13 @@
   .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 10px; font-size: 11px; color: #8b949e; }
   .chart-legend span { display: flex; align-items: center; gap: 4px; }
   .chart-range-btn { font-size: 11px; padding: 2px 8px; }
+  .slot-range-btn {
+    font-size: 10px; padding: 2px 7px;
+    background: #21262d; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 4px; cursor: pointer; transition: background 0.15s, color 0.15s;
+  }
+  .slot-range-btn:hover { background: #30363d; color: #c9d1d9; }
+  .slot-range-btn.active { background: #238636; color: #fff; border-color: #238636; }
   .chart-tab-active { border-bottom: 2px solid #3fb950 !important; color: #3fb950 !important; }
   /* Indicator toggles */
   .ind-toggle { cursor: pointer; user-select: none; border-radius: 4px; padding: 1px 4px; transition: opacity .2s; }
@@ -127,9 +59,7 @@
   .market-status.closed { background:#1c2128; color:#8b949e; }
   .live-pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:#3fb950; animation:pulse 1.5s infinite; }
   @keyframes pulse { 0%, 100% { opacity:1; } 50% { opacity:0.4; } }
-  #watchPanel { display:block !important; width:100%; }
-  #watchPanel .card { display:block !important; width:100%; }
-  #watchPanel .card-body { display:block !important; width:100%; overflow:auto; }
+  #watchPanel { width:100%; }
   #intradayChartContainer { background:#0d1117; border-radius:6px; overflow:hidden; display:block; min-height:450px; box-sizing:border-box; }
   #resultArea { display:block; width:100%; }
   .intraday-legend { display:flex; flex-wrap:wrap; gap:10px; padding:8px 12px; font-size:11px; color:#8b949e; border-bottom:1px solid #21262d; }
@@ -158,8 +88,7 @@
                id="tickerInput" placeholder="輸入股票代號…  e.g. AAPL"
                value="{{ prefill }}" style="background:#0d1117;color:#c9d1d9;border-color:#30363d"
                onkeydown="if(event.key==='Enter') analyzeStock()">
-        <button class="btn btn-sm" onclick="analyzeStock()"
-                style="background:#238636;color:#fff;border:1px solid #2ea043">
+        <button class="btn btn-accent btn-sm" onclick="analyzeStock()">
           <i class="bi bi-search me-1"></i>分析 Analyze
         </button>
       </div>
@@ -372,6 +301,8 @@
     </div>
   </div>
 
+  </div><!-- /reviewPanel -->
+
   <!-- Watch Panel (盯盤) -->
   <div id="watchPanel" class="d-none">
 
@@ -402,28 +333,49 @@
       <strong>美股現已休市</strong> — 切換至<button class="btn btn-link p-0" style="color:#3fb950" onclick="switchMlMode('review')">複盤模式</button>查看完整分析。
     </div>
 
-    <!-- Intraday Chart Selection -->
-    <div class="intraday-btn-group">
-      <button class="intraday-btn active" onclick="loadIntradayChart(document.getElementById('watchTicker').textContent, '5m')">5分鐘</button>
-      <button class="intraday-btn" onclick="loadIntradayChart(document.getElementById('watchTicker').textContent, '15m')">15分鐘</button>
-      <button class="intraday-btn" onclick="loadIntradayChart(document.getElementById('watchTicker').textContent, '1h')">1小時</button>
-    </div>
-
-    <!-- Intraday Chart -->
-    <div class="card mb-3">
-      <div class="card-body p-0">
-        <div class="intraday-legend">
-          <span><span style="display:inline-block;width:14px;height:2px;background:#00d4ff"></span>&nbsp;EMA 9</span>
-          <span><span style="display:inline-block;width:14px;height:2px;background:#3fb950"></span>&nbsp;EMA 21</span>
-          <span><span style="display:inline-block;width:14px;height:2px;background:#ff9500"></span>&nbsp;Intraday VWAP</span>
-          <span><span style="display:inline-block;width:14px;height:2px;background:#e3b341;border-top:1px dashed #e3b341"></span>&nbsp;ORH</span>
-          <span><span style="display:inline-block;width:14px;height:2px;background:#f85149;border-top:1px dashed #f85149"></span>&nbsp;LOD</span>
-          <span style="margin-left:auto; font-size:10px; color:#6e7681">📍 灰色 = 盤前 Pre-Market</span>
+    <!-- 2-Column Chart Slots -->
+    <div class="row g-3 mb-3">
+      <!-- Slot A -->
+      <div class="col-12 col-lg-6">
+        <div class="card h-100">
+          <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
+            <span style="font-size:13px;font-weight:600"><i class="bi bi-graph-up me-1" style="color:#3fb950"></i>圖表 A</span>
+            <select id="watchSlotASelect" class="form-select form-select-sm" style="width:auto;background:#1c2128;color:#c9d1d9;border-color:#30363d" onchange="setWatchChartSlot('A',this.value)">
+              <option value="5m" selected>5分鐘</option>
+              <option value="15m">15分鐘</option>
+              <option value="1h">1小時</option>
+              <option value="daily">日K</option>
+              <option value="weekly">周K</option>
+              <option value="off">關閉</option>
+            </select>
+          </div>
+          <div class="card-body p-0">
+            <div id="watchSlotALegend" class="intraday-legend" style="border-bottom:1px solid #21262d;min-height:32px;flex-wrap:wrap"></div>
+            <div id="watchSlotAContainer" style="height:420px;background:#0d1117;overflow:hidden">
+              <div class="text-center py-5 text-secondary"><div class="spinner-border spinner-border-sm" style="color:#3fb950"></div></div>
+            </div>
+          </div>
         </div>
-        <div id="intradayChartContainer">
-          <div class="text-center py-5 text-secondary">
-            <div class="spinner-border spinner-border-sm" style="color:#3fb950"></div>
-            <div class="mt-2" style="font-size:12px">載入盤中圖表…</div>
+      </div>
+      <!-- Slot B -->
+      <div class="col-12 col-lg-6">
+        <div class="card h-100">
+          <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
+            <span style="font-size:13px;font-weight:600"><i class="bi bi-calendar-week me-1" style="color:#3fb950"></i>圖表 B</span>
+            <select id="watchSlotBSelect" class="form-select form-select-sm" style="width:auto;background:#1c2128;color:#c9d1d9;border-color:#30363d" onchange="setWatchChartSlot('B',this.value)">
+              <option value="5m">5分鐘</option>
+              <option value="15m">15分鐘</option>
+              <option value="1h">1小時</option>
+              <option value="daily" selected>日K</option>
+              <option value="weekly">周K</option>
+              <option value="off">關閉</option>
+            </select>
+          </div>
+          <div class="card-body p-0">
+            <div id="watchSlotBLegend" class="intraday-legend" style="border-bottom:1px solid #21262d;min-height:32px;flex-wrap:wrap"></div>
+            <div id="watchSlotBContainer" style="height:420px;background:#0d1117;overflow:hidden">
+              <div class="text-center py-5 text-secondary"><div class="spinner-border spinner-border-sm" style="color:#3fb950"></div></div>
+            </div>
           </div>
         </div>
       </div>
@@ -439,20 +391,37 @@
       </div>
     </div>
 
-    <!-- Intraday Commentary -->
-    <div class="card mb-3">
-      <div class="card-header">
-        <i class="bi bi-chat-dots me-1" style="color:#58a6ff"></i>日內交易建議 Intraday Signals
-        <span style="font-size:11px; color:#8b949e">&nbsp;(5分鐘自動更新)</span>
+    <!-- Intraday Signals + Signal History Log -->
+    <div class="row g-3 mb-2">
+      <div class="col-12 col-lg-5">
+        <div class="card h-100">
+          <div class="card-header">
+            <i class="bi bi-chat-dots me-1" style="color:#58a6ff"></i>最新分析建議
+            <span style="font-size:11px;color:#8b949e">&nbsp;(5分鐘自動更新)</span>
+          </div>
+          <div class="card-body" id="intradayCommentaryArea">
+            <div class="text-secondary text-center">—</div>
+          </div>
+        </div>
       </div>
-      <div class="card-body" id="intradayCommentaryArea">
-        <div class="text-secondary text-center">—</div>
+      <div class="col-12 col-lg-7">
+        <div class="card h-100">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-clock-history me-1" style="color:#e3b341"></i>分析記錄 Signal Log</span>
+            <button class="btn btn-sm" style="font-size:11px;padding:2px 8px;background:#21262d;color:#8b949e;border:1px solid #30363d" onclick="clearWatchLog()">清除</button>
+          </div>
+          <div class="card-body p-0">
+            <div id="watchSignalLog" style="max-height:300px;overflow-y:auto;padding:8px 12px;font-size:12px">
+              <div class="text-secondary text-center py-3" id="watchLogEmpty">等待首次自動更新…</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-  </div>
+  </div><!-- /watchPanel -->
 
-</div>
+</div><!-- /resultArea -->
 {% endblock %}
 
 {% block extra_js %}
@@ -1112,12 +1081,16 @@ function toggleMlWklySeries(key, legendEl) {
  * WATCH MODE — 盯盤模式 (Intraday Live Trading)
  * ════════════════════════════════════════════════════════════════════════ */
 let _mlWatchTicker = null;
-let _mlWatchCurrentInterval = '5m';
-let _mlWatchChart = null;
-let _mlWatchData = null;
 let _mlWatchInterval = null;
 let _mlCountdownInterval = null;
 let _mlCountdownRemaining = 300; // 5 minutes
+let _mlCommentaryLog = []; // Signal history log entries
+
+// Two independent chart slots: A and B
+let _watchSlots = {
+  A: { type: '5m',    chart: null, data: null },
+  B: { type: 'daily', chart: null, data: null }
+};
 
 function getMarketStatus() {
   // Determine market status: using Intl.DateTimeFormat to get NY time
@@ -1182,22 +1155,112 @@ function switchMlMode(mode) {
 function initWatchMode(ticker) {
   _mlWatchTicker = ticker;
   document.getElementById('watchTicker').textContent = ticker;
-  
-  // Update market status
+
+  // Update market status badge
   updateMarketStatus();
-  
-  // Load intraday chart - increase delay to ensure container is properly sized
+
+  // Load both chart slots (A defaults 5m, B defaults daily — honour current select values)
+  const selA = document.getElementById('watchSlotASelect');
+  const selB = document.getElementById('watchSlotBSelect');
+  _watchSlots.A.type = selA ? selA.value : '5m';
+  _watchSlots.B.type = selB ? selB.value : 'daily';
+
   setTimeout(() => {
-    console.log('⏱️  setTimeout triggering loadIntradayChart, container width:', document.getElementById('intradayChartContainer')?.clientWidth);
-    loadIntradayChart(ticker, '5m');
+    loadSlotChart('A', _watchSlots.A.type, ticker);
+    loadSlotChart('B', _watchSlots.B.type, ticker);
   }, 200);
-  
+
   // Start auto-refresh every 5 minutes
   if (_mlWatchInterval) clearInterval(_mlWatchInterval);
   _mlWatchInterval = setInterval(() => refreshWatchMode(ticker), 300000);
-  
+
   // Start countdown timer
   startCountdownTimer();
+}
+
+function refreshWatchMode(ticker) {
+  // Refresh intraday slots only (daily/weekly data doesn't change intraday)
+  ['A', 'B'].forEach(slotId => {
+    const type = _watchSlots[slotId].type;
+    if (['5m', '15m', '1h'].includes(type)) {
+      loadSlotChart(slotId, type, ticker);
+    }
+  });
+  startCountdownTimer();
+}
+
+/* ── Slot Management ─────────────────────────────────────────────────── */
+
+function setWatchChartSlot(slotId, type) {
+  _watchSlots[slotId].type = type;
+  const ticker = _mlWatchTicker;
+  if (ticker) loadSlotChart(slotId, type, ticker);
+}
+
+function setSlotRange(slotId, count, btn) {
+  const slot = _watchSlots[slotId];
+  if (!slot.chart || !slot.data || !slot.data.candles) return;
+  const candles = slot.data.candles;
+  if (!candles.length) return;
+  const from = candles[Math.max(0, candles.length - count)].time;
+  slot.chart.timeScale().setVisibleRange({ from, to: candles[candles.length - 1].time });
+  const legendEl = document.getElementById('watchSlot' + slotId + 'Legend');
+  if (legendEl) legendEl.querySelectorAll('.slot-range-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+async function loadSlotChart(slotId, type, ticker) {
+  const container = document.getElementById('watchSlot' + slotId + 'Container');
+  const legendEl  = document.getElementById('watchSlot' + slotId + 'Legend');
+  if (!container) return;
+
+  // Destroy existing chart instance
+  const slot = _watchSlots[slotId];
+  if (slot.chart) { try { slot.chart.remove(); } catch(e) {} slot.chart = null; }
+  slot.data = null;
+
+  if (type === 'off') {
+    container.innerHTML = '<div class="text-secondary text-center py-5" style="font-size:13px"><i class="bi bi-x-circle me-1"></i>已關閉</div>';
+    if (legendEl) legendEl.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = '<div class="text-center py-5 text-secondary"><div class="spinner-border spinner-border-sm" style="color:#3fb950"></div></div>';
+
+  if (['5m', '15m', '1h'].includes(type)) {
+    if (legendEl) legendEl.innerHTML =
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#00d4ff"></span>&nbsp;EMA 9</span>' +
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#3fb950"></span>&nbsp;EMA 21</span>' +
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#ff9500"></span>&nbsp;VWAP</span>' +
+      '<span style="margin-left:auto;font-size:10px;color:#6e7681">灰色=盤前</span>';
+    await _loadIntradayForSlot(slotId, type, ticker);
+  } else if (type === 'daily') {
+    const sid = slotId;
+    if (legendEl) legendEl.innerHTML =
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#00d4ff"></span>&nbsp;EMA 9</span>' +
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#3fb950"></span>&nbsp;EMA 21</span>' +
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#e3b341"></span>&nbsp;EMA 50</span>' +
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#f85149"></span>&nbsp;EMA 150</span>' +
+      '<span style="margin-left:auto;display:flex;gap:4px">' +
+        '<button class="slot-range-btn chart-range-btn active" onclick="setSlotRange(\'' + sid + '\',63,this)">3M</button>' +
+        '<button class="slot-range-btn chart-range-btn" onclick="setSlotRange(\'' + sid + '\',126,this)">6M</button>' +
+        '<button class="slot-range-btn chart-range-btn" onclick="setSlotRange(\'' + sid + '\',252,this)">1Y</button>' +
+        '<button class="slot-range-btn chart-range-btn" onclick="setSlotRange(\'' + sid + '\',504,this)">2Y</button>' +
+      '</span>';
+    await _loadDailyForSlot(slotId, ticker);
+  } else if (type === 'weekly') {
+    const sid = slotId;
+    if (legendEl) legendEl.innerHTML =
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#00d4ff"></span>&nbsp;W-EMA 9</span>' +
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#3fb950"></span>&nbsp;W-EMA 21</span>' +
+      '<span><span style="display:inline-block;width:14px;height:2px;background:#e3b341"></span>&nbsp;W-EMA 50</span>' +
+      '<span style="margin-left:auto;display:flex;gap:4px">' +
+        '<button class="slot-range-btn chart-range-btn" onclick="setSlotRange(\'' + sid + '\',52,this)">1Y</button>' +
+        '<button class="slot-range-btn chart-range-btn active" onclick="setSlotRange(\'' + sid + '\',104,this)">2Y</button>' +
+        '<button class="slot-range-btn chart-range-btn" onclick="setSlotRange(\'' + sid + '\',156,this)">3Y</button>' +
+      '</span>';
+    await _loadWeeklyForSlot(slotId, ticker);
+  }
 }
 
 function updateMarketStatus() {
@@ -1241,240 +1304,6 @@ function startCountdownTimer() {
   }, 1000);
 }
 
-async function loadIntradayChart(ticker, interval) {
-  const container = document.getElementById('intradayChartContainer');
-  if (!container) {
-    console.error('❌ intradayChartContainer not found');
-    return;
-  }
-  
-  console.log('🔄 loadIntradayChart called:', {ticker, interval});
-  
-  // Update active button based on interval parameter (not event.target)
-  document.querySelectorAll('.intraday-btn').forEach((btn) => {
-    btn.classList.remove('active');
-    // Find button with matching text content
-    const btnText = btn.textContent.trim();
-    const shouldBeActive = 
-      (interval === '5m' && btnText.includes('5分')) ||
-      (interval === '15m' && btnText.includes('15分')) ||
-      (interval === '1h' && btnText.includes('1小時'));
-    if (shouldBeActive) btn.classList.add('active');
-  });
-  
-  _mlWatchCurrentInterval = interval;
-  container.innerHTML = '<div class=\"text-center py-5 text-secondary\"><div class=\"spinner-border spinner-border-sm\" style=\"color:#3fb950\"></div><div class=\"mt-2\" style=\"font-size:12px\">載入' + (interval==='5m' ? '5分' : interval==='15m' ? '15分' : '1小時') + '圖表…</div></div>';
-  
-  if (_mlWatchChart) {
-    try { _mlWatchChart.remove(); } catch(e) {}
-    _mlWatchChart = null;
-  }
-  
-  try {
-    const resp = await fetch('/api/chart/intraday/' + ticker + '?interval=' + interval);
-    if (!resp.ok) throw new Error('API ' + resp.status);
-    
-    const data = await resp.json();
-    if (!data.ok) throw new Error(data.error || 'No data');
-    
-    console.log('✅ API data received:', {candles: data.candles?.length, ema9: data.ema9?.length});
-    
-    _mlWatchData = data;
-    container.innerHTML = '';
-    
-    // Force reflow and recalculate dimensions
-    void container.offsetHeight;
-    
-    // Ensure container is visible and block-level
-    container.style.display = 'block';
-    const watchPanel = document.getElementById('watchPanel');
-    watchPanel.style.display = 'block';
-    
-    // Force browser layout recalculation
-    void watchPanel.offsetWidth;
-    
-    // Get accurate container dimensions - check multiple levels
-    let containerWidth = container.clientWidth;
-    console.log('📐 Container clientWidth:', containerWidth);
-    
-    if (containerWidth <= 0) {
-      // Check parent (card-body)
-      const parent = container.parentElement;
-      if (parent?.clientWidth > 0) {
-        containerWidth = parent.clientWidth - 20;
-        console.log('📐 Using parent width:', containerWidth);
-      } else {
-        // Check grandparent (card)
-        const gp = parent?.parentElement;
-        if (gp?.clientWidth > 0) {
-          containerWidth = gp.clientWidth - 40;
-          console.log('📐 Using grandparent width:', containerWidth);
-        } else {
-          // Final fallback: use a reasonable default based on viewport
-          const resultArea = document.getElementById('resultArea');
-          if (resultArea?.clientWidth > 0) {
-            containerWidth = resultArea.clientWidth - 40;
-            console.log('📐 Using resultArea width:', containerWidth);
-          } else {
-            containerWidth = Math.min(window.innerWidth - 60, 1200);
-            console.log('📐 Using window width:', containerWidth);
-          }
-        }
-      }
-    }
-    
-    // Safety: ensure we have a positive width
-    if (containerWidth <= 0) {
-      containerWidth = 800;
-      console.warn('⚠️  Width still 0, using fallback');
-    }
-    
-    console.log('📐 Final width for chart:', containerWidth);
-    
-    // 🔑 CRITICAL: Set the actual pixel width on the container element
-    // This ensures the container has a real width, not just width:100% which breaks
-    container.style.width = containerWidth + 'px';
-    container.style.display = 'block';
-    container.style.height = '450px';
-    console.log('✅ Container width set to:', containerWidth + 'px');
-    
-    const LWC = window.LightweightCharts;
-    if (!LWC) {
-      throw new Error('LightweightCharts library not loaded');
-    }
-    
-    _mlWatchChart = LWC.createChart(container, {
-      width: containerWidth,
-      height: 450,
-      layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
-      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
-      crosshair: { mode: LWC.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: '#30363d' },
-      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
-      handleScroll: true, handleScale: true,
-    });
-    
-    console.log('✅ Chart created successfully');
-    
-    // Candlestick (separate colors for premarket)
-    const candleSeries = _mlWatchChart.addCandlestickSeries({
-      upColor: '#3fb950', downColor: '#f85149',
-      borderUpColor: '#3fb950', borderDownColor: '#f85149',
-      wickUpColor: '#3fb950', wickDownColor: '#f85149',
-    });
-    
-    // Split candles into premarket (gray transparent) and market (normal)
-    const candles = [];
-    (data.candles || []).forEach(c => {
-      const candle = {
-        time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
-      };
-      if (c.is_premarket) {
-        candle.color = '#3fb95033';
-        candle.borderColor = '#3fb95033';
-        candle.wickColor = '#3fb95033';
-      }
-      candles.push(candle);
-    });
-    candleSeries.setData(candles);
-    
-    // Volume
-    if (data.volume && data.volume.length) {
-      const volSeries = _mlWatchChart.addHistogramSeries({
-        priceFormat: { type: 'volume' },
-        priceScaleId: 'vol',
-      });
-      _mlWatchChart.priceScale('vol').applyOptions({
-        scaleMargins: { top: 0.82, bottom: 0 },
-        drawTicks: false, borderVisible: false,
-      });
-      volSeries.setData(data.volume);
-    }
-    
-    // EMA 9 & 21
-    if (data.ema9 && data.ema9.length) {
-      _mlWatchChart.addLineSeries({
-        color: '#00d4ff', lineWidth: 1.5, title: 'EMA 9',
-        priceLineVisible: false, lastValueVisible: false,
-      }).setData(data.ema9);
-    }
-    if (data.ema21 && data.ema21.length) {
-      _mlWatchChart.addLineSeries({
-        color: '#3fb950', lineWidth: 1.5, title: 'EMA 21',
-        priceLineVisible: false, lastValueVisible: false,
-      }).setData(data.ema21);
-    }
-    
-    // Intraday VWAP
-    if (data.vwap && data.vwap.length) {
-      _mlWatchChart.addLineSeries({
-        color: '#ff9500', lineWidth: 1.5, title: 'Intraday VWAP',
-        priceLineVisible: false, lastValueVisible: false,
-      }).setData(data.vwap);
-    }
-    
-    // Price lines: ORH (yellow dashed), LOD (red dashed)
-    if (data.orh && data.orh > 0) {
-      candleSeries.createPriceLine({
-        price: data.orh, color: '#e3b341', lineWidth: 1, lineStyle: 2,
-        axisLabelVisible: true, title: 'ORH $' + data.orh.toFixed(2),
-      });
-    }
-    if (data.lod && data.lod > 0) {
-      candleSeries.createPriceLine({
-        price: data.lod, color: '#f85149', lineWidth: 1, lineStyle: 2,
-        axisLabelVisible: true, title: 'LOD $' + data.lod.toFixed(2),
-      });
-    }
-    
-    console.log('✅ All series added to chart');
-    
-    // Force final layout and fit
-    _mlWatchChart.timeScale().fitContent();
-    
-    // Give browser time to render, then check visibility
-    setTimeout(() => {
-      console.log('✅ Chart rendered, checking visibility');
-      console.log('   Container display:', getComputedStyle(container).display);
-      console.log('   Container width:', container.clientWidth);
-      console.log('   WatchPanel display:', getComputedStyle(watchPanel).display);
-      
-      // Ensure final visibility
-      if (getComputedStyle(container).display === 'none') {
-        container.style.display = 'block';
-        watchPanel.style.display = 'block';
-        console.log('   ⚠️  Force display block applied');
-      }
-    }, 50);
-    
-    // Update intraday commentary
-    renderIntradayCommentary(data.signals, getMarketStatus());
-    
-    // Update premarket plan if available
-    renderPremktPlan(data);
-    
-    // Update current price
-    if (data.candles && data.candles.length > 0) {
-      const lastCandle = data.candles[data.candles.length - 1];
-      document.getElementById('watchPrice').textContent = '$' + lastCandle.close.toFixed(2);
-    }
-    
-    // Responsive resize with improved width calculation
-    try {
-      new ResizeObserver(() => {
-        const w = container.clientWidth > 0 ? container.clientWidth : (window.innerWidth - 60);
-        console.log('📐 ResizeObserver triggered, chart width:', w);
-        if (_mlWatchChart) _mlWatchChart.applyOptions({ width: w });
-      }).observe(container);
-    } catch(e) {
-      // ResizeObserver not essential, ignore error
-    }
-    
-  } catch(e) {
-    console.error('loadIntradayChart:', e);
-    container.innerHTML = '<div class=\"text-secondary text-center py-4\"><i class=\"bi bi-graph-up\" style=\"font-size:2rem;opacity:0.3\"></i><div class=\"mt-2\" style=\"font-size:12px\">圖表載入失敗</div><div style=\"font-size:10px;opacity:0.7\">' + (e.message || '') + '</div></div>';
-  }
-}
 
 function renderPremktPlan(data) {
   const el = document.getElementById('premktPlanArea');
@@ -1579,12 +1408,243 @@ function renderIntradayCommentary(signals, status) {
   }
   
   el.innerHTML = html || '<div class=\"text-secondary\">—</div>';
+
+  // Append to signal history log on every refresh
+  try { appendWatchLog(signals, status); } catch(e) {}
 }
 
-function refreshWatchMode(ticker) {
-  // Fetch latest intraday data and update chart
-  loadIntradayChart(ticker, _mlWatchCurrentInterval);
-  startCountdownTimer();
+/* ---------- Slot: Intraday chart (_loadIntradayForSlot) ---------- */
+async function _loadIntradayForSlot(slotId, interval, ticker) {
+  const container = document.getElementById('watchSlot' + slotId + 'Container');
+  if (!container) return;
+
+  const slot = _watchSlots[slotId];
+  if (slot.chart) { try { slot.chart.remove(); } catch(e) {} slot.chart = null; }
+
+  try {
+    const resp = await fetch('/api/chart/intraday/' + ticker + '?interval=' + interval);
+    if (!resp.ok) throw new Error('API ' + resp.status);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'No data');
+
+    slot.data = data;
+    container.innerHTML = '';
+
+    // Ensure container has width
+    let w = container.clientWidth;
+    if (w <= 0) {
+      const rp = container.closest('.col-12');
+      w = (rp && rp.clientWidth > 0) ? rp.clientWidth - 30 : Math.min(window.innerWidth / 2 - 50, 800);
+    }
+    if (w <= 0) w = 600;
+
+    const LWC = window.LightweightCharts;
+    if (!LWC) throw new Error('LightweightCharts not loaded');
+
+    slot.chart = LWC.createChart(container, {
+      width: w, height: 420,
+      layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
+      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      crosshair: { mode: LWC.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+      handleScroll: true, handleScale: true,
+    });
+
+    const cs = slot.chart.addCandlestickSeries({
+      upColor: '#3fb950', downColor: '#f85149',
+      borderUpColor: '#3fb950', borderDownColor: '#f85149',
+      wickUpColor: '#3fb950', wickDownColor: '#f85149',
+    });
+    const candles = (data.candles || []).map(c => {
+      const cd = { time: c.time, open: c.open, high: c.high, low: c.low, close: c.close };
+      if (c.is_premarket) { cd.color = '#3fb95033'; cd.borderColor = '#3fb95033'; cd.wickColor = '#3fb95033'; }
+      return cd;
+    });
+    cs.setData(candles);
+
+    if (data.volume && data.volume.length) {
+      const vs = slot.chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
+      slot.chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, drawTicks: false, borderVisible: false });
+      vs.setData(data.volume);
+    }
+    if (data.ema9  && data.ema9.length)  slot.chart.addLineSeries({ color:'#00d4ff', lineWidth:1.5, title:'EMA 9',  priceLineVisible:false, lastValueVisible:false }).setData(data.ema9);
+    if (data.ema21 && data.ema21.length) slot.chart.addLineSeries({ color:'#3fb950', lineWidth:1.5, title:'EMA 21', priceLineVisible:false, lastValueVisible:false }).setData(data.ema21);
+    if (data.vwap  && data.vwap.length)  slot.chart.addLineSeries({ color:'#ff9500', lineWidth:1.5, title:'VWAP',   priceLineVisible:false, lastValueVisible:false }).setData(data.vwap);
+    if (data.orh && data.orh > 0) cs.createPriceLine({ price:data.orh, color:'#e3b341', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'ORH $'+data.orh.toFixed(2) });
+    if (data.lod && data.lod > 0) cs.createPriceLine({ price:data.lod, color:'#f85149', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'LOD $'+data.lod.toFixed(2) });
+
+    slot.chart.timeScale().fitContent();
+
+    // Update current price from last candle
+    if (data.candles && data.candles.length) {
+      const last = data.candles[data.candles.length - 1];
+      document.getElementById('watchPrice').textContent = '$' + last.close.toFixed(2);
+    }
+
+    // Update commentary and premarket plan (only from the first/primary intraday slot)
+    renderIntradayCommentary(data.signals || {}, getMarketStatus());
+    renderPremktPlan(data);
+
+    try {
+      new ResizeObserver(() => {
+        const nw = container.clientWidth > 0 ? container.clientWidth : w;
+        if (slot.chart) slot.chart.applyOptions({ width: nw });
+      }).observe(container);
+    } catch(e) {}
+
+  } catch(e) {
+    container.innerHTML = '<div class="text-secondary text-center py-4"><i class="bi bi-graph-up" style="font-size:2rem;opacity:0.3"></i><div class="mt-2" style="font-size:12px">圖表載入失敗</div><div style="font-size:10px;opacity:0.7">' + (e.message||'') + '</div></div>';
+  }
+}
+
+/* ---------- Slot: Daily chart (_loadDailyForSlot) ---------- */
+async function _loadDailyForSlot(slotId, ticker) {
+  const container = document.getElementById('watchSlot' + slotId + 'Container');
+  if (!container) return;
+  const slot = _watchSlots[slotId];
+  if (slot.chart) { try { slot.chart.remove(); } catch(e) {} slot.chart = null; }
+  try {
+    const resp = await fetch('/api/chart/enriched/' + ticker + '?days=504');
+    if (!resp.ok) throw new Error('API ' + resp.status);
+    const data = await resp.json();
+    if (!data.ok || !data.candles || !data.candles.length) throw new Error(data.error || 'No data');
+    slot.data = data;
+    container.innerHTML = '';
+    let w = container.clientWidth;
+    if (w <= 0) { const rp = container.closest('.col-12'); w = (rp && rp.clientWidth > 0) ? rp.clientWidth - 30 : Math.min(window.innerWidth / 2 - 50, 800); }
+    if (w <= 0) w = 600;
+    const LWC = window.LightweightCharts;
+    slot.chart = LWC.createChart(container, {
+      width: w, height: 420,
+      layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
+      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      crosshair: { mode: LWC.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+      handleScroll: true, handleScale: true,
+    });
+    const cs = slot.chart.addCandlestickSeries({
+      upColor:'#3fb950', downColor:'#f85149', borderUpColor:'#3fb950', borderDownColor:'#f85149', wickUpColor:'#3fb950', wickDownColor:'#f85149',
+    });
+    cs.setData(data.candles);
+    if (data.volume && data.volume.length) {
+      const vs = slot.chart.addHistogramSeries({ priceFormat:{ type:'volume' }, priceScaleId:'vol' });
+      slot.chart.priceScale('vol').applyOptions({ scaleMargins:{top:0.82,bottom:0}, drawTicks:false, borderVisible:false });
+      vs.setData(data.volume);
+    }
+    [['ema9','#00d4ff','EMA 9'],['ema21','#3fb950','EMA 21'],['ema50','#e3b341','EMA 50'],['ema150','#f85149','EMA 150']].forEach(([k,c,t]) => {
+      if (data[k] && data[k].length) slot.chart.addLineSeries({ color:c, lineWidth:1.5, title:t, priceLineVisible:false, lastValueVisible:false }).setData(data[k]);
+    });
+    if (data.avwap_high && data.avwap_high.length) slot.chart.addLineSeries({ color:'#d49fff', lineWidth:1.5, lineStyle:2, title:'AVWAP 供給', priceLineVisible:false, lastValueVisible:false }).setData(data.avwap_high);
+    if (data.avwap_low  && data.avwap_low.length)  slot.chart.addLineSeries({ color:'#58a6ff', lineWidth:1.5, lineStyle:2, title:'AVWAP 支撐', priceLineVisible:false, lastValueVisible:false }).setData(data.avwap_low);
+    const entry = parseFloat(document.body.getAttribute('data-ml-entry'));
+    const stop  = parseFloat(document.body.getAttribute('data-ml-stop'));
+    const t3r   = parseFloat(document.body.getAttribute('data-ml-3r'));
+    const t5r   = parseFloat(document.body.getAttribute('data-ml-5r'));
+    if (entry && !isNaN(entry)) cs.createPriceLine({ price:entry, color:'#3fb950', lineWidth:2, lineStyle:2, axisLabelVisible:true, title:'Entry $'+entry.toFixed(2) });
+    if (stop  && !isNaN(stop))  cs.createPriceLine({ price:stop,  color:'#f85149', lineWidth:2, lineStyle:2, axisLabelVisible:true, title:'Stop $'+stop.toFixed(2) });
+    if (t3r   && !isNaN(t3r))   cs.createPriceLine({ price:t3r,   color:'#58a6ff', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'3R $'+t3r.toFixed(2) });
+    if (t5r   && !isNaN(t5r))   cs.createPriceLine({ price:t5r,   color:'#00d4ff', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'5R $'+t5r.toFixed(2) });
+    slot.chart.timeScale().fitContent();
+    // Default 3M range
+    setTimeout(() => setSlotRange(slotId, 63, document.querySelector('#watchSlot' + slotId + 'Legend .slot-range-btn.active')), 60);
+    try { new ResizeObserver(() => { const nw = container.clientWidth > 0 ? container.clientWidth : w; if (slot.chart) slot.chart.applyOptions({ width:nw }); }).observe(container); } catch(e) {}
+  } catch(e) {
+    container.innerHTML = '<div class="text-secondary text-center py-4"><i class="bi bi-graph-up" style="font-size:2rem;opacity:0.3"></i><div class="mt-2" style="font-size:12px">日線圖載入失敗</div><div style="font-size:10px;opacity:0.7">' + (e.message||'') + '</div></div>';
+  }
+}
+
+/* ---------- Slot: Weekly chart (_loadWeeklyForSlot) ---------- */
+async function _loadWeeklyForSlot(slotId, ticker) {
+  const container = document.getElementById('watchSlot' + slotId + 'Container');
+  if (!container) return;
+  const slot = _watchSlots[slotId];
+  if (slot.chart) { try { slot.chart.remove(); } catch(e) {} slot.chart = null; }
+  try {
+    const resp = await fetch('/api/chart/weekly/' + ticker);
+    if (!resp.ok) throw new Error('API ' + resp.status);
+    const data = await resp.json();
+    if (!data.ok || !data.candles || !data.candles.length) throw new Error(data.error || 'No data');
+    slot.data = data;
+    container.innerHTML = '';
+    let w = container.clientWidth;
+    if (w <= 0) { const rp = container.closest('.col-12'); w = (rp && rp.clientWidth > 0) ? rp.clientWidth - 30 : Math.min(window.innerWidth / 2 - 50, 800); }
+    if (w <= 0) w = 600;
+    const LWC = window.LightweightCharts;
+    slot.chart = LWC.createChart(container, {
+      width: w, height: 420,
+      layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
+      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      crosshair: { mode: LWC.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: false },
+      handleScroll: true, handleScale: true,
+    });
+    const wc = slot.chart.addCandlestickSeries({
+      upColor:'#3fb950', downColor:'#f85149', borderUpColor:'#3fb950', borderDownColor:'#f85149', wickUpColor:'#3fb950', wickDownColor:'#f85149',
+    });
+    wc.setData(data.candles);
+    if (data.volume && data.volume.length) {
+      const wv = slot.chart.addHistogramSeries({ priceFormat:{ type:'volume' }, priceScaleId:'vol' });
+      slot.chart.priceScale('vol').applyOptions({ scaleMargins:{top:0.82,bottom:0}, drawTicks:false, borderVisible:false });
+      wv.setData(data.volume);
+    }
+    [['ema9w','#00d4ff','W-EMA 9'],['ema21w','#3fb950','W-EMA 21'],['ema50w','#e3b341','W-EMA 50']].forEach(([k,c,t]) => {
+      if (data[k] && data[k].length) slot.chart.addLineSeries({ color:c, lineWidth:1.5, title:t, priceLineVisible:false, lastValueVisible:false }).setData(data[k]);
+    });
+    slot.chart.timeScale().fitContent();
+    // Default 2Y range
+    setTimeout(() => setSlotRange(slotId, 104, document.querySelector('#watchSlot' + slotId + 'Legend .slot-range-btn.active')), 60);
+    try { new ResizeObserver(() => { const nw = container.clientWidth > 0 ? container.clientWidth : w; if (slot.chart) slot.chart.applyOptions({ width:nw }); }).observe(container); } catch(e) {}
+  } catch(e) {
+    container.innerHTML = '<div class="text-secondary text-center py-4"><i class="bi bi-calendar-week" style="font-size:2rem;opacity:0.3"></i><div class="mt-2" style="font-size:12px">周線圖載入失敗</div><div style="font-size:10px;opacity:0.7">' + (e.message||'') + '</div></div>';
+  }
+}
+
+/* ---------- Signal History Log ---------- */
+function appendWatchLog(signals, status) {
+  const advice = signals.setup_advice || 'monitoring';
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+  const chasePct = signals.chase_pct || 0;
+  const ema9Diff = signals.ema9_diff || 0;
+
+  let summaryIcon = '⏳';
+  let summaryText = '監視中';
+  if (advice === 'avoid_chase') { summaryIcon = '⛔'; summaryText = '禁止追高 +' + chasePct.toFixed(1) + '%'; }
+  else if (advice === 'mid_entry_breakout') { summaryIcon = '✅'; summaryText = '5分突破機會'; }
+  else if (advice === 'early_entry_watch') { summaryIcon = '⏳'; summaryText = 'Opening Range 建立中'; }
+  const posClass = ema9Diff >= 0 ? 'color:#3fb950' : 'color:#f85149';
+  const entry = {
+    time: timeStr, status: status.status,
+    html: `<div style="border-left:3px solid #30363d;padding:4px 8px;margin-bottom:6px;background:#1c2128;border-radius:0 4px 4px 0">` +
+          `<span style="color:#8b949e;font-size:11px">${timeStr} NY&nbsp;</span>` +
+          `<span style="background:${status.color};color:#0d1117;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600">${status.label}</span>` +
+          `&nbsp;<strong>${summaryIcon} ${summaryText}</strong>` +
+          `<span style="${posClass};margin-left:8px;font-size:11px">EMA9 ${ema9Diff >= 0 ? '+' : ''}${(ema9Diff * 100).toFixed(2)}%</span>` +
+          `</div>`
+  };
+
+  _mlCommentaryLog.unshift(entry);
+  if (_mlCommentaryLog.length > 30) _mlCommentaryLog.pop();
+  renderWatchLog();
+}
+
+function renderWatchLog() {
+  const logEl = document.getElementById('watchSignalLog');
+  if (!logEl) return;
+  if (_mlCommentaryLog.length === 0) {
+    logEl.innerHTML = '<div class="text-secondary text-center py-3" id="watchLogEmpty">等待首次自動更新…</div>';
+    return;
+  }
+  logEl.innerHTML = _mlCommentaryLog.map(e => e.html).join('');
+}
+
+function clearWatchLog() {
+  _mlCommentaryLog = [];
+  const logEl = document.getElementById('watchSignalLog');
+  if (logEl) logEl.innerHTML = '<div class="text-secondary text-center py-3" id="watchLogEmpty">等待首次自動更新…</div>';
 }
 
 // ── Fallback diagnostic logging ───────────────────────────────────────

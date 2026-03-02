@@ -23,7 +23,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, make_response
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -35,7 +35,7 @@ _LOG_DIR = ROOT / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
 # Global root logger (for framework/general events)
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.WARNING)
+_stream_handler.setLevel(logging.DEBUG)  # FIXED: Allow DEBUG level to console
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -53,6 +53,9 @@ logging.getLogger("multitasking").setLevel(logging.WARNING)
 logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
 logging.getLogger("numba").setLevel(logging.WARNING)
 logging.getLogger("numba.core").setLevel(logging.WARNING)
+
+# Create app-level logger for console output
+logger = logging.getLogger(__name__)
 
 # Per-scan file logging (attached during api_scan_run)
 _scan_file_handlers: dict = {}  # {job_id: FileHandler}
@@ -1940,6 +1943,77 @@ def api_watchlist_refresh_status(jid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# HTMX – Watchlist  (return HTML fragments, not JSON)
+# Used by hx-* buttons in _watchlist_rows.html and htmx.ajax() calls in watchlist.html.
+# Existing /api/watchlist/* JSON endpoints are preserved for backward compatibility.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _htmx_wl_rows(wl, trigger_msg=None):
+    """Build htmx response: OOB badge-count <span>s prepended to tbody rows.
+
+    The OOB spans update #cnt-all / #cnt-A / #cnt-B / #cnt-C in the tab nav.
+    The remaining rows are swapped into #wlBody by the caller's hx-target.
+    """
+    rows_html = render_template("_watchlist_rows.html", wl=wl)
+    total = sum(len(wl.get(g, {})) for g in ["A", "B", "C"])
+    oob = (
+        f'<span id="cnt-all" hx-swap-oob="innerHTML">{total}</span>'
+        f'<span id="cnt-A"   hx-swap-oob="innerHTML">{len(wl.get("A", {}))}</span>'
+        f'<span id="cnt-B"   hx-swap-oob="innerHTML">{len(wl.get("B", {}))}</span>'
+        f'<span id="cnt-C"   hx-swap-oob="innerHTML">{len(wl.get("C", {}))}</span>'
+    )
+    resp = make_response(oob + rows_html)
+    if trigger_msg:
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": trigger_msg})
+    return resp
+
+
+@app.route("/htmx/watchlist/body")
+def htmx_wl_body():
+    """Return full tbody rows + OOB badge updates.  Called via htmx.ajax() after async jobs."""
+    return _htmx_wl_rows(_load_watchlist())
+
+
+@app.route("/htmx/watchlist/promote", methods=["POST"])
+def htmx_wl_promote():
+    ticker = (request.form.get("ticker") or "").upper().strip()
+    try:
+        from modules.watchlist import promote
+        promote(ticker)
+        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} promoted")
+    except Exception as exc:
+        resp = make_response("", 200)
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
+        return resp
+
+
+@app.route("/htmx/watchlist/demote", methods=["POST"])
+def htmx_wl_demote():
+    ticker = (request.form.get("ticker") or "").upper().strip()
+    try:
+        from modules.watchlist import demote
+        demote(ticker)
+        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} demoted")
+    except Exception as exc:
+        resp = make_response("", 200)
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
+        return resp
+
+
+@app.route("/htmx/watchlist/remove", methods=["POST"])
+def htmx_wl_remove():
+    ticker = (request.form.get("ticker") or "").upper().strip()
+    try:
+        from modules.watchlist import remove
+        remove(ticker)
+        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} removed from watchlist")
+    except Exception as exc:
+        resp = make_response("", 200)
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
+        return resp
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # API – Positions
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2067,6 +2141,60 @@ def api_positions_update_stop():
         return jsonify({"ok": True, "positions": _load_positions()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTMX – Positions  (return HTML fragment, not JSON)
+# Used by the add-position form (hx-post="/htmx/positions/add").
+# The existing /api/positions/* JSON endpoints are preserved.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/htmx/positions/add", methods=["POST"])
+def htmx_positions_add():
+    """Accept form-encoded data, save position, return a <tr> HTML fragment."""
+    ticker = (request.form.get("ticker") or "").upper().strip()
+    try:
+        buy_price = float(request.form.get("buy_price") or 0)
+        shares    = int(request.form.get("shares") or 0)
+        stop_loss = float(request.form.get("stop_loss") or 0)
+        target_raw = request.form.get("target", "").strip()
+        target    = float(target_raw) if target_raw else None
+        note      = request.form.get("note", "")
+
+        if not ticker or not buy_price or not shares or not stop_loss:
+            resp = make_response("", 200)
+            resp.headers["HX-Trigger"] = json.dumps({"showToast": "❌ Fill in Ticker, Entry, Shares and Stop Loss"})
+            return resp
+
+        from modules.position_monitor import add_position
+        add_position(ticker, buy_price, shares, stop_loss, target, note)
+
+        # Compute display values (mirrors api_positions_add logic)
+        if target is None:
+            risk   = buy_price - stop_loss
+            target = round(buy_price + risk * 2, 2)
+        rr       = (target - buy_price) / (buy_price - stop_loss) if (buy_price - stop_loss) > 0 else 0
+        risk_dol = shares * (buy_price - stop_loss)
+
+        pos = {
+            "buy_price":   round(buy_price, 2),
+            "shares":      shares,
+            "stop_loss":   round(stop_loss, 2),
+            "target":      round(target, 2),
+            "rr":          round(rr, 2),
+            "risk_dollar": round(risk_dol, 2),
+            "days_held":   0,
+            "note":        note,
+        }
+        resp = make_response(render_template("_position_row.html", ticker=ticker, pos=pos))
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": f"✅ {ticker} 持倉已新增"})
+        return resp
+
+    except Exception as exc:
+        logging.error(f"[htmx/positions/add] {exc}")
+        resp = make_response("", 200)
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
+        return resp
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

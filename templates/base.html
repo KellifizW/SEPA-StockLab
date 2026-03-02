@@ -60,10 +60,18 @@
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #0d1117; }
     ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    /* htmx: watchlist grade filter (CSS-driven via data-grade-filter on tbody) */
+    #wlBody[data-grade-filter="A"] tr:not([data-grade="A"]) { display: none; }
+    #wlBody[data-grade-filter="B"] tr:not([data-grade="B"]) { display: none; }
+    #wlBody[data-grade-filter="C"] tr:not([data-grade="C"]) { display: none; }
+    /* htmx: dim buttons while a request from this element is in flight */
+    button.htmx-request { opacity: 0.6; pointer-events: none; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <!-- TradingView Lightweight Charts — professional K-line candlestick rendering -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <!-- htmx — progressive enhancement; eliminates boilerplate fetch/DOM JS -->
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
   {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -227,6 +235,13 @@ function scoreClass(v) {
 function fmt2(v) { return (v == null) ? '—' : Number(v).toFixed(2); }
 function fmtPct(v) { return (v == null) ? '—' : Number(v).toFixed(1) + '%'; }
 function fmtInt(v) { return (v == null) ? '—' : Math.round(Number(v)); }
+
+// ── htmx: HX-Trigger event bridge → unified toast ─────────────────────────────
+// Fired when a Flask route sets: resp.headers["HX-Trigger"] = json.dumps({"showToast": "..."})
+document.body.addEventListener('showToast', function(e) {
+  const msg = (typeof e.detail === 'string') ? e.detail : (e.detail.value || String(e.detail));
+  toast(msg, !msg.startsWith('❌'));
+});
 </script>
 {% block extra_js %}{% endblock %}
 </body>

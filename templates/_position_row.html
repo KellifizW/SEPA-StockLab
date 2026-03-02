@@ -1,0 +1,25 @@
+{#─────────────────────────────────────────────────────────────────────────────
+  _position_row.html
+  Single <tr> for a newly added position.
+  Returned by POST /htmx/positions/add via hx-swap="beforeend" on #posBody.
+  Variables: ticker (str), pos (dict with buy_price/shares/stop_loss/target/rr/risk_dollar/days_held/note)
+─────────────────────────────────────────────────────────────────────────────#}
+<tr id="pos-{{ ticker }}">
+  <td>
+    <a href="/analyze?ticker={{ ticker }}"
+       class="fw-bold text-decoration-none" style="color:var(--accent)">{{ ticker }}</a>
+  </td>
+  <td>${{ "%.2f"|format(pos.buy_price) }}</td>
+  <td class="text-danger">${{ "%.2f"|format(pos.stop_loss) }}</td>
+  <td class="text-success">${{ "%.2f"|format(pos.target) }}</td>
+  <td>{{ "%.1f"|format(pos.rr) }}:1</td>
+  <td>{{ "{:,}".format(pos.shares) }}</td>
+  <td>${{ "{:,.0f}".format(pos.risk_dollar) }}</td>
+  <td>{{ pos.days_held }}</td>
+  <td class="text-muted small">{{ pos.note }}</td>
+  <td>
+    <button class="btn btn-sm btn-outline-danger" onclick="closePos('{{ ticker }}')">
+      <i class="bi bi-door-open me-1"></i>Close
+    </button>
+  </td>
+</tr>
