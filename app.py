@@ -2412,6 +2412,17 @@ def api_db_stats():
         return jsonify({"ok": False, "error": str(exc)})
 
 
+@app.route("/api/yf-status", methods=["GET"])
+def api_yf_status():
+    """yfinance call counter and rate-limit status for the navbar indicator."""
+    try:
+        from modules.data_pipeline import get_yf_status
+        return jsonify({"ok": True, **get_yf_status()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "calls": 0,
+                        "errors": 0, "rate_limited": False})
+
+
 @app.route("/api/db/scan-trend/<ticker>", methods=["GET"])
 def api_db_scan_trend(ticker: str):
     """Score trend for a ticker over last N days."""

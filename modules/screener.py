@@ -391,13 +391,16 @@ def run_stage2(tickers: list,
     # ── Batch download all historical data first ─────────────────────────
     if enriched_map is None:
         _progress("Stage 2 -- Trend Template", 34, "Batch-downloading price data...")
+        # Monotonic progress: track max pct seen to prevent regression when
+        # batch_download_and_enrich switches from cache phase to download phase.
+        _s2_max_pct = [34]
+        def _sepa_batch_cb(bi: int, bt: int, msg: str = "") -> None:
+            pct = max(_s2_max_pct[0], min(48, 33 + int(bi / max(bt, 1) * 15)))
+            _s2_max_pct[0] = pct
+            _progress("Stage 2 -- Trend Template", pct, msg)
         enriched_map = batch_download_and_enrich(
             filtered_tickers, period="2y",
-            progress_cb=lambda bi, bt, msg: _progress(
-                "Stage 2 -- Trend Template",
-                33 + int(bi / bt * 15),
-                msg,
-            ),
+            progress_cb=_sepa_batch_cb,
         )
     else:
         if verbose:
@@ -775,6 +778,11 @@ def run_scan(custom_filters: Optional[dict] = None,
     _t2 = _time.perf_counter()
     s2_results = run_stage2(s1_tickers, sector_leaders, verbose=verbose)
     logger.info("[Timing] Stage 2: %.1fs -> %d passed TT", _elapsed(_t2), len(s2_results))
+    _s1_cnt = len(s1_tickers)
+    _s2_cnt = len(s2_results)
+    _progress("Stage 2 -- Trend Template", 66,
+              f"✓ TT通過: {_s2_cnt}/{_s1_cnt} ({_s2_cnt * 100 // _s1_cnt if _s1_cnt else 0}%) | "
+              f"已排除: {_s1_cnt - _s2_cnt} | 耗時 {_elapsed(_t2):.0f}s")
     if _cancelled():
         # Return partial results if anything passed Stage 2
         if not s2_results:
@@ -918,7 +926,11 @@ def run_stage3(s2_results: list,
     logger.info("[Timing] Total scan: %.1fs", _elapsed())
     logger.info("[Stage 3] %d stocks in final results", len(df_out))
     print("=" * 60)
-    _progress("Complete", 100, f"{len(df_out)} stocks ranked (from {len(s2_results)} passed TT)")
+    _elapsed_total = _elapsed()
+    _progress("Complete", 100,
+              f"✅ 掃描完成: {len(df_out)} 隻符合條件 | "
+              f"Stage1→{len(s1_tickers)} | Stage2→{len(s2_results)} | Stage3→{len(df_out)} | "
+              f"耗時 {_elapsed_total:.0f}s")
     
     # Return tuple: (passed quality gate, all Stage 2 passing stocks)
     return df_out, pd.DataFrame(s2_results) if s2_results else pd.DataFrame()

@@ -237,13 +237,16 @@ def run_combined_scan(custom_filters: dict | None = None,
     _t2_dl = _time.perf_counter()
     
     try:
+        # Monotonic progress: prevent regression when batch_download_and_enrich
+        # switches from cache phase (scale 0–1) to download phase (scale 1–N).
+        _dl_max_pct = [25]
+        def _combined_batch_cb(bi: int, bt: int, msg: str = "") -> None:
+            pct = max(_dl_max_pct[0], min(45, 25 + int(bi / max(bt, 1) * 20)))
+            _dl_max_pct[0] = pct
+            _progress("Stage 2 -- Batch Download", pct, msg)
         enriched_map = batch_download_and_enrich(
             s1_tickers, period="2y",
-            progress_cb=lambda bi, bt, msg: _progress(
-                "Stage 2 -- Batch Download",
-                25 + int(bi / bt * 20),
-                msg,
-            ),
+            progress_cb=_combined_batch_cb,
         )
     except Exception as e:
         logger.error("[Combined] Batch download failed: %s", e)
@@ -476,7 +479,10 @@ def run_combined_scan(custom_filters: dict | None = None,
         "scan_count_warning": qm_result.get("scan_count_warning") if qm_result else None,
     }
     
-    _progress("Combined scan complete", 100, f"Done in {total_elapsed:.1f}s")
+    _qm_status_str = "已封鎖(熊市)" if qm_blocked else str(len(qm_final["passed"]))
+    _progress("Complete", 100,
+              f"\u2705 \u6383\u63cf\u5b8c\u6210: SEPA\u2192{len(sepa_final['passed'])} | QM\u2192{_qm_status_str} | "
+              f"Stage1 Union\u2192{len(s1_tickers)} | \u8017\u6642 {total_elapsed:.0f}s")
     
     if verbose:
         print(f"\n[Combined Scan] Complete in {total_elapsed:.1f}s")

@@ -29,6 +29,11 @@ sys.path.insert(0, str(ROOT))
 import trader_config as C
 
 from modules.data_pipeline import get_universe, FVF_AVAILABLE
+try:
+    from modules.nasdaq_universe import get_universe_nasdaq as _get_nasdaq_universe
+    _NASDAQ_AVAILABLE = True
+except Exception:
+    _NASDAQ_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +46,33 @@ RS_CACHE_FILE = ROOT / C.DATA_DIR / "rs_cache.csv"
 def build_rs_universe() -> list:
     """
     Get the list of all US stocks to be ranked.
-    Uses finvizfinance with minimal filters: price >$5, avg vol >100K.
-    Falls back to S&P500+NASDAQ100 constituents if finvizfinance fails.
+    Priority: NASDAQ FTP cache (fast, ~instant) → finvizfinance (slow, ~180s) → S&P500 Wikipedia.
+    NASDAQ FTP provides a broader universe (~8000 tickers) and is already cached from Stage 1.
     """
+    def _clean_tickers(raw: list) -> list:
+        """Remove warrants, units, ETNs and other non-standard tickers."""
+        return [
+            t for t in raw
+            if t and len(t) <= 5
+            and t.isalpha()
+            and "^" not in t
+            and "/" not in t
+        ]
+
+    # ── Primary: NASDAQ FTP (near-instant from cache) ─────────────────────
+    if _NASDAQ_AVAILABLE:
+        try:
+            logger.info("[RS] Building universe from NASDAQ FTP cache (fast path)...")
+            df_nasdaq = _get_nasdaq_universe()
+            if df_nasdaq is not None and not df_nasdaq.empty and "Ticker" in df_nasdaq.columns:
+                tickers = _clean_tickers(df_nasdaq["Ticker"].dropna().str.strip().tolist())
+                if len(tickers) > 500:  # sanity check — expect 2000+ from NASDAQ FTP
+                    logger.info("[RS] Universe size: %d tickers (NASDAQ FTP)", len(tickers))
+                    return tickers
+        except Exception as e:
+            logger.warning("[RS] NASDAQ FTP universe failed: %s — falling back to finvizfinance", e)
+
+    # ── Secondary: finvizfinance screener (slow, ~90 pages) ───────────────
     if FVF_AVAILABLE:
         filters = {
             "Price": "Over $5",
@@ -51,20 +80,14 @@ def build_rs_universe() -> list:
             "Country": "USA",
             "EPS growththis year": "Positive (>0%)",   # excludes ETFs/funds
         }
-        logger.info("[RS] Fetching stock universe (this may take 30-60s)...")
+        logger.info("[RS] Fetching stock universe via finvizfinance (this may take 30-60s)...")
         df = get_universe(filters, view="Overview", verbose=False)
         if not df.empty and "Ticker" in df.columns:
-            tickers = df["Ticker"].dropna().str.strip().tolist()
-            # Filter out bad tickers (warrants, units, etc.)
-            tickers = [t for t in tickers
-                       if t and len(t) <= 5
-                       and t.isalpha()
-                       and "^" not in t
-                       and "/" not in t]
-            logger.info("[RS] Universe size: %d tickers", len(tickers))
+            tickers = _clean_tickers(df["Ticker"].dropna().str.strip().tolist())
+            logger.info("[RS] Universe size: %d tickers (finvizfinance)", len(tickers))
             return tickers
 
-    # Fallback: use a broad index ETF constituent proxy
+    # ── Fallback: S&P500 via Wikipedia ────────────────────────────────────
     logger.warning("[RS] Falling back to major index constituents for RS universe...")
     sp500_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     try:

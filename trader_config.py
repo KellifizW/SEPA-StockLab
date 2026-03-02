@@ -111,10 +111,10 @@ SCAN_TOP_N     = 100               # Max stocks to return (top N by score)
 # ─────────────────────────────────────────────────────────────────────────────
 # SCAN PERFORMANCE TUNING
 # ─────────────────────────────────────────────────────────────────────────────
-STAGE2_MAX_WORKERS    = 16         # Parallel threads for Stage 2 TT validation
+STAGE2_MAX_WORKERS    = 32         # Parallel threads for Stage 2 TT validation (32 > cores: PyArrow/NumPy release GIL)
 STAGE2_BATCH_SIZE     = 50         # Tickers per yf.download() batch in Stage 2
 STAGE2_BATCH_SLEEP    = 1.5        # Sleep between Stage 2 download batches (sec)
-STAGE3_MAX_WORKERS    = 6          # Parallel threads for Stage 3 SEPA scoring
+STAGE3_MAX_WORKERS    = 32         # Parallel threads for Stage 3 SEPA scoring
 FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamentals
 FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
 FINVIZ_TIMEOUT_SEC    = 600.0      # 10 minutes max (finvizfinance needs ~2 sec per page × 464 pages = 15 min for full scan)
@@ -322,9 +322,11 @@ QM_SCAN_RESULTS_KEEP       = 30   # Max CSV files to keep per label in scan_resu
 # ── QM scan performance tuning ─────────────────────────────────────────────────
 # Stage 2: Historical data and batch download optimization
 # (Stage 1 remains simple: Price > $5, Volume > 300K, USA only)
-QM_STAGE2_MAX_WORKERS      = 12   # Parallel threads for Stage 2 historical enrichment
+QM_STAGE2_MAX_WORKERS      = 32   # Parallel threads for Stage 2 historical enrichment (32 > cores: GIL-releasing ops)
 QM_STAGE2_BATCH_SIZE       = 60   # Tickers per yf.download() batch (increased from 40)
 QM_STAGE2_BATCH_SLEEP      = 1.0  # Seconds between batch downloads (reduced from 1.5)
+QM_STAGE3_WORKERS          = 6    # Stage 3 scoring workers (limited: each makes yfinance network calls;
+                                   # >8 causes 401/rate-limit cascades under combined scan)
 
 # ── Market environment gate for QM ───────────────────────────────────────────
 # QM breakout trades are blocked in confirmed bear markets
@@ -682,7 +684,7 @@ ML_SCAN_MIN_DOLLAR_VOL    = 5_000_000  # $Volume gate for output
 ML_SCAN_RESULTS_KEEP      = 30      # Max CSV files to keep in scan_results/
 
 # ── Scan performance tuning ──────────────────────────────────────────────────
-ML_STAGE2_MAX_WORKERS     = 12      # Parallel threads for Stage 2
+ML_STAGE2_MAX_WORKERS     = 32      # Parallel threads for Stage 2 (32 > cores: GIL-releasing ops)
 ML_STAGE2_BATCH_SIZE      = 60      # Tickers per yf.download() batch
 ML_STAGE2_BATCH_SLEEP     = 1.0     # Seconds between batch downloads
 

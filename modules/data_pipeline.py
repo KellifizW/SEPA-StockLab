@@ -84,22 +84,83 @@ def _is_crumb_error(exc: Exception) -> bool:
             or "invalid crumb" in desc or "crumb" in desc)
 
 
+_crumb_reset_lock  = threading.Lock()
+_last_crumb_reset  = [0.0]   # mutable float so closures can update it
+_CRUMB_RESET_COOLDOWN = 3.0  # seconds: min interval between resets
+
+# ─── yfinance call counter & rate-limit tracker ───────────────────────────────
+_yf_stats_lock = threading.Lock()
+_yf_stats: dict = {
+    "calls": 0,           # total yfinance fetch attempts
+    "errors": 0,          # total yfinance errors
+    "rate_limited": False, # True when a 429/401 was recently detected
+    "rate_limit_ts": 0.0,  # epoch timestamp of last rate-limit event
+    "last_call_ts": 0.0,   # epoch timestamp of last yfinance call
+}
+_YF_RATE_LIMIT_COOLDOWN = 60.0  # seconds before clearing rate_limited flag
+
+
+def _yf_track_call() -> None:
+    """Increment yfinance call counter."""
+    with _yf_stats_lock:
+        _yf_stats["calls"] += 1
+        _yf_stats["last_call_ts"] = time.time()
+
+
+def _yf_track_error(exc: Exception) -> None:
+    """Track yfinance errors; set rate_limited if 429 or repeated 401."""
+    with _yf_stats_lock:
+        _yf_stats["errors"] += 1
+        desc = str(exc).lower()
+        if "429" in desc or "too many requests" in desc or "rate limit" in desc:
+            _yf_stats["rate_limited"] = True
+            _yf_stats["rate_limit_ts"] = time.time()
+
+
+def get_yf_status() -> dict:
+    """
+    Return a snapshot of the yfinance call/error counters.
+    Also auto-clears rate_limited after _YF_RATE_LIMIT_COOLDOWN seconds.
+    """
+    with _yf_stats_lock:
+        now = time.time()
+        if (_yf_stats["rate_limited"]
+                and now - _yf_stats["rate_limit_ts"] > _YF_RATE_LIMIT_COOLDOWN):
+            _yf_stats["rate_limited"] = False
+        return dict(_yf_stats)
+
 def _reset_yf_crumb() -> bool:
     """
     Force yfinance to re-authenticate on the next API request by clearing
     the cached cookie/crumb from the YfData singleton.
-    Returns True on success.
+
+    Thread-safe: uses a lock + cooldown so that when multiple threads all
+    detect a 401 simultaneously, only the FIRST resets the crumb; the rest
+    skip (the crumb is already fresh) and retry with the new session.
+    Without this, parallel scanning causes a cascade of reset → re-401 →
+    reset loops that can lock out the session for 30+ seconds.
+
+    Returns True on success or if a recent reset already covered this thread.
     """
-    try:
-        from yfinance.data import YfData  # noqa: PLC0415
-        yd = YfData()
-        yd._crumb = None
-        yd._cookie = None
-        logger.info("[DataPipeline] yfinance crumb reset — will re-authenticate on next request")
-        return True
-    except Exception as e:
-        logger.warning(f"[DataPipeline] crumb reset failed: {e}")
-        return False
+    with _crumb_reset_lock:
+        now = time.time()
+        if now - _last_crumb_reset[0] < _CRUMB_RESET_COOLDOWN:
+            logger.debug(
+                "[DataPipeline] crumb reset skipped — another thread reset %.1fs ago",
+                now - _last_crumb_reset[0],
+            )
+            return True  # Fresh crumb already available; let caller retry
+        _last_crumb_reset[0] = now
+        try:
+            from yfinance.data import YfData  # noqa: PLC0415
+            yd = YfData()
+            yd._crumb = None
+            yd._cookie = None
+            logger.info("[DataPipeline] yfinance crumb reset — will re-authenticate on next request")
+            return True
+        except Exception as e:
+            logger.warning(f"[DataPipeline] crumb reset failed: {e}")
+            return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -435,6 +496,7 @@ def get_historical(ticker: str, period: str = "2y",
     # Download from yfinance (retry once on 401/crumb error)
     for _attempt in range(2):
         try:
+            _yf_track_call()
             tkr = yf.Ticker(ticker)
             df = tkr.history(period=period, interval="1d", auto_adjust=True)
             if df is None or df.empty:
@@ -455,6 +517,7 @@ def get_historical(ticker: str, period: str = "2y",
 
             return df
         except Exception as exc:
+            _yf_track_error(exc)
             if _attempt == 0 and _is_crumb_error(exc):
                 logger.warning(
                     f"get_historical({ticker}) crumb/401 error — resetting session and retrying"
@@ -482,6 +545,7 @@ def get_bulk_historical(tickers: list, period: str = "1y",
 
     for i, batch in enumerate(batches):
         try:
+            _yf_track_call()
             raw = yf.download(
                 tickers=batch,
                 period=period,
@@ -519,6 +583,7 @@ def get_bulk_historical(tickers: list, period: str = "1y",
                     except Exception:
                         continue
         except Exception as exc:
+            _yf_track_error(exc)
             logger.warning(f"Batch download error (batch {i}): {exc}")
 
         if i < len(batches) - 1:
@@ -589,6 +654,7 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
         }
         _retry = False
         try:
+            _yf_track_call()
             tkr = yf.Ticker(ticker)
 
             # .info — price, valuation, margins, ROE, SMA50/200, etc.
@@ -596,6 +662,7 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
                 info = tkr.info or {}
                 result["info"] = info
             except Exception as _inf_exc:
+                _yf_track_error(_inf_exc)
                 if _attempt == 0 and _is_crumb_error(_inf_exc):
                     logger.warning(
                         f"get_fundamentals({ticker}) crumb/401 on .info — resetting session"

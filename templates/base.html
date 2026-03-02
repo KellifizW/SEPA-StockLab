@@ -57,6 +57,10 @@
     .toast-msg.err  { border-left: 4px solid #f85149; }
     @keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
     .sidebar-sticky { position: sticky; top: 68px; }
+    /* Navbar clock + yfinance status */
+    .nav-clock { font-size: 11px; font-weight: 500; letter-spacing: .3px;
+                 font-variant-numeric: tabular-nums; white-space: nowrap; }
+    #navYfStatus { font-size: 11px; cursor: default; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #0d1117; }
     ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
@@ -78,7 +82,7 @@
 
 <nav class="navbar navbar-expand-lg navbar-dark sticky-top" style="background:#161b22;border-bottom:1px solid #30363d">
   <div class="container-fluid">
-    <a class="navbar-brand" href="/"><i class="bi bi-graph-up-arrow me-2"></i>SEPA&nbsp;Lab</a>
+    <a class="navbar-brand" href="/"><i class="bi bi-layers-fill me-2"></i>Strat&nbsp;Lab</a>
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
       <span class="navbar-toggler-icon"></span>
     </button>
@@ -172,6 +176,12 @@
             <button class="btn btn-sm btn-outline-secondary py-0 px-2" id="globalScanCancel"
                     style="white-space:nowrap; font-size:11px;" title="Cancel scan">Cancel</button>
           </div>
+        </li>
+        <!-- ── Navbar clocks & yfinance status ─────────────────────────── -->
+        <li class="nav-item d-flex align-items-center gap-1">
+          <span id="navClockHK" class="badge bg-dark border border-secondary nav-clock">HK --:--:--</span>
+          <span id="navClockET" class="badge bg-dark border border-secondary nav-clock">ET --:--:--</span>
+          <span id="navYfStatus" class="badge" style="display:none"></span>
         </li>
         <li class="nav-item"><a class="nav-link" href="/latest-report" target="_blank"><i class="bi bi-file-earmark-text me-1"></i>Report</a></li>
       </ul>
@@ -378,6 +388,58 @@ window.addEventListener('storage', (e) => {
 
 // Initialize on page load
 window.addEventListener('DOMContentLoaded', initGlobalScanMonitor);
+
+/* ── Navbar clocks (HK + ET, time only, no date) ────────────────────────── */
+function _updateNavClocks() {
+  const now = new Date();
+  const fmt = tz => new Intl.DateTimeFormat('en', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: tz
+  }).format(now);
+  const hkEl = document.getElementById('navClockHK');
+  const etEl = document.getElementById('navClockET');
+  if (hkEl) hkEl.textContent = 'HK ' + fmt('Asia/Hong_Kong');
+  // Market session dot
+  const usEast = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
+  const h = usEast.getHours(), m = usEast.getMinutes(), day = usEast.getDay();
+  const mins = h * 60 + m;
+  let dot = '🔴';
+  if (day >= 1 && day <= 5) {
+    if (mins >= 570 && mins < 960) dot = '🟢';
+    else if ((mins >= 240 && mins < 570) || (mins >= 960 && mins < 1200)) dot = '🟡';
+  }
+  if (etEl) etEl.textContent = 'ET ' + fmt('America/New_York') + ' ' + dot;
+}
+_updateNavClocks();
+setInterval(_updateNavClocks, 1000);
+
+/* ── yfinance status badge (polls every 15s) ────────────────────────────── */
+async function _pollNavYfStatus() {
+  try {
+    const r = await fetch('/api/yf-status').then(x => x.json());
+    const el = document.getElementById('navYfStatus');
+    if (!el) return;
+    if (r.rate_limited) {
+      el.style.display = '';
+      el.className = 'badge bg-danger';
+      el.title = 'yfinance 觸發限速 Rate Limited！\n呼叫次數: ' + r.calls + '  錯誤: ' + r.errors + '\n請稍候再試 Please wait before retrying.';
+      el.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>yF 限速';
+    } else if (r.errors > 0) {
+      el.style.display = '';
+      el.className = 'badge bg-warning text-dark';
+      el.title = 'yfinance 有錯誤 Errors: ' + r.errors + ' / 呼叫次數: ' + r.calls;
+      el.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>yF ' + r.errors + '錯';
+    } else if (r.calls > 0) {
+      el.style.display = '';
+      el.className = 'badge bg-success';
+      el.title = 'yfinance 正常 OK — 呼叫次數: ' + r.calls;
+      el.innerHTML = '<i class="bi bi-check-circle me-1"></i>yF&nbsp;' + r.calls;
+    } else {
+      el.style.display = 'none';
+    }
+  } catch(e) { /* network error — stay hidden */ }
+}
+_pollNavYfStatus();
+setInterval(_pollNavYfStatus, 15000);
 </script>
 {% block extra_js %}{% endblock %}
 </body>

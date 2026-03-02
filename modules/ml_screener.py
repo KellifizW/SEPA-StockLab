@@ -402,8 +402,12 @@ def run_ml_stage2(tickers: list[str], verbose: bool = True,
     batch_size = getattr(C, "ML_STAGE2_BATCH_SIZE", 60)
     max_workers = getattr(C, "ML_STAGE2_MAX_WORKERS", 12)
 
+    # Monotonic progress: prevent regression when batch_download_and_enrich
+    # switches from cache phase (scale 0–1) to download phase (scale 1–N).
+    _s2_max_pct = [12]
     def _progress_cb(batch_num: int, total_batches: int, msg: str = ""):
-        pct = 12 + int((batch_num / total_batches) * 35)
+        pct = max(_s2_max_pct[0], min(47, 12 + int((batch_num / max(total_batches, 1)) * 35)))
+        _s2_max_pct[0] = pct
         _progress("Stage 2", pct, msg)
 
     if enriched_map is None:

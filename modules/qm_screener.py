@@ -384,7 +384,12 @@ def run_qm_stage2(tickers: list[str], verbose: bool = True,
     sleep_sec   = getattr(C, "QM_STAGE2_BATCH_SLEEP",  1.5)
 
     def _progress_cb(batch_num: int, total_batches: int, msg: str = ""):
-        pct = 12 + int((batch_num / total_batches) * 35)
+        # Monotonic progress: prevent regression when batch_download_and_enrich
+        # switches from cache phase (scale 0–1) to download phase (scale 1–N).
+        if not hasattr(_progress_cb, "_max_pct"):
+            _progress_cb._max_pct = 12
+        pct = max(_progress_cb._max_pct, min(47, 12 + int((batch_num / max(total_batches, 1)) * 35)))
+        _progress_cb._max_pct = pct
         _progress("Stage 2", pct, msg)
 
     if enriched_map is None:
@@ -607,6 +612,10 @@ def run_qm_stage3(stage2_rows: list[dict],
     Stage 3 — Apply consolidation/MA quality filters and compute preliminary
     star ratings.  Sorts output by qm_star descending.
 
+    Parallelised with ThreadPoolExecutor (QM_STAGE3_WORKERS threads, default 6)
+    Worker count is intentionally limited to avoid yfinance rate-limit 401
+    cascades from too many concurrent .info / earnings-date requests.
+
     Args:
         stage2_rows:    output from run_qm_stage2()
         enriched_cache: (optional) dict[ticker→DataFrame] if already downloaded
@@ -614,38 +623,56 @@ def run_qm_stage3(stage2_rows: list[dict],
     Returns:
         pd.DataFrame sorted by qm_star descending, capped at QM_SCAN_TOP_N rows.
     """
-    from modules.data_pipeline import get_historical, get_technicals
+    from modules.data_pipeline import get_technicals
 
     total = len(stage2_rows)
     _progress("Stage 3", 64, f"Quality scoring {total} Stage-2 candidates…")
     logger.info("[QM Stage3] Scoring %d candidates", total)
 
-    results = []
-    for i, row in enumerate(stage2_rows):
+    results: list[dict] = []
+    _done       = [0]   # completed counter (mutable for closure)
+    _s3_max_pct = [64]  # monotonic progress floor
+
+    def _score_one(i: int, row: dict) -> dict | None:
+        """Per-ticker worker: fetch enriched data + run Stage 3 scoring."""
         if _is_cancelled():
-            break
-
+            return None
         ticker = row["ticker"]
-        pct    = 64 + int((i / max(total, 1)) * 30)
-        _progress("Stage 3", pct, f"Scoring {ticker}…", ticker)
 
-        # Get enriched DataFrame (use cache if available)
+        # Get enriched DataFrame — prefers _1y_enriched.parquet fast path
         df = pd.DataFrame()
         if enriched_cache and ticker in enriched_cache:
             raw_df = enriched_cache[ticker]
             df = get_technicals(raw_df) if "SMA_20" not in raw_df.columns else raw_df
         else:
-            df = get_historical(ticker, period="1y", use_cache=True)
-            if not df.empty:
-                from modules.data_pipeline import get_technicals as _ta
-                df = _ta(df)
+            from modules.data_pipeline import get_enriched as _get_enriched
+            df = _get_enriched(ticker, period="1y", use_cache=True)
 
         try:
-            scored = _score_qm_stage3(row, df)
-            if scored is not None:
-                results.append(scored)
+            return _score_qm_stage3(row, df)
         except Exception as exc:
             logger.warning("[QM S3 ERROR] %s: %s", ticker, exc)
+            return None
+
+    max_workers = getattr(C, "QM_STAGE3_WORKERS", 6)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = {
+            pool.submit(_score_one, i, row): row["ticker"]
+            for i, row in enumerate(stage2_rows)
+        }
+        for fut in as_completed(futs):
+            ticker = futs[fut]
+            _done[0] += 1
+            pct = max(_s3_max_pct[0], min(94, 64 + int((_done[0] / max(total, 1)) * 30)))
+            _s3_max_pct[0] = pct
+            _progress("Stage 3", pct, f"Scoring {ticker}…", ticker)
+            try:
+                scored = fut.result()
+            except Exception as exc:
+                logger.warning("[QM S3 ERROR] %s: %s", ticker, exc)
+                scored = None
+            if scored is not None:
+                results.append(scored)
 
     _progress("Stage 3", 95, f"Sorting {len(results)} results…")
 
@@ -753,15 +780,21 @@ def run_qm_scan(verbose: bool = True, min_star: Optional[float] = None, top_n: O
         _progress("Error", 100, "Stage 1 returned no candidates")
         return pd.DataFrame(), pd.DataFrame()
     logger.info("[QM Scan] Stage1: %d candidates", len(candidates))
+    _progress("Stage 1", 11, f"✓ Stage 1: {len(candidates):,} 個候選股票")
 
-    # ── Stage 2 ───────────────────────────────────────────────────────────
+    # ── Stage 2 ──────────────────────────────────────────────
     s2_rows = run_qm_stage2(candidates, verbose=verbose)
     if _is_cancelled():
         return pd.DataFrame(), pd.DataFrame()
     if not s2_rows:
         _progress("Done", 100, "No candidates passed ADR/momentum gate")
         return pd.DataFrame(), pd.DataFrame()
-    logger.info("[QM Scan] Stage2: %d candidates", len(s2_rows))
+    _s1_cnt = len(candidates)
+    _s2_cnt = len(s2_rows)
+    logger.info("[QM Scan] Stage2: %d candidates", _s2_cnt)
+    _progress("Stage 2", 63,
+              f"✓ 通過篩選: {_s2_cnt}/{_s1_cnt} ({_s2_cnt * 100 // _s1_cnt if _s1_cnt else 0}%) | "
+              f"已排除: {_s1_cnt - _s2_cnt} | ADR/動能/量能")
 
     # ── Stage 3 ───────────────────────────────────────────────────────────
     df_all = run_qm_stage3(s2_rows)
@@ -822,6 +855,14 @@ def run_qm_scan(verbose: bool = True, min_star: Optional[float] = None, top_n: O
     elapsed = (datetime.now() - scan_start).total_seconds()
     logger.info("[QM Scan] FINAL: %d passed | %d scored total | %.0fs elapsed",
                 len(df_passed), len(df_all), elapsed)
+
+    # ── Detailed final summary ──────────────────────────────
+    _s3_cnt = len(df_all)
+    _final_cnt = len(df_passed)
+    _progress("Counting", 97,
+              f"✅ 掃描完成: {_final_cnt} 隻符合條件 | "
+              f"Stage1→{len(candidates)} | Stage2→{_s2_cnt} | Stage3→{_final_cnt} | "
+              f"耗時 {elapsed:.0f}s")
 
     # ── Auto-save CSV to scan_results/ for debugging ───────────────────────
     try:

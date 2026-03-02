@@ -911,22 +911,30 @@ let _qmWatchLogEntries = [];
 const QM_REFRESH_MS = 300000; // 5 min
 
 function getMarketStatus() {
+  // Use Intl.DateTimeFormat to get true NY time — handles DST correctly
+  // regardless of the user's local timezone (e.g. HK UTC+8).
   const now = new Date();
-  // ET offset: UTC-5 (EST) or UTC-4 (EDT)
-  const jan = new Date(now.getFullYear(), 0, 1);
-  const jul = new Date(now.getFullYear(), 6, 1);
-  const stdOffset = Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
-  const etOffset = stdOffset === 300 ? -5 : -4; // EST vs EDT
-  const etMs = now.getTime() + now.getTimezoneOffset() * 60000 + etOffset * 3600000;
-  const et = new Date(etMs);
-  const h = et.getHours(), m = et.getMinutes(), d = et.getDay();
-  if (d === 0 || d === 6) return { status: 'closed', label: '周末閉市', cls: 'ms-closed' };
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false
+  });
+  const parts = fmt.formatToParts(now);
+  const h   = parseInt(parts.find(p => p.type === 'hour').value);
+  const m   = parseInt(parts.find(p => p.type === 'minute').value);
+  const wd  = parts.find(p => p.type === 'weekday').value; // 'Sat','Sun',…
+  if (wd === 'Sat' || wd === 'Sun')
+    return { status: 'closed',     label: '周末閉市',              cls: 'ms-closed'     };
   const mins = h * 60 + m;
-  if (mins < 240) return { status: 'closed', label: '夜間隅市', cls: 'ms-closed' };
-  if (mins < 570) return { status: 'premarket', label: '盤前交易', cls: 'ms-premarket' };
-  if (mins < 960) return { status: 'open', label: '市場開市', cls: 'ms-open' };
-  if (mins < 1200) return { status: 'afterhours', label: '盤後交易', cls: 'ms-afterhours' };
-  return { status: 'closed', label: '市場隅市', cls: 'ms-closed' };
+  // Session boundaries (US equity market):
+  //  04:00–09:30  Pre-Market
+  //  09:30–16:00  Regular Session (Open)
+  //  16:00–20:00  After-Hours
+  //  20:00–04:00  Overnight (Closed)
+  if (mins <  240) return { status: 'closed',     label: '隔夜閉市',              cls: 'ms-closed'     };
+  if (mins <  570) return { status: 'premarket',  label: '盤前 Pre-Market 04:00–09:30',  cls: 'ms-premarket'  };
+  if (mins <  960) return { status: 'open',       label: '盤中 Open 09:30–16:00',        cls: 'ms-open'       };
+  if (mins < 1200) return { status: 'afterhours', label: '盤後 After-Hours 16:00–20:00', cls: 'ms-afterhours' };
+  return { status: 'closed', label: '隔夜閉市', cls: 'ms-closed' };
 }
 
 function switchQmMode(mode) {

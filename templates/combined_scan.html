@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block title %}Combined SEPA + QM Scan{% endblock %}
 
 {% block extra_head %}
@@ -64,17 +64,12 @@
 {% block content %}
 
 <!-- ─── Header ─────────────────────────────────────────────────────── -->
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="mb-3">
   <h4 class="mb-0">
     <i class="bi bi-lightning-fill me-2" style="color:var(--accent)"></i>
     Combined Scan — SEPA <span style="color:#8b949e">+</span> QM
-    <small class="text-secondary ms-2" style="font-size:13px">完整功能掃描 Full Parity</small>
+    <small class="text-secondary ms-2" style="font-size:13px">完整功能描描 Full Parity</small>
   </h4>
-  <div class="d-flex align-items-center gap-2">
-    <span id="tradingDateBadge" class="badge bg-dark border border-secondary small"></span>
-    <span id="clockHK"  class="badge bg-dark border border-secondary small"></span>
-    <span id="clockUS"  class="badge bg-dark border border-secondary small"></span>
-  </div>
 </div>
 
 <!-- ─── Speed & Cache Status ──────────────────────────────────────── -->
@@ -744,41 +739,6 @@ let _qmAllData    = [];   // QM all rows from backend (before min_star filter)
 let _sepaShowAll  = false;
 let _currentTab   = 'sepa';
 let _liveLogVis   = false;
-
-/* ─── Clocks & Trading Date ──────────────────────────────────────── */
-function updateClocks() {
-  const now  = new Date();
-  const fmt  = tz => new Intl.DateTimeFormat('en', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: tz
-  }).format(now);
-
-  // Last US trading day
-  const usEast = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
-  let d = new Date(usEast);
-  if (d.getHours() < 9 || (d.getHours() === 9 && d.getMinutes() < 30)) d.setDate(d.getDate() - 1);
-  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
-  const yy  = d.getFullYear();
-  const mm  = String(d.getMonth() + 1).padStart(2, '0');
-  const dd  = String(d.getDate()).padStart(2, '0');
-  const dn  = d.toLocaleDateString('en-US', {weekday: 'short', timeZone: 'America/New_York'});
-  document.getElementById('tradingDateBadge').innerHTML =
-    '<i class="bi bi-calendar3 me-1"></i>' + yy + '-' + mm + '-' + dd + ' (' + dn + ')';
-
-  // Market open dot
-  const h    = usEast.getHours(), m = usEast.getMinutes(), day = usEast.getDay();
-  let dot = '🔴';
-  if (day >= 1 && day <= 5) {
-    const mins = h * 60 + m;
-    if (mins >= 570 && mins < 960) dot = '🟢';
-    else if ((mins >= 240 && mins < 570) || (mins >= 960 && mins < 1200)) dot = '🟡';
-  }
-  document.getElementById('clockHK').innerHTML =
-    '<i class="bi bi-clock me-1"></i>HK ' + fmt('Asia/Hong_Kong');
-  document.getElementById('clockUS').innerHTML =
-    '<i class="bi bi-clock me-1"></i>ET ' + fmt('America/New_York') + ' ' + dot;
-}
-updateClocks();
-setInterval(updateClocks, 1000);
 
 /* ─── Source note ────────────────────────────────────────────────── */
 function onSourceChange(val) {

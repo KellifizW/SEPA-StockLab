@@ -1228,27 +1228,30 @@ let _watchSlots = {
 };
 
 function getMarketStatus() {
-  // Determine market status: using Intl.DateTimeFormat to get NY time
-  const formatter = new Intl.DateTimeFormat('en-US', {
+  // Use Intl.DateTimeFormat to get true NY time — handles DST correctly
+  // regardless of the user's local timezone (e.g. HK UTC+8).
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
+    hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false
   });
-  const parts = formatter.formatToParts(new Date());
-  let h = parseInt(parts.find(p => p.type === 'hour').value);
-  let m = parseInt(parts.find(p => p.type === 'minute').value);
-  
-  if ((h < 4) || (h >= 20)) {
-    return { status: 'closed', label: '美股未開盤', color: '#1c2128' };
-  } else if (h < 9 || (h === 9 && m < 30)) {
-    return { status: 'premarket', label: '盤前 Pre-Market', color: '#e3b341' };
-  } else if (h < 16) {
-    return { status: 'open', label: '盤中 Open', color: '#3fb950' };
-  } else {
-    return { status: 'afterhours', label: '盤後 After-Hours', color: '#58a6ff' };
-  }
+  const parts = fmt.formatToParts(now);
+  const h  = parseInt(parts.find(p => p.type === 'hour').value);
+  const m  = parseInt(parts.find(p => p.type === 'minute').value);
+  const wd = parts.find(p => p.type === 'weekday').value;
+  if (wd === 'Sat' || wd === 'Sun')
+    return { status: 'closed',     label: '周末閉市',                        color: '#1c2128' };
+  const mins = h * 60 + m;
+  // Session boundaries (US equity market):
+  //  04:00–09:30  Pre-Market
+  //  09:30–16:00  Regular Session (Open)
+  //  16:00–20:00  After-Hours
+  //  20:00–04:00  Overnight (Closed)
+  if (mins <  240) return { status: 'closed',     label: '隔夜閉市',                        color: '#1c2128' };
+  if (mins <  570) return { status: 'premarket',  label: '盤前 Pre-Market 04:00–09:30',     color: '#e3b341' };
+  if (mins <  960) return { status: 'open',       label: '盤中 Open 09:30–16:00',           color: '#3fb950' };
+  if (mins < 1200) return { status: 'afterhours', label: '盤後 After-Hours 16:00–20:00',    color: '#58a6ff' };
+  return { status: 'closed', label: '隔夜閉市', color: '#1c2128' };
 }
 
 function switchMlMode(mode) {
