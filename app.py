@@ -2988,28 +2988,28 @@ def _get_qm_intraday_signals(
         delta = (earnings_date - today).days
         if delta <= C.QM_EARNINGS_BLACKOUT_DAYS:
             gate_blocks.append("EARNINGS_BLACKOUT")
-            signals.append(f" 財報黑色期 Earnings in {delta}d  avoid new entries")
+            signals.append(f"🔴 財報黑色期 Earnings in {delta}d  avoid new entries")
         elif delta <= C.QM_EARNINGS_WARN_DAYS:
             gate_blocks.append("EARNINGS_WARNING")
-            signals.append(f" 財報警告 Earnings in {delta}d  reduce size")
+            signals.append(f"⚠️ 財報警告 Earnings in {delta}d  reduce size")
 
     #  NASDAQ regime gate 
     nasdaq = _get_nasdaq_regime_snapshot()
     regime = nasdaq.get("regime", "unknown")
     if regime == "stop":
         gate_blocks.append("NASDAQ_STOP")
-        signals.append(" NASDAQ停損區 QQQ below both SMAs  no new longs")
+        signals.append("🔴 NASDAQ停損區 QQQ below both SMAs  no new longs")
     elif regime == "caution":
         gate_blocks.append("NASDAQ_CAUTION")
-        signals.append(" NASDAQ警戒 QQQ caution zone  half-size only")
+        signals.append("⚠️ NASDAQ警戒 QQQ caution zone  half-size only")
 
     #  Gap filter (S30) 
     gap_passed = abs(gap_pct) < C.QM_GAP_PASS_PCT
     gap_warning = abs(gap_pct) >= C.QM_GAP_WARN_PCT
     if gap_pct >= C.QM_GAP_PASS_PCT:
-        signals.append(f" 跳空過大 Gap {gap_pct:+.1f}%  {C.QM_GAP_PASS_PCT}%  wait for first 5-min range")
+        signals.append(f"🔴 跳空過大 Gap {gap_pct:+.1f}%  {C.QM_GAP_PASS_PCT}%  wait for first 5-min range")
     elif gap_pct >= C.QM_GAP_WARN_PCT:
-        signals.append(f" 跳空注意 Gap {gap_pct:+.1f}%  confirm ORH before adding")
+        signals.append(f"⚠️ 跳空注意 Gap {gap_pct:+.1f}%  confirm ORH before adding")
     gap_status = {"gap_pct": round(gap_pct, 2), "passed": gap_passed, "warning": gap_warning}
 
     #  ORH levels (S29) 
@@ -3043,18 +3043,18 @@ def _get_qm_intraday_signals(
     current_price = candles_5m[-1]["close"] if candles_5m else (hod if hod else None)
 
     if orh_5m_6bar.get("broken_up"):
-        signals.append(f" 突破30分鐘高點 Price broke above 30-min ORH {orh_5m_6bar['hi']}")
+        signals.append(f"🟢 突破30分鐘高點 Price broke above 30-min ORH {orh_5m_6bar['hi']}")
     if orh_5m_1bar.get("broken_up"):
-        signals.append(f" 突破5分鐘高點 Price broke above 5-min ORH {orh_5m_1bar['hi']}")
+        signals.append(f"🟢 突破5分鐘高點 Price broke above 5-min ORH {orh_5m_1bar['hi']}")
     if orh_5m_6bar.get("broken_dn"):
-        signals.append(f" 跌破30分鐘低點 Price broke below 30-min ORL {orh_5m_6bar['lo']}")
+        signals.append(f"🔴 跌破30分鐘低點 Price broke below 30-min ORL {orh_5m_6bar['lo']}")
 
     #  ATR entry gate (S1/S31) 
-    atr_gate = {"current_price": current_price, "atr": round(atr_daily, 4) if atr_daily else None,
+    atr_gate = {"current_price": current_price, "atr": round(atr_daily, 4) if atr_daily and atr_daily > 0 else None,
                 "lod": round(lod, 2) if lod else None, "chase_status": "n/a",
                 "max_buy_excellent": None, "max_buy_ideal": None, "max_buy_caution": None,
                 "dist_atr_frac": None}
-    if current_price and atr_daily and lod:
+    if current_price and atr_daily and atr_daily > 0 and lod:
         max_buy_exc  = lod + C.QM_ATR_CHASE_EXCELLENT   * atr_daily
         max_buy_ideal = lod + C.QM_ATR_CHASE_IDEAL_MAX  * atr_daily
         max_buy_caut = lod + C.QM_ATR_CHASE_CAUTION_MAX * atr_daily
@@ -3069,16 +3069,16 @@ def _get_qm_intraday_signals(
         if dist_frac is not None:
             if dist_frac < C.QM_ATR_CHASE_EXCELLENT:
                 atr_gate["chase_status"] = "excellent"
-                signals.append(f" 入場極佳 Entry excellent: price only {dist_frac:.2f}ATR from LOD")
+                signals.append(f"🟢 入場極佳 Entry excellent: price only {dist_frac:.2f}ATR from LOD")
             elif dist_frac < C.QM_ATR_CHASE_IDEAL_MAX:
                 atr_gate["chase_status"] = "ideal"
-                signals.append(f" 入場理想 Entry ideal: {dist_frac:.2f}ATR from LOD")
+                signals.append(f"🟢 入場理想 Entry ideal: {dist_frac:.2f}ATR from LOD")
             elif dist_frac < C.QM_ATR_CHASE_CAUTION_MAX:
                 atr_gate["chase_status"] = "caution"
-                signals.append(f" 入場謹慎 Entry caution: {dist_frac:.2f}ATR from LOD  feels like chasing")
+                signals.append(f"⚠️ 入場謹慎 Entry caution: {dist_frac:.2f}ATR from LOD  feels like chasing")
             else:
                 atr_gate["chase_status"] = "too_late"
-                signals.append(f" 追價過高 Too extended: {dist_frac:.2f}ATR from LOD  avoid")
+                signals.append(f"🔴 追價過高 Too extended: {dist_frac:.2f}ATR from LOD  avoid")
 
     #  MA signals (S11) 
     def _sma(closes: list, period: int):
@@ -3106,9 +3106,9 @@ def _get_qm_intraday_signals(
             above = current_price > sma20_5m
             ma_signals["price_vs_5m_sma20"] = "above" if above else "below"
             if above:
-                signals.append(f" 價格在5分SMA20之上 Price above 5-min SMA20 ({sma20_5m:.2f})")
+                signals.append(f"🟢 價格在5分SMA20之上 Price above 5-min SMA20 ({sma20_5m:.2f})")
             else:
-                signals.append(f" 價格跌破5分SMA20 Price below 5-min SMA20 ({sma20_5m:.2f})")
+                signals.append(f"🔴 價格跌破5分SMA20 Price below 5-min SMA20 ({sma20_5m:.2f})")
 
     if candles_1h:
         closes_1h = [c["close"] for c in candles_1h]
@@ -3122,9 +3122,9 @@ def _get_qm_intraday_signals(
             above = current_price > ema65_1h
             ma_signals["price_vs_1h_ema65"] = "above" if above else "below"
             if above:
-                signals.append(f" 價格在60分EMA65之上 Price above 1-hr EMA65 ({ema65_1h:.2f})")
+                signals.append(f"🟢 價格在60分EMA65之上 Price above 1-hr EMA65 ({ema65_1h:.2f})")
             else:
-                signals.append(f" 跌破60分EMA65 Price below 1-hr EMA65 ({ema65_1h:.2f})  key support lost")
+                signals.append(f"🔴 跌破60分EMA65 Price below 1-hr EMA65 ({ema65_1h:.2f})  key support lost")
 
     #  Higher lows (S12) 
     higher_lows = {"count": 0, "valid": False, "last_swing_lo": None, "trend": "flat"}
@@ -3140,9 +3140,9 @@ def _get_qm_intraday_signals(
                 "trend": trend,
             }
             if valid:
-                signals.append(f" 更高低點 Higher lows confirmed ({hl_count} swings)  bullish structure")
+                signals.append(f"🟢 更高低點 Higher lows confirmed ({hl_count} swings)  bullish structure")
             elif hl_count == 0 and len(lows) >= 2:
-                signals.append(f" 低點下移 Lower lows forming  weakening structure")
+                signals.append(f"🔴 低點下移 Lower lows forming  weakening structure")
 
     #  Breakout signals (S40: close vs HOD / session high) 
     breakout_signals = []
@@ -3150,15 +3150,15 @@ def _get_qm_intraday_signals(
         if current_price >= hod * 0.998:
             breakout_signals.append({"type": "HOD_CHALLENGE", "level": round(hod, 2),
                                       "current_price": current_price, "strength": "strong"})
-            signals.append(f" 挑戰日高 Price challenging HOD {hod}  watch for close above")
+            signals.append(f"🟢 挑戰日高 Price challenging HOD {hod}  watch for close above")
     if current_price and orh and current_price > orh * 1.001:
         breakout_signals.append({"type": "ORH_BREAK", "level": round(orh, 2),
                                   "current_price": current_price, "strength": "moderate"})
 
-    #  Summarise 
-    bullish = sum(1 for s in signals if "" in s)
-    bearish = sum(1 for s in signals if "" in s)
-    neutral = sum(1 for s in signals if "" in s)
+    #  Summarise signals with emoji markers
+    bullish = sum(1 for s in signals if "🟢" in s)
+    bearish = sum(1 for s in signals if "🔴" in s)
+    neutral = sum(1 for s in signals if "⚠️" in s or "ℹ️" in s)
 
     # ── QM Dynamic Watch Score (盯盤動態評分) ─────────────────────────────
     # Aggregates all intraday signals into a single 0-100 score with
@@ -3173,22 +3173,22 @@ def _get_qm_intraday_signals(
     _orh_dn = sum(1 for k in ("1m", "5m", "60m") if orh_levels.get(k, {}).get("broken_dn"))
     if _orh_up == 3:
         w_score += C.QM_WSCORE_ORH_ALL_UP
-        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_ALL_UP,
-                            "note": f"三級全部突破 All 3 ORH broken up ↑"})
+        w_breakdown.append({"dim": "ORH 突破", "pts": C.QM_WSCORE_ORH_ALL_UP,
+                            "note": f"三級全部突破上行，強烈看好"})
     elif orh_levels.get("60m", {}).get("broken_up"):
         w_score += C.QM_WSCORE_ORH_60M_UP
-        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_60M_UP,
-                            "note": "30分鐘 ORH 突破 ↑"})
+        w_breakdown.append({"dim": "ORH 突破", "pts": C.QM_WSCORE_ORH_60M_UP,
+                            "note": "30分鐘 ORH 突破上行"})
     elif orh_levels.get("5m", {}).get("broken_up"):
         w_score += C.QM_WSCORE_ORH_5M_UP
-        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_5M_UP,
-                            "note": "5分鐘 ORH 突破 ↑"})
+        w_breakdown.append({"dim": "ORH 突破", "pts": C.QM_WSCORE_ORH_5M_UP,
+                            "note": "5分鐘 ORH 突破上行"})
     else:
-        w_breakdown.append({"dim": "ORH", "pts": 0, "note": "尚未突破任何 ORH"})
+        w_breakdown.append({"dim": "ORH 突破", "pts": 0, "note": "尚未突破任何 ORH"})
     if orh_levels.get("60m", {}).get("broken_dn"):
         w_score += C.QM_WSCORE_ORH_60M_DN
-        w_breakdown.append({"dim": "ORH", "pts": C.QM_WSCORE_ORH_60M_DN,
-                            "note": "跌破30分鐘 ORL ↓ 結構失敗"})
+        w_breakdown.append({"dim": "ORH 失敗", "pts": C.QM_WSCORE_ORH_60M_DN,
+                            "note": "跌破30分鐘 ORL 下行  結構破裂"})
 
     # ATR entry gate
     _chase = atr_gate.get("chase_status", "n/a")
@@ -3196,10 +3196,12 @@ def _get_qm_intraday_signals(
                 "caution": C.QM_WSCORE_ATR_CAUTION, "too_late": C.QM_WSCORE_ATR_TOOLATE}
     if _chase in _atr_map:
         w_score += _atr_map[_chase]
-        w_breakdown.append({"dim": "ATR", "pts": _atr_map[_chase],
-                            "note": f"ATR chase: {_chase}"})
+        _atr_label = {"excellent": "極佳 <0.4×ATR", "ideal": "理想 0.4-0.67×ATR", 
+                      "caution": "謹慎 0.67-1×ATR", "too_late": "超高 >1×ATR"}[_chase]
+        w_breakdown.append({"dim": "ATR 入場", "pts": _atr_map[_chase],
+                            "note": f"{_atr_label}"})
     else:
-        w_breakdown.append({"dim": "ATR", "pts": 0, "note": "ATR 資料不足"})
+        w_breakdown.append({"dim": "ATR 入場", "pts": 0, "note": "等待盤中價格數據"})
     if _chase == "too_late":
         w_iron_rules.append({"rule": "ATR_TOO_LATE",
                              "msg": "追價過高 (>1×ATR from LOD) — 強烈不建議追買",
@@ -3208,10 +3210,11 @@ def _get_qm_intraday_signals(
     # NASDAQ regime
     _nas_map = {"full_power": C.QM_WSCORE_NASDAQ_FULL, "caution": C.QM_WSCORE_NASDAQ_CAUTION,
                 "choppy": C.QM_WSCORE_NASDAQ_CHOPPY, "stop": C.QM_WSCORE_NASDAQ_STOP}
+    _nas_label = {"full_power": "全力上揚", "caution": "警戒中", "choppy": "震盪", "stop": "停損區"}[regime]
     if regime in _nas_map:
         w_score += _nas_map[regime]
-        w_breakdown.append({"dim": "NASDAQ", "pts": _nas_map[regime],
-                            "note": f"NASDAQ regime: {regime}"})
+        w_breakdown.append({"dim": "市場環境", "pts": _nas_map[regime],
+                            "note": f"NASDAQ {_nas_label}"})
     if regime == "stop":
         w_iron_rules.append({"rule": "NASDAQ_STOP",
                              "msg": "NASDAQ 停損區 — 鐵律禁止做多 (S5)",
@@ -3220,70 +3223,70 @@ def _get_qm_intraday_signals(
     # Earnings proximity
     if "EARNINGS_BLACKOUT" in gate_blocks:
         w_score += C.QM_WSCORE_EARNINGS_BLOCK
-        w_breakdown.append({"dim": "Earnings", "pts": C.QM_WSCORE_EARNINGS_BLOCK,
-                            "note": "財報 ≤3天 — 鐵律禁止 (S2)"})
+        w_breakdown.append({"dim": "財報期", "pts": C.QM_WSCORE_EARNINGS_BLOCK,
+                            "note": "財報黑色期 ≤3天 — 鐵律禁止 (S2)"})
         w_iron_rules.append({"rule": "EARNINGS_BLACKOUT",
                              "msg": "財報黑色期 ≤3天 — 鐵律禁止新建倉",
                              "severity": "block"})
     elif "EARNINGS_WARNING" in gate_blocks:
         w_score += C.QM_WSCORE_EARNINGS_WARN
-        w_breakdown.append({"dim": "Earnings", "pts": C.QM_WSCORE_EARNINGS_WARN,
-                            "note": "財報 ≤7天 — 減半倉位"})
+        w_breakdown.append({"dim": "財報期", "pts": C.QM_WSCORE_EARNINGS_WARN,
+                            "note": "財報警告期 4-7天 — 建議減半倉位"})
     else:
         w_score += C.QM_WSCORE_EARNINGS_CLEAR
-        w_breakdown.append({"dim": "Earnings", "pts": C.QM_WSCORE_EARNINGS_CLEAR,
-                            "note": "財報遠離 — OK"})
+        w_breakdown.append({"dim": "財報期", "pts": C.QM_WSCORE_EARNINGS_CLEAR,
+                            "note": "財報遠離 — ≥8天安全"})
 
-    # Gap (S30)
+    # Gap (S30) — opening gap filter
     if abs(gap_pct) >= C.QM_GAP_PASS_PCT:
         w_score += C.QM_WSCORE_GAP_BLOCK
-        w_breakdown.append({"dim": "Gap", "pts": C.QM_WSCORE_GAP_BLOCK,
-                            "note": f"跳空 {gap_pct:+.1f}% > {C.QM_GAP_PASS_PCT}% — pass"})
+        w_breakdown.append({"dim": "開盤跳空", "pts": C.QM_WSCORE_GAP_BLOCK,
+                            "note": f"跳空 {gap_pct:+.1f}% — 超過上限，鐵律 PASS"})
         w_iron_rules.append({"rule": "GAP_EXTREME",
-                             "msg": f"跳空 {gap_pct:+.1f}% 過大 — 鐵律 pass (S30)",
+                             "msg": f"開盤跳空 {gap_pct:+.1f}% 過大 — 鐵律禁止入場 (S30)",
                              "severity": "block"})
     elif abs(gap_pct) >= C.QM_GAP_WARN_PCT:
         w_score += C.QM_WSCORE_GAP_WARN
-        w_breakdown.append({"dim": "Gap", "pts": C.QM_WSCORE_GAP_WARN,
-                            "note": f"跳空 {gap_pct:+.1f}% — 注意"})
+        w_breakdown.append({"dim": "開盤跳空", "pts": C.QM_WSCORE_GAP_WARN,
+                            "note": f"跳空 {gap_pct:+.1f}% — 需確認ORH再入場"})
     else:
-        w_breakdown.append({"dim": "Gap", "pts": 0, "note": f"跳空 {gap_pct:+.1f}% — 正常"})
+        w_breakdown.append({"dim": "開盤跳空", "pts": 0, "note": f"跳空 {gap_pct:+.1f}% — 正常範圍"})
 
-    # Higher lows (S40)
+    # Higher lows (S40) — swing low structure
     if higher_lows.get("valid"):
         w_score += C.QM_WSCORE_HL_CONFIRMED
-        w_breakdown.append({"dim": "HL", "pts": C.QM_WSCORE_HL_CONFIRMED,
-                            "note": "盤中 Higher Lows 確認 ↑"})
+        w_breakdown.append({"dim": "低點結構", "pts": C.QM_WSCORE_HL_CONFIRMED,
+                            "note": "盤中確認更高低點 — 上升結構"})
     elif higher_lows.get("trend") == "descending":
         w_score += C.QM_WSCORE_HL_LOWER
-        w_breakdown.append({"dim": "HL", "pts": C.QM_WSCORE_HL_LOWER,
-                            "note": "盤中 Lower Lows ↓"})
+        w_breakdown.append({"dim": "低點結構", "pts": C.QM_WSCORE_HL_LOWER,
+                            "note": "盤中出現更低低點 — 下降結構"})
     else:
-        w_breakdown.append({"dim": "HL", "pts": 0, "note": "盤中低點: 持平/不明確"})
+        w_breakdown.append({"dim": "低點結構", "pts": 0, "note": "盤中低點持平/不明確"})
 
-    # MA position (S11)
+    # MA position (S11) — short-term & long-term MA alignment
     if ma_signals.get("price_vs_5m_sma20") == "above":
         w_score += C.QM_WSCORE_MA_ABOVE_5M20
-        w_breakdown.append({"dim": "5m MA", "pts": C.QM_WSCORE_MA_ABOVE_5M20,
-                            "note": "Price > 5min SMA20"})
+        w_breakdown.append({"dim": "5分MA", "pts": C.QM_WSCORE_MA_ABOVE_5M20,
+                            "note": "價格 > 5分SMA20 — 短期上升"})
     elif ma_signals.get("price_vs_5m_sma20") == "below":
         w_score += C.QM_WSCORE_MA_BELOW_5M20
-        w_breakdown.append({"dim": "5m MA", "pts": C.QM_WSCORE_MA_BELOW_5M20,
-                            "note": "Price < 5min SMA20"})
+        w_breakdown.append({"dim": "5分MA", "pts": C.QM_WSCORE_MA_BELOW_5M20,
+                            "note": "價格 < 5分SMA20 — 短期下降"})
     if ma_signals.get("price_vs_1h_ema65") == "above":
         w_score += C.QM_WSCORE_MA_ABOVE_1H65
-        w_breakdown.append({"dim": "1h MA", "pts": C.QM_WSCORE_MA_ABOVE_1H65,
-                            "note": "Price > 1hr EMA65 (≈Daily 10SMA)"})
+        w_breakdown.append({"dim": "60分MA", "pts": C.QM_WSCORE_MA_ABOVE_1H65,
+                            "note": "價格 > 60分EMA65 — 中期向上"})
     elif ma_signals.get("price_vs_1h_ema65") == "below":
         w_score += C.QM_WSCORE_MA_BELOW_1H65
-        w_breakdown.append({"dim": "1h MA", "pts": C.QM_WSCORE_MA_BELOW_1H65,
-                            "note": "Price < 1hr EMA65 — 關鍵支撐丟失"})
+        w_breakdown.append({"dim": "60分MA", "pts": C.QM_WSCORE_MA_BELOW_1H65,
+                            "note": "價格 < 60分EMA65 — 中期支撐斷裂"})
 
-    # HOD challenge
+    # HOD challenge (breakout strength)
     if any(b["type"] == "HOD_CHALLENGE" for b in breakout_signals):
         w_score += C.QM_WSCORE_HOD_CHALLENGE
-        w_breakdown.append({"dim": "Breakout", "pts": C.QM_WSCORE_HOD_CHALLENGE,
-                            "note": "挑戰日高 HOD"})
+        w_breakdown.append({"dim": "突破強度", "pts": C.QM_WSCORE_HOD_CHALLENGE,
+                            "note": "挑戰日高  突破確認信號"})
 
     # Normalize raw score → 0-100
     _max_raw = C.QM_WSCORE_MAX
@@ -3375,18 +3378,22 @@ def qm_watch_signals(ticker: str):
         #  Daily ATR via data_pipeline 
         df_d = None
         try:
-            from modules.data_pipeline import get_price_data
-            df_d = get_price_data(ticker, period="3mo", interval="1d")
+            from modules.data_pipeline import get_historical, get_atr
+            df_d = get_historical(ticker, period="3mo")
             if df_d is not None and not df_d.empty and len(df_d) >= 2:
-                atr_raw = (df_d["High"] - df_d["Low"]).rolling(14).mean().iloc[-1]
-                atr_daily = float(atr_raw) if atr_raw == atr_raw else None
+                atr_daily = get_atr(df_d)  # uses QM_ATR_PERIOD (14), returns float
+                if not atr_daily or atr_daily <= 0:
+                    # Fallback: manual rolling mean
+                    atr_raw = (df_d["High"] - df_d["Low"]).rolling(14).mean().iloc[-1]
+                    atr_daily = float(atr_raw) if atr_raw == atr_raw else None
                 prev_close = float(df_d["Close"].iloc[-2])
                 current_open = float(df_d["Open"].iloc[-1])
                 gap_pct = (current_open - prev_close) / prev_close * 100 if prev_close else 0.0
             else:
                 atr_daily = prev_close = None
                 gap_pct = 0.0
-        except Exception:
+        except Exception as _e:
+            logging.getLogger(__name__).warning(f"ATR fetch failed for {ticker}: {_e}")
             atr_daily = prev_close = None
             gap_pct = 0.0
 

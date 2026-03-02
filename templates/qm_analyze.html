@@ -336,41 +336,48 @@
   <!-- 2. Gate alerts -->
   <div id="qmGateAlerts" class="mb-3"></div>
 
-  <!-- 2b. Dynamic Watch Score Card -->
-  <div class="card mb-3" id="qmScoreCardWrap" style="display:none">
-    <div class="card-header d-flex align-items-center justify-content-between">
-      <span><i class="bi bi-speedometer me-1"></i>動態盯盤評分 Watch Score</span>
-      <span id="qmScoreDelta" class="score-delta flat"></span>
-    </div>
-    <div class="card-body" id="qmScoreCard">
-      <!-- Populated by renderQmWatchScore() -->
-    </div>
-  </div>
-
-  <!-- 3. ORH Cascade -->
-  <div class="card mb-3">
-    <div class="card-header">
-      <i class="bi bi-alarm me-1"></i>開市區間突破 Opening Range Highs (ORH)
-      <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
-         title="Qullamaggie：股價突破開市場區間高點是重要買入信號。分三個級別：1分鐘 (最進取)、5分鐘 (標準)、30分鐘 (6x5min)。"></i>
-    </div>
-    <div class="card-body">
-      <div class="row g-2" id="qmOrhCascade">
-        <!-- Populated by renderOrhCascade() -->
+  <!-- 2b-4 Top row: Watch Score, ORH, ATR (3 columns) -->
+  <div class="row g-3 mb-3">
+    <!-- Watch Score Card -->
+    <div class="col-12 col-lg-4" id="qmScoreCardWrap" style="display:none">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-speedometer me-1"></i>動態評分</span>
+          <span id="qmScoreDelta" class="score-delta flat"></span>
+        </div>
+        <div class="card-body" id="qmScoreCard" style="font-size:12px">
+          <!-- Populated by renderQmWatchScore() -->
+        </div>
       </div>
     </div>
-  </div>
-
-  <!-- 4. ATR Entry Gate -->
-  <div class="card mb-3">
-    <div class="card-header">
-      <i class="bi bi-speedometer2 me-1"></i>ATR 入場評估 Entry Gate (vs LOD)
-      <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
-         title="Qullamaggie：理想入場在 LOD + 0~0.67×ATR内。超過 1×ATR 為追價。"></i>
+    <!-- ORH Cascade -->
+    <div class="col-12 col-lg-4">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-alarm me-1"></i>開市區間 ORH
+          <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip" style="font-size:10px"
+             title="Qullamaggie：突破開市場區間高點是重要買入信號。1分鐘 (最進取) / 5分鐘 (標準) / 30分鐘 (6x5min)。"></i>
+        </div>
+        <div class="card-body" style="padding:10px">
+          <div class="row g-2" id="qmOrhCascade" style="flex-wrap:wrap;margin:0">
+            <!-- Populated by renderOrhCascade() -->
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="card-body">
-      <div id="qmAtrGauge">
-        <!-- Populated by renderAtrGauge() -->
+    <!-- ATR Entry Gate -->
+    <div class="col-12 col-lg-4">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-speedometer2 me-1"></i>ATR 入場評估
+          <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip" style="font-size:10px"
+             title="理想入場在 LOD + 0~0.67×ATR。超過 1×ATR 為追價。"></i>
+        </div>
+        <div class="card-body" style="padding:10px">
+          <div id="qmAtrGauge" style="font-size:12px">
+            <!-- Populated by renderAtrGauge() -->
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -419,24 +426,29 @@
     </div>
   </div>
 
-  <!-- 6. Premarket plan -->
-  <div class="card mb-3">
-    <div class="card-header">
-      <i class="bi bi-journal-bookmark me-1"></i>開市前計劃 Pre-Market Plan
+  <!-- 6-7 Middle row: Pre-market plan & Intraday commentary (2 columns) -->
+  <div class="row g-3 mb-3">
+    <!-- Premarket plan -->
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-journal-bookmark me-1"></i>開市前計劃 Pre-Market Plan
+        </div>
+        <div class="card-body" id="qmPremktPlan" style="font-size:12px;padding:12px">
+          <div class="text-secondary text-center py-2">請先執行分析</div>
+        </div>
+      </div>
     </div>
-    <div class="card-body" id="qmPremktPlan">
-      <div class="text-secondary text-center py-2" style="font-size:12px">請先執行分析</div>
-    </div>
-  </div>
-
-  <!-- 7. Intraday commentary (active signals) -->
-  <div class="card mb-3">
-    <div class="card-header">
-      <i class="bi bi-chat-dots me-1"></i>盤中訊號 Intraday Commentary
-      <span class="badge bg-secondary ms-2" id="qmSignalCount">0</span>
-    </div>
-    <div class="card-body" id="qmIntradayCommentary">
-      <div class="text-secondary text-center py-2" style="font-size:12px">等待盤中資料…</div>
+    <!-- Intraday commentary (active signals) -->
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-chat-dots me-1"></i>盤中訊號 Intraday Commentary
+        </div>
+        <div class="card-body" id="qmIntradayCommentary" style="font-size:12px;padding:10px;max-height:320px;overflow-y:auto">
+          <div class="text-secondary text-center py-2">等待盤中資料…</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1092,9 +1104,16 @@ async function refreshQmWatchMode() {
     // Reload chart slot A
     loadQmSlotChart('A', document.getElementById('slotASelect').value, ticker);
 
-    // Log entry
-    const cnt = (data.signal_counts || {});
-    appendQmWatchLog(`刷新: 价格$${(data.current_price||0).toFixed(2)} | 信號 ${cnt.bullish|| 0}卄绿 ${cnt.bearish|| 0}卄紅`);
+    // Log each signal individually (not summary counts)
+    const tsStr = new Date(data.refresh_ts * 1000).toLocaleTimeString('zh-HK', { hour:'2-digit', minute:'2-digit' });
+    if (data.active_signals && data.active_signals.length) {
+      data.active_signals.forEach(sig => {
+        const cleanSig = sig.replace(/^\s*/, '').replace(/^[🟢🔴⚠ℹ]\s*/, '');
+        appendQmWatchLog(`${tsStr} ${cleanSig}`);
+      });
+    } else {
+      appendQmWatchLog(`${tsStr} 無新訊號 (價格 $${(data.current_price||0).toFixed(2)})`);
+    }
   } catch(e) {
     appendQmWatchLog('❌ 網絡錯誤: ' + e);
   }
@@ -1399,36 +1418,41 @@ function renderQmPremktPlan(ticker, result) {
 
 function renderQmIntradayCommentary(signals, counts, refreshTs) {
   const el = document.getElementById('qmIntradayCommentary');
-  const countEl = document.getElementById('qmSignalCount');
-  if (countEl) countEl.textContent = counts.total || 0;
 
   if (!signals || !signals.length) {
-    el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:12px">目前無盤中訊號</div>';
+    el.innerHTML = '<div class="text-secondary text-center py-1" style="font-size:12px">目前無盤中訊號</div>';
     return;
   }
   // Timestamp for this refresh
   const tsStr = refreshTs
     ? new Date(refreshTs * 1000).toLocaleTimeString('zh-HK', { hour:'2-digit', minute:'2-digit' })
     : new Date().toLocaleTimeString('zh-HK', { hour:'2-digit', minute:'2-digit' });
-  // Bull/bear summary bar
+  // Bull/bear summary
   const bull = counts.bullish || 0;
   const bear = counts.bearish || 0;
   const net = bull - bear;
-  const netCls = net > 0 ? 'net-bull' : net < 0 ? 'net-bear' : 'net-neutral';
-  const netIcon = net > 0 ? '🟢' : net < 0 ? '🔴' : '⚪';
-  const netLabel = net > 0 ? '偏多 Bullish Bias' : net < 0 ? '偏空 Bearish Bias' : '中性 Neutral';
-  const summaryBar = `<div class="intraday-summary ${netCls}">
-    <span>${netIcon} ${netLabel}</span>
-    <span style="color:#8b949e">🟢${bull} 🔴${bear}</span>
-    <span class="ms-auto" style="color:#6e7681;font-weight:400;font-size:11px">⏱ ${tsStr}</span>
-  </div>`;
+  let summaryLine = '';
+  if (net > 0) {
+    summaryLine = `<div style="background:#0d2016;border:1px solid #3fb950;color:#3fb950;padding:6px 10px;border-radius:4px;margin-bottom:6px;font-weight:600">
+      📈 看好訊號 (${bull}個看好 vs ${bear}個看淡，淨 +${net})
+    </div>`;
+  } else if (net < 0) {
+    summaryLine = `<div style="background:#1a0a0a;border:1px solid #f85149;color:#f85149;padding:6px 10px;border-radius:4px;margin-bottom:6px;font-weight:600">
+      📉 看淡訊號 (${bull}個看好 vs ${bear}個看淡，淨 ${net})
+    </div>`;
+  } else {
+    summaryLine = `<div style="background:#161b22;border:1px solid #30363d;color:#8b949e;padding:6px 10px;border-radius:4px;margin-bottom:6px;font-weight:600">
+      ⚖️ 平衡 (${bull}個看好 vs ${bear}個看淡)
+    </div>`;
+  }
   const cards = signals.map(s => {
     const cls = s.includes('🟢') ? 'signal-bull'
                : s.includes('🔴') ? 'signal-bear'
                : s.includes('⚠') ? 'signal-warn' : 'signal-info';
-    return `<div class="signal-card ${cls}">${s}</div>`;
+    return `<div class="signal-card ${cls}" style="font-size:11px;margin-bottom:4px">${s}</div>`;
   }).join('');
-  el.innerHTML = summaryBar + cards;
+  const header = `<div style="font-size:10px;color:#6e7681;margin-bottom:4px">⏱ ${tsStr}</div>`;
+  el.innerHTML = header + summaryLine + cards;
 }
 
 function renderQmWatchScore(ws) {
@@ -1453,13 +1477,9 @@ function renderQmWatchScore(ws) {
   let deltaHtml = '';
   if (prevScore != null && !isNaN(prevScore)) {
     const diff = score - prevScore;
-    if (Math.abs(diff) >= 1) {
-      const dCls = diff > 0 ? 'up' : 'down';
-      const dSign = diff > 0 ? '+' : '';
-      deltaHtml = `<span class="score-delta ${dCls}">${dSign}${diff.toFixed(0)}</span>`;
-    } else {
-      deltaHtml = '<span class="score-delta flat">—</span>';
-    }
+    const dCls = diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat';
+    const dSign = diff > 0 ? '+' : '';
+    deltaHtml = `<span class="score-delta ${dCls}">${dSign}${diff.toFixed(0)}</span>`;
   }
   if (deltaEl) deltaEl.innerHTML = deltaHtml;
 
@@ -1469,9 +1489,10 @@ function renderQmWatchScore(ws) {
     const val = parseFloat(item.pts) || 0;
     const color = val > 0 ? '#3fb950' : val < 0 ? '#f85149' : '#8b949e';
     const sign = val > 0 ? '+' : '';
-    return `<div class="score-breakdown-row">
+    const note = item.note || '';
+    return `<div class="score-breakdown-row" style="cursor:help" data-bs-toggle="tooltip" title="${note}">
       <span style="color:#8b949e">${item.dim || ''}</span>
-      <span style="color:${color};font-weight:600" title="${item.note || ''}">${sign}${val.toFixed(0)}</span>
+      <span style="color:${color};font-weight:600">${sign}${val.toFixed(0)}</span>
     </div>`;
   }).join('');
 
