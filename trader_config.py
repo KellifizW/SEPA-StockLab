@@ -471,6 +471,71 @@ QM_REVENGE_TRADE_LOOKBACK  = 7     # Days back to check for prior stop-out on sa
 # Rule: "In a good market there should be manageable number of setups"
 QM_SCAN_MAX_RESULTS_WARN   = 50    # Warn if scan produces more than 50 results
 
+# ─────────────────────────────────────────────────────────────────────────────
+# QM WATCH MARKET MODE — Intraday monitoring per Qullamaggie's system
+# Implements: S1/S29/S31 (ATR+ORH), S2 (earnings), S3 (sector), S4 (extended),
+#             S5 (NASDAQ), S11 (intraday EMA vs daily SMA), S12 (G2R), S30 (gap),
+#             S34 (don't panic), S40 (60-min confirmation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Refresh & polling ────────────────────────────────────────────────────────
+QM_WATCH_REFRESH_SEC       = 300   # Auto-refresh every 5 minutes during market hours
+
+# ── S1 + S31: ATR entry gate thresholds ─────────────────────────────────────
+# "I usually don't buy if it's up more than its ATR"
+# "My stops are usually around half of ATR"
+QM_ATR_CHASE_EXCELLENT     = 0.33  # Up < 1/3 ATR → excellent (very early entry)
+QM_ATR_CHASE_IDEAL_MAX     = 0.67  # Up < 2/3 ATR → ideal entry window
+QM_ATR_CHASE_CAUTION_MAX   = 1.0   # Up < 1.0 ATR → caution, feels like chasing
+# Up > 1.0 ATR → TOO LATE, do not buy
+
+# ── S2: Earnings proximity blackout ─────────────────────────────────────────
+# "Never buy stocks within 3 days of earnings"
+QM_EARNINGS_BLACKOUT_DAYS  = 3     # Block all breakout entries within 3 calendar days
+QM_EARNINGS_WARN_DAYS      = 7     # Show warning if earnings within 7 days
+
+# ── S3: Sector momentum boost ────────────────────────────────────────────────
+# "In leading sector, a 3.5-star setup counts like 5 stars"
+QM_SECTOR_BOOST_TOP_N      = 3     # Consider top-N sectors as "leading"
+QM_SECTOR_BOOST_STARS      = 1.0   # Effective star boost for leading sector
+
+# ── S4: Extended stock detection ─────────────────────────────────────────────
+# "This thing was like 60% above the 10-day MA, so I just sold it"
+QM_EXTENDED_WARN_PCT       = 40.0  # Price > 40% above 10SMA → extended warning
+QM_EXTENDED_EXTREME_PCT    = 60.0  # Price > 60% above 10SMA → strong sell signal
+
+# ── S5: NASDAQ 10/20 SMA regime filter ──────────────────────────────────────
+# "NASDAQ is the relevant index — 90% of the stocks I trade are in NASDAQ"
+# "Full power: 10SMA rising + 20SMA rising + 10 above 20"
+QM_NASDAQ_TICKER           = "QQQ" # Use QQQ as NASDAQ proxy
+QM_NASDAQ_SMA_FAST         = 10    # Fast SMA period (10-day)
+QM_NASDAQ_SMA_SLOW         = 20    # Slow SMA period (20-day)
+QM_NASDAQ_SLOPE_LOOKBACK   = 5     # Bars to measure slope direction
+QM_NASDAQ_CACHE_MINUTES    = 5     # Cache regime snapshot for 5 minutes
+
+# ── S11: Intraday chart MA settings (daily=SMA, intraday=EMA) ────────────────
+# "On the daily chart: 10, 20, 50 SMA; on the 60-minute chart: 10, 20, 65 EMA"
+# "65 EMA on 60-min ≈ 10 SMA on daily"
+QM_WATCH_SMA_5M            = [10, 20]     # SMAs on 5-min / 15-min chart
+QM_WATCH_EMA_60M           = [10, 20, 65] # EMAs on 60-min chart (Zanger-inspired)
+
+# ── S29: Opening Range High candle counts ────────────────────────────────────
+# "The first 60-min candle is always actually a 30-min candle
+#  since there are 6.5 trading hours in a trading day"
+QM_ORH_1M_CANDLES          = 1     # 1-min ORH: high of first 1-min candle
+QM_ORH_5M_CANDLES          = 1     # 5-min ORH: high of first 5-min candle
+QM_ORH_60M_CANDLES         = 6     # "60-min" ORH on 5-min chart = first 30 min = 6 candles
+
+# ── S30: Gap handling ────────────────────────────────────────────────────────
+# "Pre-market gap > 10% → usually PASS"
+QM_GAP_PASS_PCT            = 10.0  # Gap > 10% from prior close → major gap, likely pass
+QM_GAP_WARN_PCT            = 5.0   # Gap > 5% → show caution warning
+
+# ── S40: 60-min Higher Lows detection ────────────────────────────────────────
+# "These stocks absorbed morning weakness, built higher lows on 60-min"
+QM_HL_LOOKBACK_CANDLES     = 12    # Look back 12×5-min = 1 hour for higher-lows
+QM_HL_MIN_SWINGS           = 2     # Need ≥ 2 higher lows to confirm intraday HL
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MARTIN LUK (ML) — Systematic Swing Trading Configuration

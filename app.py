@@ -1,4 +1,4 @@
-"""
+﻿"""
 app.py  —  Minervini SEPA Web Interface
 ════════════════════════════════════════
 Launch:   python app.py
@@ -2745,6 +2745,409 @@ def api_chart_weekly(ticker: str):
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})
 
+
+# 
+# Qullamaggie 盯盤模式  Intraday Watch Signal Engine
+# 
+
+_qm_earnings_cache: dict = {}   # ticker -> {date, fetched_at}
+_qm_nasdaq_cache: dict = {}     # "snapshot" -> {regime, sma_fast, sma_slow, fetched_at}
+
+def _get_next_earnings_date(ticker: str):
+    """Return next earnings date (date obj) for ticker, cached 24h. None if unavailable."""
+    import datetime, time
+    now = time.time()
+    cached = _qm_earnings_cache.get(ticker)
+    if cached and now - cached["fetched_at"] < 86400:
+        return cached["date"]
+    try:
+        import yfinance as yf
+        cal = yf.Ticker(ticker).calendar
+        # calendar may be a dict with 'Earnings Date' key (list of timestamps)
+        if cal is not None:
+            if isinstance(cal, dict):
+                dates = cal.get("Earnings Date", [])
+            else:
+                try:
+                    dates = list(cal.loc["Earnings Date"])
+                except Exception:
+                    dates = []
+            today = datetime.date.today()
+            future = [d.date() if hasattr(d, "date") else d for d in dates if d is not None]
+            future = [d for d in future if d >= today]
+            result = min(future) if future else None
+        else:
+            result = None
+    except Exception:
+        result = None
+    _qm_earnings_cache[ticker] = {"date": result, "fetched_at": now}
+    return result
+
+
+def _get_nasdaq_regime_snapshot() -> dict:
+    """
+    Return NASDAQ (QQQ) regime: full_power / caution / choppy / stop.
+    Cached QM_NASDAQ_CACHE_MINUTES minutes.
+    full_power  : QQQ price > SMA_fast > SMA_slow, fast_slope > 0
+    caution     : price > SMA_slow but SMA_fast crossed below
+    choppy      : price between SMAs or SMAs tangled
+    stop        : price < both SMAs (bear / distribution)
+    """
+    import time, datetime
+    now = time.time()
+    cached = _qm_nasdaq_cache.get("snapshot")
+    cache_secs = C.QM_NASDAQ_CACHE_MINUTES * 60
+    if cached and now - cached["fetched_at"] < cache_secs:
+        return cached
+
+    try:
+        import yfinance as yf
+        import pandas as pd
+        tkr = C.QM_NASDAQ_TICKER
+        fast_p = C.QM_NASDAQ_SMA_FAST
+        slow_p = C.QM_NASDAQ_SMA_SLOW
+        slope_lb = C.QM_NASDAQ_SLOPE_LOOKBACK
+
+        df = yf.download(tkr, period="6mo", interval="1d", progress=False, auto_adjust=True)
+        if df.empty or len(df) < slow_p + slope_lb:
+            raise ValueError("insufficient data")
+
+        close = df["Close"].squeeze()
+        sma_fast = close.rolling(fast_p).mean().iloc[-1]
+        sma_slow = close.rolling(slow_p).mean().iloc[-1]
+        sma_fast_prev = close.rolling(fast_p).mean().iloc[-(slope_lb + 1)]
+        price = float(close.iloc[-1])
+        sma_fast = float(sma_fast)
+        sma_slow = float(sma_slow)
+        fast_slope = sma_fast - float(sma_fast_prev)
+
+        if price > sma_fast and sma_fast > sma_slow and fast_slope > 0:
+            regime = "full_power"
+        elif price > sma_slow and (sma_fast <= sma_slow or fast_slope <= 0):
+            regime = "caution"
+        elif price < sma_slow and price > min(sma_fast, sma_slow) * 0.98:
+            regime = "choppy"
+        else:
+            regime = "stop"
+
+        result = {
+            "regime": regime,
+            "sma_fast": round(sma_fast, 2),
+            "sma_slow": round(sma_slow, 2),
+            "price": round(price, 2),
+            "fast_slope": round(fast_slope, 4),
+            "fetched_at": now,
+        }
+    except Exception as e:
+        result = {"regime": "unknown", "sma_fast": None, "sma_slow": None,
+                  "price": None, "fast_slope": None, "fetched_at": now, "error": str(e)}
+
+    _qm_nasdaq_cache["snapshot"] = result
+    return result
+
+
+def _get_qm_intraday_signals(
+    candles_5m: list, candles_1h: list,
+    orh: float, orl: float, lod: float, hod: float,
+    hl_swings: list,
+    prev_close: float, gap_pct: float,
+    atr_daily: float, ticker: str,
+) -> dict:
+    """
+    Compute Qullamaggie intraday watch signals from candle lists + metadata.
+
+    Returns dict with keys:
+      gate_blocks        : list[str]   "EARNINGS_BLACKOUT" | "EARNINGS_WARNING" | "NASDAQ_STOP" | "NASDAQ_CAUTION"
+      nasdaq             : dict        regime snapshot
+      orh_levels         : dict        {1m, 5m, 60m} each {hi, lo, broken_up, broken_dn}
+      atr_gate           : dict        {current_price, atr, lod, max_buy_excellent, max_buy_ideal, max_buy_caution,
+                                          chase_status [excellent|ideal|caution|too_late], dist_atr_frac}
+      gap_status         : dict        {gap_pct, passed (bool), warning (bool)}
+      higher_lows        : dict        {count, valid (bool), last_swing_lo, trend}
+      ma_signals         : dict        {5m_sma10, 5m_sma20, 1h_ema10, 1h_ema20, 1h_ema65,
+                                          price_vs_5m_sma20, price_vs_1h_ema65}
+      breakout_signals   : list[dict]  each: {type, level, current_price, strength}
+      active_signals     : list[str]   human-readable signal strings
+      signal_counts      : dict        {total, bullish, bearish, neutral}
+    """
+    import datetime, math
+    signals = []
+    gate_blocks = []
+
+    #  Earnings gate 
+    earnings_date = _get_next_earnings_date(ticker)
+    if earnings_date is not None:
+        import datetime as dt
+        today = dt.date.today()
+        delta = (earnings_date - today).days
+        if delta <= C.QM_EARNINGS_BLACKOUT_DAYS:
+            gate_blocks.append("EARNINGS_BLACKOUT")
+            signals.append(f" 財報黑色期 Earnings in {delta}d  avoid new entries")
+        elif delta <= C.QM_EARNINGS_WARN_DAYS:
+            gate_blocks.append("EARNINGS_WARNING")
+            signals.append(f" 財報警告 Earnings in {delta}d  reduce size")
+
+    #  NASDAQ regime gate 
+    nasdaq = _get_nasdaq_regime_snapshot()
+    regime = nasdaq.get("regime", "unknown")
+    if regime == "stop":
+        gate_blocks.append("NASDAQ_STOP")
+        signals.append(" NASDAQ停損區 QQQ below both SMAs  no new longs")
+    elif regime == "caution":
+        gate_blocks.append("NASDAQ_CAUTION")
+        signals.append(" NASDAQ警戒 QQQ caution zone  half-size only")
+
+    #  Gap filter (S30) 
+    gap_passed = abs(gap_pct) < C.QM_GAP_PASS_PCT
+    gap_warning = abs(gap_pct) >= C.QM_GAP_WARN_PCT
+    if gap_pct >= C.QM_GAP_PASS_PCT:
+        signals.append(f" 跳空過大 Gap {gap_pct:+.1f}%  {C.QM_GAP_PASS_PCT}%  wait for first 5-min range")
+    elif gap_pct >= C.QM_GAP_WARN_PCT:
+        signals.append(f" 跳空注意 Gap {gap_pct:+.1f}%  confirm ORH before adding")
+    gap_status = {"gap_pct": round(gap_pct, 2), "passed": gap_passed, "warning": gap_warning}
+
+    #  ORH levels (S29) 
+    def _orh_from_candles(candles: list, n: int) -> dict:
+        if not candles or len(candles) < n:
+            return {"hi": None, "lo": None, "broken_up": False, "broken_dn": False}
+        opening = candles[:n]
+        hi = max(c["high"] for c in opening)
+        lo = min(c["low"] for c in opening)
+        rest = candles[n:]
+        broken_up = any(c["close"] > hi for c in rest) if rest else False
+        broken_dn = any(c["close"] < lo for c in rest) if rest else False
+        return {"hi": round(hi, 2), "lo": round(lo, 2),
+                "broken_up": broken_up, "broken_dn": broken_dn}
+
+    n_1m  = C.QM_ORH_1M_CANDLES   # 1 (1-min  first minute)
+    n_5m  = C.QM_ORH_5M_CANDLES   # 1 (first 5-min bar)
+    n_60m = C.QM_ORH_60M_CANDLES  # 6 5-min bars  first 30 minutes
+
+    orh_5m_1bar  = _orh_from_candles(candles_5m, n_5m)
+    orh_5m_6bar  = _orh_from_candles(candles_5m, n_60m)
+    # For the "1-min" ORH we reuse the first 5-min candle as proxy (1-min data not always available)
+    orh_1m_proxy = _orh_from_candles(candles_5m, n_1m)
+
+    orh_levels = {
+        "1m":  orh_1m_proxy,
+        "5m":  orh_5m_1bar,
+        "60m": orh_5m_6bar,
+    }
+
+    current_price = candles_5m[-1]["close"] if candles_5m else None
+
+    if orh_5m_6bar.get("broken_up"):
+        signals.append(f" 突破30分鐘高點 Price broke above 30-min ORH {orh_5m_6bar['hi']}")
+    if orh_5m_1bar.get("broken_up"):
+        signals.append(f" 突破5分鐘高點 Price broke above 5-min ORH {orh_5m_1bar['hi']}")
+    if orh_5m_6bar.get("broken_dn"):
+        signals.append(f" 跌破30分鐘低點 Price broke below 30-min ORL {orh_5m_6bar['lo']}")
+
+    #  ATR entry gate (S1/S31) 
+    atr_gate = {"current_price": current_price, "atr": round(atr_daily, 4) if atr_daily else None,
+                "lod": round(lod, 2) if lod else None, "chase_status": "n/a",
+                "max_buy_excellent": None, "max_buy_ideal": None, "max_buy_caution": None,
+                "dist_atr_frac": None}
+    if current_price and atr_daily and lod:
+        max_buy_exc  = lod + C.QM_ATR_CHASE_EXCELLENT   * atr_daily
+        max_buy_ideal = lod + C.QM_ATR_CHASE_IDEAL_MAX  * atr_daily
+        max_buy_caut = lod + C.QM_ATR_CHASE_CAUTION_MAX * atr_daily
+        dist_frac = (current_price - lod) / atr_daily if atr_daily else None
+
+        atr_gate.update({
+            "max_buy_excellent": round(max_buy_exc, 2),
+            "max_buy_ideal":     round(max_buy_ideal, 2),
+            "max_buy_caution":   round(max_buy_caut, 2),
+            "dist_atr_frac":     round(dist_frac, 3) if dist_frac is not None else None,
+        })
+        if dist_frac is not None:
+            if dist_frac < C.QM_ATR_CHASE_EXCELLENT:
+                atr_gate["chase_status"] = "excellent"
+                signals.append(f" 入場極佳 Entry excellent: price only {dist_frac:.2f}ATR from LOD")
+            elif dist_frac < C.QM_ATR_CHASE_IDEAL_MAX:
+                atr_gate["chase_status"] = "ideal"
+                signals.append(f" 入場理想 Entry ideal: {dist_frac:.2f}ATR from LOD")
+            elif dist_frac < C.QM_ATR_CHASE_CAUTION_MAX:
+                atr_gate["chase_status"] = "caution"
+                signals.append(f" 入場謹慎 Entry caution: {dist_frac:.2f}ATR from LOD  feels like chasing")
+            else:
+                atr_gate["chase_status"] = "too_late"
+                signals.append(f" 追價過高 Too extended: {dist_frac:.2f}ATR from LOD  avoid")
+
+    #  MA signals (S11) 
+    def _sma(closes: list, period: int):
+        if len(closes) < period:
+            return None
+        return sum(closes[-period:]) / period
+
+    def _ema(closes: list, period: int):
+        if len(closes) < period:
+            return None
+        k = 2.0 / (period + 1)
+        ema = sum(closes[:period]) / period
+        for c in closes[period:]:
+            ema = c * k + ema * (1 - k)
+        return ema
+
+    ma_signals = {}
+    if candles_5m:
+        closes_5m = [c["close"] for c in candles_5m]
+        sma10_5m = _sma(closes_5m, C.QM_WATCH_SMA_5M[0])
+        sma20_5m = _sma(closes_5m, C.QM_WATCH_SMA_5M[1])
+        ma_signals["5m_sma10"] = round(sma10_5m, 2) if sma10_5m else None
+        ma_signals["5m_sma20"] = round(sma20_5m, 2) if sma20_5m else None
+        if current_price and sma20_5m:
+            above = current_price > sma20_5m
+            ma_signals["price_vs_5m_sma20"] = "above" if above else "below"
+            if above:
+                signals.append(f" 價格在5分SMA20之上 Price above 5-min SMA20 ({sma20_5m:.2f})")
+            else:
+                signals.append(f" 價格跌破5分SMA20 Price below 5-min SMA20 ({sma20_5m:.2f})")
+
+    if candles_1h:
+        closes_1h = [c["close"] for c in candles_1h]
+        ema10_1h  = _ema(closes_1h, C.QM_WATCH_EMA_60M[0])
+        ema20_1h  = _ema(closes_1h, C.QM_WATCH_EMA_60M[1])
+        ema65_1h  = _ema(closes_1h, C.QM_WATCH_EMA_60M[2])
+        ma_signals["1h_ema10"] = round(ema10_1h, 2) if ema10_1h else None
+        ma_signals["1h_ema20"] = round(ema20_1h, 2) if ema20_1h else None
+        ma_signals["1h_ema65"] = round(ema65_1h, 2) if ema65_1h else None
+        if current_price and ema65_1h:
+            above = current_price > ema65_1h
+            ma_signals["price_vs_1h_ema65"] = "above" if above else "below"
+            if above:
+                signals.append(f" 價格在60分EMA65之上 Price above 1-hr EMA65 ({ema65_1h:.2f})")
+            else:
+                signals.append(f" 跌破60分EMA65 Price below 1-hr EMA65 ({ema65_1h:.2f})  key support lost")
+
+    #  Higher lows (S12) 
+    higher_lows = {"count": 0, "valid": False, "last_swing_lo": None, "trend": "flat"}
+    if hl_swings and len(hl_swings) >= C.QM_HL_MIN_SWINGS:
+        lows = [s["low"] for s in hl_swings if "low" in s]
+        if len(lows) >= C.QM_HL_MIN_SWINGS:
+            hl_count = sum(1 for i in range(1, len(lows)) if lows[i] > lows[i - 1])
+            valid = hl_count >= C.QM_HL_MIN_SWINGS - 1
+            trend = "ascending" if valid else ("mixed" if hl_count > 0 else "descending")
+            higher_lows = {
+                "count": hl_count, "valid": valid,
+                "last_swing_lo": round(lows[-1], 2) if lows else None,
+                "trend": trend,
+            }
+            if valid:
+                signals.append(f" 更高低點 Higher lows confirmed ({hl_count} swings)  bullish structure")
+            elif hl_count == 0 and len(lows) >= 2:
+                signals.append(f" 低點下移 Lower lows forming  weakening structure")
+
+    #  Breakout signals (S40: close vs HOD / session high) 
+    breakout_signals = []
+    if current_price and hod:
+        if current_price >= hod * 0.998:
+            breakout_signals.append({"type": "HOD_CHALLENGE", "level": round(hod, 2),
+                                      "current_price": current_price, "strength": "strong"})
+            signals.append(f" 挑戰日高 Price challenging HOD {hod}  watch for close above")
+    if current_price and orh and current_price > orh * 1.001:
+        breakout_signals.append({"type": "ORH_BREAK", "level": round(orh, 2),
+                                  "current_price": current_price, "strength": "moderate"})
+
+    #  Summarise 
+    bullish = sum(1 for s in signals if "" in s)
+    bearish = sum(1 for s in signals if "" in s)
+    neutral = sum(1 for s in signals if "" in s)
+
+    return {
+        "gate_blocks":      gate_blocks,
+        "nasdaq":           {k: v for k, v in nasdaq.items() if k != "fetched_at"},
+        "orh_levels":       orh_levels,
+        "atr_gate":         atr_gate,
+        "gap_status":       gap_status,
+        "higher_lows":      higher_lows,
+        "ma_signals":       ma_signals,
+        "breakout_signals": breakout_signals,
+        "active_signals":   signals,
+        "signal_counts":    {"total": len(signals), "bullish": bullish, "bearish": bearish, "neutral": neutral},
+    }
+
+
+@app.route("/api/qm/watch_signals/<ticker>")
+def qm_watch_signals(ticker: str):
+    """
+    QM 盯盤模式  real-time intraday signal bundle for a ticker.
+    Returns JSON compatible with the qm_analyze.html watch panel.
+    """
+    import datetime
+    try:
+        ticker = ticker.upper().strip()
+
+        #  Fetch intraday candles (5-min) 
+        raw_5m  = _get_intraday_candles(ticker, interval="5m")   # reuse ML helper
+        raw_1h  = _get_intraday_candles(ticker, interval="1h")
+
+        candles_5m = raw_5m if isinstance(raw_5m, list) else []
+        candles_1h = raw_1h if isinstance(raw_1h, list) else []
+
+        #  Session extremes 
+        if candles_5m:
+            hod = max(c["high"] for c in candles_5m)
+            lod = min(c["low"]  for c in candles_5m)
+            orh  = candles_5m[0]["high"] if candles_5m else None
+            orl  = candles_5m[0]["low"]  if candles_5m else None
+        else:
+            hod = lod = orh = orl = None
+
+        #  Daily ATR via data_pipeline 
+        try:
+            from modules.data_pipeline import get_price_data
+            df_d = get_price_data(ticker, period="3mo", interval="1d")
+            if df_d is not None and not df_d.empty and len(df_d) >= 2:
+                atr_raw = (df_d["High"] - df_d["Low"]).rolling(14).mean().iloc[-1]
+                atr_daily = float(atr_raw) if atr_raw == atr_raw else None
+                prev_close = float(df_d["Close"].iloc[-2])
+                current_open = float(df_d["Open"].iloc[-1])
+                gap_pct = (current_open - prev_close) / prev_close * 100 if prev_close else 0.0
+            else:
+                atr_daily = prev_close = None
+                gap_pct = 0.0
+        except Exception:
+            atr_daily = prev_close = None
+            gap_pct = 0.0
+
+        #  Swing lows from 5-min candles 
+        hl_swings = []
+        lookback = min(C.QM_HL_LOOKBACK_CANDLES, len(candles_5m))
+        if lookback >= 3:
+            window = candles_5m[-lookback:]
+            for i in range(1, len(window) - 1):
+                if window[i]["low"] < window[i-1]["low"] and window[i]["low"] < window[i+1]["low"]:
+                    hl_swings.append({"low": window[i]["low"], "index": i})
+
+        #  Run signal engine 
+        signals = _get_qm_intraday_signals(
+            candles_5m=candles_5m,
+            candles_1h=candles_1h,
+            orh=orh, orl=orl, lod=lod, hod=hod,
+            hl_swings=hl_swings,
+            prev_close=prev_close or 0.0,
+            gap_pct=gap_pct,
+            atr_daily=atr_daily or 0.0,
+            ticker=ticker,
+        )
+
+        current_price = candles_5m[-1]["close"] if candles_5m else None
+        last_ts = candles_5m[-1]["time"] if candles_5m else None
+
+        return jsonify(_clean({
+            "ok": True,
+            "ticker": ticker,
+            "current_price": current_price,
+            "last_ts": last_ts,
+            "hod": hod, "lod": lod, "orh": orh, "orl": orl,
+            "gap_pct": round(gap_pct, 2),
+            "atr_daily": round(atr_daily, 4) if atr_daily else None,
+            **signals,
+        }))
+
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "ticker": ticker}), 500
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Intraday Chart — 5分, 15分, 1小時 K線 (Martin Luk 盯盤模式)

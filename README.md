@@ -1,10 +1,16 @@
 # SEPA-StockLab
 
-**Minervini SEPA 選股系統 — Stock Screening & Portfolio Management Tool**
+**多策略選股系統 — Multi-Strategy Stock Screening & Portfolio Management Tool**
 
-基於 Mark Minervini《Trade Like a Stock Market Wizard》的 **SEPA（Specific Entry Point Analysis）** 方法論，對全美股市進行三階段漏斗式篩選，結合 VCP 形態偵測、倉位管理與市場制度分類。
+整合三套獨立交易方法論，對全美股市進行系統性篩選與分析：
 
-A full-stack stock screening tool implementing Minervini's 3-stage funnel (Coarse Filter → Trend Template → SEPA 5-Pillar Scoring), VCP detection, position tracking with trailing stops, and market regime classification.
+| 策略 | 方法論 | 類型 |
+|------|--------|------|
+| **SEPA (Minervini)** | Mark Minervini《Trade Like a Stock Market Wizard》| 三階段漏斗篩選 + 五大支柱評分 |
+| **QM (Qullamaggie)** | Kristjan Kullamägi 突破擺盪交易系統 | 純技術，ADR 獨立否決，6 維星級評分 |
+| **ML (Martin Luk)** | Martin Luk 回調擺盪交易系統 | EMA 結構，AVWAP 支撐/阻力，7 維星級評分 |
+
+A full-stack stock screening tool implementing three independent trading strategies, VCP detection & backtesting, position tracking, and market regime classification. Dual interface: Web UI (Flask) + CLI.
 
 ---
 
@@ -12,15 +18,20 @@ A full-stack stock screening tool implementing Minervini's 3-stage funnel (Coars
 
 | Feature | Description |
 |---------|-------------|
-| **3-Stage SEPA Scan** | finvizfinance 粗篩 → TT1-TT10 趨勢模板驗證 → SEPA 五大支柱評分 |
+| **SEPA 3-Stage Scan** | finvizfinance/NASDAQ FTP 粗篩 → TT1-TT10 趨勢模板驗證 → SEPA 五大支柱評分 |
+| **QM 3-Stage Scan** | ADR 獨立否決 + 動能確認 → 整理形態/MA 排列/更高低點 → 6★ 星級評分 |
+| **ML 3-Stage Scan** | EMA 結構篩選 + AVWAP 確認 → 回調深度/量能乾涸 → 7★ 星級評分 |
+| **Combined Scanner** | SEPA + QM 平行掃描，共用單次 universe 抓取，節省 ~40-60% 時間 |
 | **VCP Detection** | 自動偵測 Volatility Contraction Pattern（波動收縮形態） |
-| **Single-Stock Analysis** | 深度個股分析，BUY / WATCH / AVOID 推薦 |
+| **VCP Backtester** | 2 年歷史資料走前向回測，零前瞻偏差 |
+| **Single-Stock Analysis** | SEPA: BUY/WATCH/AVOID；QM: 6★；ML: 7★ 深度分析 |
+| **Interactive Charts** | 每日/每週/盤中 K 線 + 技術指標疊加（SMA/EMA/RSI/ATR/BBands） |
 | **Position Monitor** | 14 項健康信號檢查、Minervini 移動停損 |
-| **Watchlist** | A/B/C 評級自動分級、升降級管理 |
+| **Watchlist** | A/B/C 評級自動分級、HTMX 局部更新 |
 | **Market Environment** | SPY/QQQ/IWM 市場制度分類、分佈日計數、板塊輪動 |
 | **RS Ranking** | IBD 風格相對強度百分位排名 |
-| **DuckDB Persistence** | 歷史掃描/RS/市場/倉位/觀察清單持久化存儲及趨勢圖表 |
-| **Dual Interface** | Web UI (Flask) + CLI (argparse) |
+| **DuckDB Persistence** | 歷史掃描/RS/市場/倉位/觀察清單持久化及趨勢圖表 |
+| **Dual Interface** | Web UI (Flask port 5000) + CLI (argparse) |
 
 ---
 
@@ -46,16 +57,22 @@ pip install -r requirements.txt
 
 ```bash
 python app.py
-# Opens http://localhost:5000 in browser automatically
+# Opens http://localhost:5000 automatically
 ```
 
 ### Run CLI 命令列操作
 
 ```bash
-# Full SEPA scan
+# SEPA scan
 python minervini.py scan
 
-# Analyze a single stock
+# QM (Qullamaggie) scan
+python minervini.py qm-scan
+
+# ML (Martin Luk) scan
+python minervini.py ml-scan
+
+# Analyze a single stock (SEPA)
 python minervini.py analyze NVDA
 
 # Watchlist management
@@ -73,11 +90,18 @@ python minervini.py market
 # VCP detection
 python minervini.py vcp NVDA
 
+# VCP backtest
+python minervini.py backtest NVDA
+
 # RS ranking
 python minervini.py rs top --min 85
 
 # Daily routine (scan + market + positions)
 python minervini.py daily
+
+# Generate HTML report
+python minervini.py report
+```
 
 # Generate HTML report
 python minervini.py report
@@ -120,10 +144,21 @@ python minervini.py report
 |--------|------|
 | `data_pipeline.py` | **唯一資料層** — 封裝 finvizfinance、yfinance、pandas_ta，處理快取與降級 |
 | `db.py` | **DuckDB 持久層** — scan_history、rs_history、market_env_history、watchlist_store、positions |
+| `nasdaq_universe.py` | **免費替代宇宙** — NASDAQ FTP 無需 API key，24h 快取，~2-4 min |
 | `screener.py` | 三階段 SEPA 掃描漏斗（Stage 1→2→3）、TT 驗證、五大支柱評分 |
+| `stock_analyzer.py` | 深度 SEPA 個股分析 → BUY/WATCH/AVOID |
+| `qm_screener.py` | 三階段 QM 突破掃描漏斗 — 純技術，ADR 否決 |
+| `qm_analyzer.py` | QM 6 維星級評分引擎（Qullamaggie 方法論第 6 節） |
+| `qm_setup_detector.py` | QM 形態偵測輔助函式 |
+| `qm_position_rules.py` | QM 倉位管理規則 |
+| `ml_screener.py` | 三階段 ML 回調掃描漏斗 — EMA + AVWAP |
+| `ml_analyzer.py` | ML 7 維星級評分引擎（EMA 結構、回調品質、AVWAP 匯合） |
+| `ml_setup_detector.py` | ML 形態偵測輔助函式 |
+| `ml_position_rules.py` | ML 倉位管理規則（最大停損 2.5%） |
+| `combined_scanner.py` | 合併掃描：SEPA + QM 平行，單次抓取宇宙 |
 | `rs_ranking.py` | IBD 相對強度百分位排名引擎 |
 | `vcp_detector.py` | VCP 自動偵測 — 波動收縮、ATR/BBands、量能乾涸 |
-| `stock_analyzer.py` | 深度個股分析 → BUY/WATCH/AVOID 推薦 |
+| `backtester.py` | 走前向 VCP 回測引擎（2 年歷史，無前瞻偏差） |
 | `market_env.py` | 市場制度分類（確認上漲 → 上漲受壓 → 修正 → 下跌） |
 | `position_monitor.py` | 倉位追蹤、14 項健康信號、Minervini 移動停損 |
 | `watchlist.py` | A/B/C 等級觀察名單 |
@@ -133,20 +168,22 @@ python minervini.py report
 
 ## Configuration 配置
 
-All Minervini parameters are centralized in `trader_config.py`:
+All strategy parameters are centralized in `trader_config.py`:
 
-所有 Minervini 參數集中在 `trader_config.py`：
+所有策略參數集中在 `trader_config.py`：
 
 | Group | Prefix | Examples |
-|-------|--------|---------|
+|-------|--------|----------|
 | Account & Risk | — | `ACCOUNT_SIZE`, `MAX_RISK_PER_TRADE_PCT` |
 | Stop Loss | — | `MAX_STOP_LOSS_PCT`, `ATR_STOP_MULTIPLIER` |
 | Trend Template | `TT_` | `TT_SMA_PERIODS`, `TT9_MIN_RS_RANK` |
 | Fundamentals | `F1_`–`F8_` | `F1_MIN_EPS_QOQ_GROWTH`, `F8_MIN_ROE` |
 | VCP | `VCP_` | `VCP_MIN_CONTRACTIONS`, `VCP_MIN_BASE_WEEKS` |
 | RS Ranking | `RS_` | `RS_WEIGHT_3M`, `RS_WEIGHT_12M` |
-| Database (DuckDB) | `DB_` | `DB_FILE`, `DB_JSON_BACKUP_ENABLED`, `DB_JSON_BACKUP_DIR` |
+| Database (DuckDB) | `DB_` | `DB_FILE`, `DB_JSON_BACKUP_ENABLED` |
 | SEPA Weights | `W_` | `W_TREND`, `W_FUNDAMENTAL` |
+| QM (Qullamaggie) | `QM_` | `QM_MIN_ADR_PCT`, `QM_MIN_DOLLAR_VOL` |
+| ML (Martin Luk) | `ML_` | `ML_MAX_STOP_PCT`, `ML_MAX_RISK_PCT` |
 
 查閱完整參數定義與說明，見 [trader_config.py](trader_config.py)。
 
@@ -185,17 +222,38 @@ Hybrid persistence — DuckDB as primary store, flat files as fallback/cache:
 
 ---
 
-## SEPA Methodology 方法論
+## Web Routes 網頁路由
 
-This tool implements Minervini's complete system:
+| Route | Page | Description |
+|-------|------|-------------|
+| `/` | Dashboard | 首頁儀表板 |
+| `/scan` | SEPA Scan | Minervini 三階段掃描 |
+| `/qm/scan` | QM Scan | Qullamaggie 突破掃描 |
+| `/ml/scan` | ML Scan | Martin Luk 回調掃描 |
+| `/combined` | Combined Scan | SEPA + QM 平行掃描 |
+| `/analyze` | SEPA Analysis | SEPA 個股深度分析 |
+| `/qm/analyze` | QM Analysis | QM 6★ 星級分析 |
+| `/ml/analyze` | ML Analysis | ML 7★ 星級分析 |
+| `/backtest` | VCP Backtest | VCP 走前向回測 |
+| `/watchlist` | Watchlist | 觀察名單（HTMX 更新） |
+| `/positions` | Positions | 倉位監控 |
+| `/market` | Market Env | 市場環境 |
+| `/vcp` | VCP Detect | VCP 即時偵測 |
+| `/guide` | User Guide | GUIDE.md |
+| `/qm/guide` | QM Guide | Qullamaggie 方法論 |
+| `/ml/guide` | ML Guide | Martin Luk 方法論 |
 
-### 3-Stage Funnel 三階段漏斗
+---
 
-1. **Stage 1 — Coarse Filter**：finvizfinance 篩選（price > $10, volume > 200K, ROE > 10%）→ ~100-300 股
-2. **Stage 2 — Trend Template**：TT1-TT10 驗證（SMA 排列、52 週位置、RS 排名）→ ~30-80 股
+## Methodology 方法論
+
+### SEPA (Minervini) 三階段漏斗
+
+1. **Stage 1 — Coarse Filter**：finvizfinance/NASDAQ FTP 篩選（price > $10, volume > 200K, ROE > 10%）
+2. **Stage 2 — Trend Template**：TT1-TT10 驗證（SMA 排列、52 週位置、RS 排名）
 3. **Stage 3 — SEPA Scoring**：五大支柱加權評分 → 最終排名清單
 
-### Trend Template (TT1-TT10) 趨勢模板
+#### Trend Template (TT1-TT10) 趨勢模板
 
 - TT1: Price > SMA50 > SMA150 > SMA200
 - TT4: SMA200 上升 ≥22 天
@@ -205,9 +263,25 @@ This tool implements Minervini's complete system:
 
 完整定義見 [docs/stockguide.md](docs/stockguide.md)。
 
+### QM (Qullamaggie) 突破擺盪
+
+- 純技術，ADR 獨立否決權（低於 `QM_MIN_ADR_PCT` 則拒絕）
+- 6 維星級評分（Momentum Quality, ADR Level, Consolidation Quality, MA Alignment, Stock Type, Market Timing）
+- 星級 → 倉位大小：5+★ → 20-25%, 5★ → 15-25%, 4-4.5★ → 10-15%, 3-3.5★ ≤10%, <3★ → PASS
+
+完整方法論見 [docs/QullamaggieStockguide.md](docs/QullamaggieStockguide.md)。
+
+### ML (Martin Luk) 回調擺盪
+
+- EMA 結構（9>21>50>150 排列）+ AVWAP 支撐/阻力
+- 7 維星級評分（EMA Structure, Pullback Quality, AVWAP Confluence, Volume Pattern, Risk/Reward, RS, Market Env）
+- 最大停損 2.5%，風險/易 0.50%
+
+完整方法論見 [docs/MartinLukStockGuidePart1.md](docs/MartinLukStockGuidePart1.md)。
+
 ### VCP (Volatility Contraction Pattern) 波動收縮形態
 
-逐步收緊的價格波動（T-2, T-3, T-4+），伴隨量能乾涸，在 pivot 附近突破。
+逐步收緊的價格波動（T-2, T-3, T-4+），伴隨量能乾涸，在 pivot 附近突破。支持走前向回測驗證信號有效性。
 
 ---
 
@@ -217,17 +291,10 @@ This tool implements Minervini's complete system:
 |----------|-------------|------|
 | **GUIDE.md** | 完整使用者指南（繁體中文 / English 雙語） | [docs/GUIDE.md](docs/GUIDE.md) |
 | **stockguide.md** | Minervini SEPA 方法論完整參考（15 部分） | [docs/stockguide.md](docs/stockguide.md) |
-| **START_TEACHING_NOW.md** | 實戰教學快速開始（新！） | [docs/START_TEACHING_NOW.md](docs/START_TEACHING_NOW.md) |
-| **GUIDE_UPDATE_SUMMARY.md** | GUIDE 更新摘要 | [docs/GUIDE_UPDATE_SUMMARY.md](docs/GUIDE_UPDATE_SUMMARY.md) |
-| **VCP_OPTIMIZATION_REPORT.md** | VCP 優化分析報告 | [docs/VCP_OPTIMIZATION_REPORT.md](docs/VCP_OPTIMIZATION_REPORT.md) |
-| **BACKTEST_IMPROVEMENTS.md** | 回測功能改進說明 | [docs/BACKTEST_IMPROVEMENTS.md](docs/BACKTEST_IMPROVEMENTS.md) |
-| **FILE_ORGANIZATION_REPORT.md** | 檔案整理完成報告 | [docs/FILE_ORGANIZATION_REPORT.md](docs/FILE_ORGANIZATION_REPORT.md) |
-| **trader_config.py** | 所有參數定義及行內註解 | [trader_config.py](trader_config.py) |
+| **QullamaggieStockguide.md** | Qullamaggie 突破交易方法論 | [docs/QullamaggieStockguide.md](docs/QullamaggieStockguide.md) |
+| **MartinLukStockGuidePart1/2.md** | Martin Luk 回調交易方法論 | [docs/MartinLukStockGuidePart1.md](docs/MartinLukStockGuidePart1.md) |
+| **trader_config.py** | 所有策略參數定義及行內註解 | [trader_config.py](trader_config.py) |
 | **.github/copilot-instructions.md** | GitHub Copilot AI 輔助開發指引 | [.github/copilot-instructions.md](.github/copilot-instructions.md) |
-| **.github/instructions/** | 按檔案類型自動套用的編碼規則 | [.github/instructions/](.github/instructions/) |
-| **.github/prompts/** | 可重用的開發工作流程斜線指令 | [.github/prompts/](.github/prompts/) |
-| **.github/agents/** | 專業化 AI 代理（規劃、審查、交易邏輯） | [.github/agents/](.github/agents/) |
-| **.github/hooks/** | 儲存後自動品質檢查 | [.github/hooks/](.github/hooks/) |
 
 ---
 
@@ -255,7 +322,7 @@ This project uses GitHub Copilot's full customization stack, inspired by
 | `/code-review` | Review code for conventions and trading logic |
 | `/tdd` | Test-driven development (RED → GREEN → REFACTOR) |
 | `/refactor` | Refactoring with DRY and tech debt focus |
-| `/trading-verify` | Verify Minervini trading logic correctness |
+| `/trading-verify` | Verify all three strategy logic correctness (SEPA/QM/ML) |
 
 ### Custom Agents 自訂代理
 
@@ -263,7 +330,7 @@ This project uses GitHub Copilot's full customization stack, inspired by
 |-------|------|
 | **Planner** | Read-only feature planning — creates implementation blueprints |
 | **Code Reviewer** | Reviews code quality, security, trading logic accuracy |
-| **Trading Expert** | Minervini SEPA methodology specialist |
+| **Trading Expert** | SEPA / QM / ML methodology specialist |
 
 ---
 
@@ -272,12 +339,16 @@ This project uses GitHub Copilot's full customization stack, inspired by
 - **Python 3.10+** — Core language
 - **Flask 3.0** — Web server + JSON API + Jinja2
 - **Bootstrap 5.3** — Dark theme UI (CDN, no build step)
-- **finvizfinance** — Stock screening
+- **HTMX** — Partial-page updates for watchlist/positions (CDN)
+- **finvizfinance** — Coarse stock screening (primary)
+- **NASDAQ FTP** — Free alternative universe (no API key, 24h cache)
 - **yfinance** — OHLCV & fundamentals
-- **pandas_ta** — Technical indicators
+- **pandas_ta** — Technical indicators (SMA, EMA, RSI, ATR, BBands, AVWAP)
 - **pandas / numpy** — Data processing
 - **pyarrow** — Parquet I/O
-- **duckdb** — Analytical SQL database for historical and persistent data
+- **duckdb** — Analytical SQL for persistent historical data
+- **tabulate** — Terminal table formatting
+- **ThreadPoolExecutor** — Parallel scan execution
 
 ---
 
@@ -378,7 +449,8 @@ SEPA-StockLab/
 
 4. **閱讀完整指南**
    - 訪問 `/guide` 查看完整 GUIDE.md
-   - 查看 [docs/START_TEACHING_NOW.md](docs/START_TEACHING_NOW.md) 快速上手
+   - QM 方法論：訪問 `/qm/guide`
+   - ML 方法論：訪問 `/ml/guide`
 
 ---
 
@@ -390,6 +462,5 @@ For personal use. Trading involves risk — this tool is for educational and res
 
 ---
 
-**最後更新：2026-02-28**  
-**版本：1.0**  
-**維護者：GitHub Copilot**
+**最後更新：2026-03-02**  
+**版本：2.0（三策略版）**
