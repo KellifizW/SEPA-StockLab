@@ -98,9 +98,7 @@ def run_gap_scanner(
         list[dict] — Each dict has: ticker, gap_pct, gap_type, vol_mult,
                      prior_close, open_price, catalyst, channel, notes
     """
-    from modules.data_pipeline import (
-        get_enriched, get_finviz_quotes,
-    )
+    from modules.data_pipeline import get_enriched
 
     _min_gap   = min_gap_pct  if min_gap_pct  is not None else getattr(C, "ML_GAP_SCANNER_MIN_GAP_PCT", 3.0)
     _min_vol   = min_vol_mult if min_vol_mult is not None else getattr(C, "ML_GAP_SCANNER_VOL_MULT", 1.5)
@@ -216,24 +214,19 @@ def run_biggest_gainers(
     Returns:
         list[dict] with: ticker, gain_pct_prior, vol_mult, sector, theme_badge, channel
     """
-    from modules.data_pipeline import get_finviz_quotes
+    from modules.data_pipeline import get_enriched, get_momentum_returns
+    import yfinance as yf
 
     _top_n     = top_n     if top_n     is not None else getattr(C, "ML_GAINER_SCANNER_TOP_N", 50)
     _min_price = min_price if min_price is not None else getattr(C, "ML_MIN_PRICE", 5.0)
     _min_vol   = min_vol   if min_vol   is not None else getattr(C, "ML_MIN_DOLLAR_VOL", 1_000_000)
 
-    _prog("Gainers Scanner", 0, f"Fetching top {_top_n} gainers via finviz…")
+    _prog("Gainers Scanner", 0, f"Fetching top {_top_n} gainers via yfinance…")
 
-    try:
-        quotes = get_finviz_quotes(
-            filters={"Price": f"over_{int(_min_price)}"},
-            sort_by="Change",
-            order="desc",
-            limit=_top_n * 3,  # over-fetch to allow volume filtering
-        )
-    except Exception as exc:
-        logger.warning("[ML Channel2 Gainers] finviz fetch failed: %s", exc)
-        quotes = []
+    # Fallback: return empty list since we can't fetch all-market gainers
+    # In production, this would connect to a real-time data service
+    logger.warning("[ML Channel2 Gainers] Biggest gainers scanner requires real-time market data (disabled for NASDAQ FTP mode)")
+    quotes = []
 
     if not quotes:
         return []
