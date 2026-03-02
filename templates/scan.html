@@ -822,10 +822,14 @@ function renderScanTable(data) {
         <td class="small">${price}</td>
         <td class="text-center">${ttHtml}</td>
         <td class="text-muted small">${r.sector || '—'}</td>
-        <td>
-          <button class="btn btn-sm btn-outline-info py-0 px-2" title="Add to Watchlist"
-                  onclick="addToWatchlist('${r.ticker}')">
+        <td class="text-nowrap">
+          <button class="btn btn-sm btn-outline-info py-0 px-2" title="加入觀察名單 Add to Watchlist"
+                  onclick="openQuickWatch('${r.ticker}', 'SEPA')">
             <i class="bi bi-bookmark-plus"></i>
+          </button>
+          <button class="btn btn-sm btn-outline-warning py-0 px-2 ms-1" title="新增持倉 Add Position"
+                  onclick="openQuickPosition('${r.ticker}', 'SEPA')">
+            <i class="bi bi-briefcase"></i>
           </button>
           <a href="/vcp?ticker=${r.ticker}"
              class="btn btn-sm btn-outline-secondary py-0 px-2 ms-1" title="VCP chart">

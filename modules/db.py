@@ -139,6 +139,7 @@ def _ensure_schema(conn):
             grade       VARCHAR NOT NULL,  -- 'A', 'B', or 'C'
             sepa_score  DOUBLE,
             added_date  DATE,
+            strategy    VARCHAR DEFAULT '',  -- 'SEPA', 'QM', 'ML', or ''
             note        VARCHAR
         )
     """)
@@ -158,6 +159,7 @@ def _ensure_schema(conn):
             last_stop_update DATE,
             trailing_stop   DOUBLE,
             pnl_pct         DOUBLE,
+            strategy        VARCHAR DEFAULT '',  -- 'SEPA', 'QM', 'ML', or ''
             note            VARCHAR
         )
     """)
@@ -1042,11 +1044,22 @@ def wl_load() -> dict:
     with _lock:
         try:
             conn = _get_conn()
-            df = conn.execute("""
-                SELECT ticker, grade, sepa_score, added_date, note
-                FROM watchlist_store
-                ORDER BY grade, ticker
-            """).df()
+            # Check if strategy column exists (backward compatibility)
+            try:
+                df = conn.execute("""
+                    SELECT ticker, grade, sepa_score, added_date, strategy, note
+                    FROM watchlist_store
+                    ORDER BY grade, ticker
+                """).df()
+            except:
+                # Fallback if strategy column doesn't exist yet (schema migration)
+                df = conn.execute("""
+                    SELECT ticker, grade, sepa_score, added_date, note
+                    FROM watchlist_store
+                    ORDER BY grade, ticker
+                """).df()
+                df['strategy'] = ''  # Default empty string
+            
             conn.close()
             
             if df.empty:
@@ -1059,6 +1072,7 @@ def wl_load() -> dict:
                 result[grade][ticker] = {
                     "sepa_score": _to_float(row["sepa_score"]),
                     "added_date": str(row["added_date"]) if row["added_date"] else None,
+                    "strategy": str(row.get("strategy") or ""),
                     "note": str(row["note"]) or "",
                 }
             logger.info("[DB] wl_load: loaded %d tickers", len(df))
@@ -1089,6 +1103,7 @@ def wl_save(data: dict) -> bool:
                 "grade":       grade,
                 "sepa_score":  _to_float(info.get("sepa_score")),
                 "added_date":  info.get("added_date"),
+                "strategy":    info.get("strategy", ""),
                 "note":        info.get("note", ""),
             })
 
@@ -1130,8 +1145,19 @@ def pos_load() -> dict:
         try:
             conn = _get_conn()
             
-            # Load open positions
-            df_open = conn.execute("SELECT * FROM open_positions").df()
+            # Load open positions (with strategy column backward compatibility)
+            try:
+                df_open = conn.execute("""
+                    SELECT ticker, buy_price, shares, stop_loss, stop_pct, target, rr, risk_dollar,
+                           entry_date, last_stop_update, trailing_stop, pnl_pct, strategy, note
+                    FROM open_positions
+                """).df()
+            except:
+                # Fallback if strategy column doesn't exist yet
+                df_open = conn.execute("SELECT * FROM open_positions").df()
+                if 'strategy' not in df_open.columns:
+                    df_open['strategy'] = ''  # Default empty string
+            
             open_dict = {}
             if not df_open.empty:
                 for _, row in df_open.iterrows():
@@ -1161,6 +1187,7 @@ def pos_load() -> dict:
                         "last_stop_update": parse_date(row["last_stop_update"]),
                         "trailing_stop": _to_float(row["trailing_stop"]),
                         "pnl_pct": _to_float(row["pnl_pct"]),
+                        "strategy": str(row.get("strategy") or ""),
                         "note": str(row["note"]) or "",
                     }
             
@@ -1231,6 +1258,7 @@ def pos_save(data: dict) -> bool:
             "last_stop_update": info.get("last_stop_update"),
             "trailing_stop": _to_float(info.get("trailing_stop")),
             "pnl_pct": _to_float(info.get("pnl_pct")),
+            "strategy": info.get("strategy", ""),
             "note": info.get("note", ""),
         })
 

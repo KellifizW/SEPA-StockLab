@@ -880,7 +880,7 @@ ML_INTRADAY_PHASE2_MINUTES   = 60      # 15-60 min: use 5-min prev bar high trig
 ML_PB_WIN_RATE_HIERARCHY = {9: 0.55, 21: 0.62, 50: 0.70, 150: 0.78}
 # Used to weight confidence scores in ml_setup_detector.py
 
-# ── Choppy Market Detection ────────────────────────────────────────────────
+# ── ML Choppy Market Detection ───────────────────────────────────────────────
 ML_CHOPPY_ADX_THRESHOLD      = 20      # ADX < 20 = choppy (no clear trend)
 ML_CHOPPY_SIZE_MULT          = 0.25    # Position size multiplier in choppy market
 ML_CHOPPY_MAX_TRADES         = 2       # Maximum new trades per day in choppy market
@@ -889,3 +889,8 @@ ML_CHOPPY_MAX_TRADES         = 2       # Maximum new trades per day in choppy ma
 ML_LEADER_HISTORY_DAYS       = 90      # Days of leader scanner history to retain in DB
 ML_THEME_HISTORY_DAYS        = 60      # Days of theme tracking history to retain
 ML_SCORECARD_HISTORY_DAYS    = 365     # Days of trade quality scorecard history
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUNTIME SETTINGS (persisted to data/settings.json)
+# ─────────────────────────────────────────────────────────────────────────────
+SETTINGS_FILE = "data/settings.json"   # Runtime-overridable settings (account size, etc.)

@@ -92,7 +92,7 @@
         <li class="nav-item"><a class="nav-link {% if request.path=='/combined' %}active{% endif %}" href="/combined"><i class="bi bi-lightning-fill me-1" style="color:#00d4ff"></i>Combined Scan 組合掃描</a></li>
         <!-- ── SEPA dropdown ───────────────────────────────────── -->
         <li class="nav-item dropdown">
-          <a class="nav-link dropdown-toggle {% if request.path in ['/scan','/analyze','/watchlist','/positions','/vcp','/backtest','/guide'] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle {% if request.path in ['/scan','/analyze','/vcp','/backtest','/guide'] %}active{% endif %}"
              href="#" data-bs-toggle="dropdown" aria-expanded="false">
             <i class="bi bi-funnel me-1"></i>SEPA
           </a>
@@ -102,12 +102,6 @@
               <i class="bi bi-funnel me-2"></i>Scan 掃描</a></li>
             <li><a class="dropdown-item {% if request.path=='/analyze' %}text-info{% endif %}" href="/analyze">
               <i class="bi bi-search me-2"></i>Analyze 分析</a></li>
-            <li><a class="dropdown-item {% if request.path=='/watchlist' %}text-info{% endif %}" href="/watchlist">
-              <i class="bi bi-bookmark-star me-2"></i>Watchlist 觀察名單</a></li>
-            <li><a class="dropdown-item {% if request.path=='/positions' %}text-info{% endif %}" href="/positions">
-              <i class="bi bi-briefcase me-2"></i>Positions 持倉</a></li>
-            <li><a class="dropdown-item {% if request.path=='/market' %}text-info{% endif %}" href="/market">
-              <i class="bi bi-bar-chart-line me-2"></i>Market 市場環境</a></li>
             <li><a class="dropdown-item {% if request.path=='/vcp' %}text-info{% endif %}" href="/vcp">
               <i class="bi bi-activity me-2"></i>VCP 波動收縮</a></li>
             <li><a class="dropdown-item {% if request.path=='/backtest' %}text-info{% endif %}" href="/backtest">
@@ -151,6 +145,22 @@
             <li><hr class="dropdown-divider" style="border-color:#30363d"></li>
             <li><a class="dropdown-item {% if request.path=='/ml/guide' %}text-info{% endif %}" href="/ml/guide">
               <i class="bi bi-book me-2"></i>ML 教學 Guide</a></li>
+          </ul>
+        </li>
+        <!-- ── Portfolio dropdown (全域共用) ──────────────────────── -->
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% if request.path in ['/watchlist','/positions','/market'] %}active{% endif %}"
+             href="#" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-briefcase-fill me-1" style="color:#58a6ff"></i>Portfolio
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark" style="background:#161b22;border-color:#30363d">
+            <li><h6 class="dropdown-header" style="color:#8b949e;font-size:10px">投資組合管理 / PORTFOLIO</h6></li>
+            <li><a class="dropdown-item {% if request.path=='/watchlist' %}text-info{% endif %}" href="/watchlist">
+              <i class="bi bi-bookmark-star me-2"></i>Watchlist 觀察名單</a></li>
+            <li><a class="dropdown-item {% if request.path=='/positions' %}text-info{% endif %}" href="/positions">
+              <i class="bi bi-briefcase me-2"></i>Positions 持倉</a></li>
+            <li><a class="dropdown-item {% if request.path=='/market' %}text-info{% endif %}" href="/market">
+              <i class="bi bi-bar-chart-line me-2"></i>Market 市場環境</a></li>
           </ul>
         </li>
       </ul>
@@ -440,7 +450,191 @@ async function _pollNavYfStatus() {
 }
 _pollNavYfStatus();
 setInterval(_pollNavYfStatus, 15000);
+
+// ── Quick-Add Watchlist & Position modals ──────────────────────────────────
+let _quickAddMode = null;      // 'watch' | 'position'
+let _quickAddTicker = '';      // Pre-filled ticker
+let _quickAddStrategy = '';    // Pre-filled strategy
+
+function openQuickWatch(ticker, strategy) {
+  _quickAddMode = 'watch';
+  _quickAddTicker = ticker.toUpperCase();
+  _quickAddStrategy = strategy || '';
+  
+  // Reset form
+  document.getElementById('quickAddTicker').value = _quickAddTicker;
+  document.getElementById('quickAddGrade').value = 'C';
+  document.getElementById('quickAddNote').value = '';
+  document.getElementById('quickAddStrategy').value = _quickAddStrategy;
+  
+  const modal = new bootstrap.Modal(document.getElementById('quickAddModal'));
+  modal.show();
+}
+
+function openQuickPosition(ticker, strategy) {
+  _quickAddMode = 'position';
+  _quickAddTicker = ticker.toUpperCase();
+  _quickAddStrategy = strategy || '';
+  
+  // Reset form
+  document.getElementById('quickAddPosTicker').value = _quickAddTicker;
+  document.getElementById('quickAddPosEntry').value = '';
+  document.getElementById('quickAddPosStop').value = '';
+  document.getElementById('quickAddPosShares').value = '';
+  document.getElementById('quickAddPosNote').value = '';
+  document.getElementById('quickAddPosStrategy').value = _quickAddStrategy;
+  
+  const modal = new bootstrap.Modal(document.getElementById('quickAddPosModal'));
+  modal.show();
+}
+
+async function submitQuickWatch() {
+  const ticker = document.getElementById('quickAddTicker').value.toUpperCase().trim();
+  const grade = document.getElementById('quickAddGrade').value || 'C';
+  const strategy = document.getElementById('quickAddStrategy').value || '';
+  const note = document.getElementById('quickAddNote').value || '';
+  
+  if (!ticker) {
+    toast('❌ 缺少 Ticker', false);
+    return;
+  }
+  
+  try {
+    const r = await fetch('/api/quick-add-watch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticker, grade, strategy, note})
+    }).then(x => x.json());
+    
+    if (r.ok) {
+      toast(`✅ ${ticker} 已加入觀察名單 (Grade ${grade})`, true);
+      bootstrap.Modal.getInstance(document.getElementById('quickAddModal')).hide();
+    } else {
+      toast(`❌ ${r.error || '新增失敗'}`, false);
+    }
+  } catch(e) {
+    toast(`❌ 網路錯誤: ${e}`, false);
+  }
+}
+
+async function submitQuickPosition() {
+  const ticker = document.getElementById('quickAddPosTicker').value.toUpperCase().trim();
+  const buy_price = parseFloat(document.getElementById('quickAddPosEntry').value);
+  const stop_loss = parseFloat(document.getElementById('quickAddPosStop').value);
+  const shares = parseInt(document.getElementById('quickAddPosShares').value);
+  const strategy = document.getElementById('quickAddPosStrategy').value || '';
+  const note = document.getElementById('quickAddPosNote').value || '';
+  
+  if (!ticker || !buy_price || !stop_loss || !shares) {
+    toast('❌ 缺少必要資料 (Ticker, Entry, Stop, Shares)', false);
+    return;
+  }
+  
+  try {
+    const r = await fetch('/api/quick-add-position', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticker, buy_price, shares, stop_loss, strategy, note})
+    }).then(x => x.json());
+    
+    if (r.ok) {
+      toast(`✅ ${ticker} 持倉已新增`, true);
+      bootstrap.Modal.getInstance(document.getElementById('quickAddPosModal')).hide();
+    } else {
+      toast(`❌ ${r.error || '新增失敗'}`, false);
+    }
+  } catch(e) {
+    toast(`❌ 網路錯誤: ${e}`, false);
+  }
+}
 </script>
+
+<!-- Quick-Add Watchlist Modal -->
+<div class="modal fade" id="quickAddModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content" style="background:#161b22; border:1px solid #30363d;">
+      <div class="modal-header" style="border-bottom:1px solid #30363d;">
+        <h5 class="modal-title"><i class="bi bi-bookmark-plus me-2" style="color:var(--accent)"></i>加入觀察名單</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">Ticker</label>
+          <input type="text" id="quickAddTicker" class="form-control" placeholder="NVDA" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Grade</label>
+          <select id="quickAddGrade" class="form-select" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+            <option value="A">A - 優先交易</option>
+            <option value="B">B - 觀察中</option>
+            <option value="C" selected>C - 低優先</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">策略</label>
+          <input type="text" id="quickAddStrategy" class="form-control" placeholder="SEPA / QM / ML" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">備註</label>
+          <input type="text" id="quickAddNote" class="form-control" placeholder="備註備註" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+        </div>
+      </div>
+      <div class="modal-footer" style="border-top:1px solid #30363d;">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-accent" onclick="submitQuickWatch()">
+          <i class="bi bi-check-circle me-1"></i>新增
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Quick-Add Position Modal -->
+<div class="modal fade" id="quickAddPosModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content" style="background:#161b22; border:1px solid #30363d;">
+      <div class="modal-header" style="border-bottom:1px solid #30363d;">
+        <h5 class="modal-title"><i class="bi bi-briefcase me-2" style="color:var(--accent)"></i>新增持倉</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">Ticker</label>
+          <input type="text" id="quickAddPosTicker" class="form-control" placeholder="NVDA" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+        </div>
+        <div class="row">
+          <div class="col-md-6 mb-3">
+            <label class="form-label">Entry Price ($)</label>
+            <input type="number" id="quickAddPosEntry" class="form-control" placeholder="125.50" step="0.01" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+          </div>
+          <div class="col-md-6 mb-3">
+            <label class="form-label">Stop Loss ($)</label>
+            <input type="number" id="quickAddPosStop" class="form-control" placeholder="120.00" step="0.01" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Shares (股數)</label>
+          <input type="number" id="quickAddPosShares" class="form-control" placeholder="100" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">策略</label>
+          <input type="text" id="quickAddPosStrategy" class="form-control" placeholder="SEPA / QM / ML" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">備註</label>
+          <input type="text" id="quickAddPosNote" class="form-control" placeholder="備註備註" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+        </div>
+      </div>
+      <div class="modal-footer" style="border-top:1px solid #30363d;">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-accent" onclick="submitQuickPosition()">
+          <i class="bi bi-check-circle me-1"></i>新增
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% block extra_js %}{% endblock %}
 </body>
 </html>

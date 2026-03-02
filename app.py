@@ -600,6 +600,12 @@ def guide_page():
     return render_template("guide.html", content=content)
 
 
+@app.route("/calc")
+def calc_page():
+    """Position Sizing Calculator — all three strategies."""
+    return render_template("calc.html", account_size=C.ACCOUNT_SIZE)
+
+
 # ─── Qullamaggie (QM) page routes ────────────────────────────────────────────
 
 @app.route("/qm/scan")
@@ -2276,6 +2282,248 @@ def htmx_positions_add():
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
         return resp
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API – Quick-Add Watchlist & Positions (Global, Multi-Strategy)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/quick-add-watch", methods=["POST"])
+def api_quick_add_watch():
+    """Global quick-add to watchlist. Called from any scan page."""
+    data = request.get_json(silent=True) or {}
+    ticker = str(data.get("ticker", "")).upper().strip()
+    grade = data.get("grade", "C")  # Default to C if not specified
+    strategy = data.get("strategy", "")  # SEPA, QM, ML, or ''
+    note = data.get("note", "")
+    
+    if not ticker:
+        return jsonify({"ok": False, "error": "缺少 Ticker"}), 400
+    
+    try:
+        from modules.watchlist import add
+        from modules import db
+        
+        # Add to watchlist
+        add(ticker, grade=grade, note=note)
+        
+        # Update strategy tag in DuckDB
+        wl = _load_watchlist()
+        if grade in wl and ticker in wl[grade]:
+            wl[grade][ticker]["strategy"] = strategy
+        db.wl_save(wl)
+        
+        # Store in session for potential client-side tracking
+        wl = _load_watchlist()
+        return jsonify({
+            "ok": True,
+            "message": f"✅ {ticker} 已加入觀察名單 (Grade {grade})",
+            "watchlist": wl
+        })
+    except Exception as exc:
+        logger.error(f"[quick-add-watch] {exc}")
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.route("/api/quick-add-position", methods=["POST"])
+def api_quick_add_position():
+    """Global quick-add to positions. Called from any scan page."""
+    data = request.get_json(silent=True) or {}
+    ticker = str(data.get("ticker", "")).upper().strip()
+    buy_price = float(data.get("buy_price") or 0)
+    shares = int(data.get("shares") or 0)
+    stop_loss = float(data.get("stop_loss") or 0)
+    target = data.get("target")
+    target = float(target) if target else None
+    strategy = data.get("strategy", "")  # SEPA, QM, ML, or ''
+    note = data.get("note", "")
+    
+    if not ticker or not buy_price or not shares or not stop_loss:
+        return jsonify({"ok": False, "error": "缺少必要資料"}), 400
+    
+    try:
+        from modules.position_monitor import add_position
+        from modules import db
+        
+        # Add position
+        add_position(ticker, buy_price, shares, stop_loss, target, note)
+        
+        # Update strategy tag in DuckDB
+        pos = _load_positions()
+        if ticker in pos["positions"]:
+            pos["positions"][ticker]["strategy"] = strategy
+        db.pos_save(pos)
+        
+        pos = _load_positions()
+        return jsonify({
+            "ok": True,
+            "message": f"✅ {ticker} 持倉已新增",
+            "positions": pos
+        })
+    except Exception as exc:
+        logger.error(f"[quick-add-position] {exc}")
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API – Settings (Runtime Configuration)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings():
+    """Get current runtime settings (account size, etc.)."""
+    try:
+        settings_path = ROOT / C.SETTINGS_FILE
+        if settings_path.exists():
+            with open(settings_path, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        else:
+            settings = {"account_size": C.ACCOUNT_SIZE}
+        
+        return jsonify({"ok": True, **settings})
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "account_size": C.ACCOUNT_SIZE
+        })
+
+
+@app.route("/api/settings/account-size", methods=["PATCH"])
+def api_update_account_size():
+    """Update account size and persist to settings.json."""
+    data = request.get_json(silent=True) or {}
+    new_size = data.get("value")
+    
+    if new_size is None:
+        return jsonify({"ok": False, "error": "缺少 value 參數"}), 400
+    
+    try:
+        new_size = float(new_size)
+        if new_size <= 0:
+            return jsonify({"ok": False, "error": "帳戶大小必須 > 0"}), 400
+        
+        # Load existing settings
+        settings_path = ROOT / C.SETTINGS_FILE
+        settings_path.parent.mkdir(exist_ok=True, parents=True)
+        
+        if settings_path.exists():
+            with open(settings_path, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+        
+        # Update and persist
+        settings["account_size"] = new_size
+        settings["last_updated"] = datetime.now().isoformat()
+        
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+        
+        # Update runtime config
+        C.ACCOUNT_SIZE = new_size
+        
+        return jsonify({
+            "ok": True,
+            "message": f"✅ 帳戶大小已更新為 ${new_size:,.0f}",
+            "account_size": new_size
+        })
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": f"無效的數值: {exc}"}), 400
+    except Exception as exc:
+        logger.error(f"[update-account-size] {exc}")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/calc/position-size", methods=["POST"])
+def api_calc_position_size():
+    """Calculate position size based on strategy and entry/stop prices."""
+    data = request.get_json(silent=True) or {}
+    strategy = data.get("strategy", "SEPA")  # SEPA, QM, or ML
+    entry_price = float(data.get("entry_price") or 0)
+    stop_price = float(data.get("stop_price") or 0)
+    star_rating = data.get("star_rating")  # For QM/ML
+    account_size = float(data.get("account_size") or C.ACCOUNT_SIZE)
+    
+    if not entry_price or not stop_price or stop_price >= entry_price:
+        return jsonify({"ok": False, "error": "無效的 entry/stop 價格"}), 400
+    
+    try:
+        if strategy.upper() == "SEPA":
+            # Calculate SEPA position directly (no DataFrame needed for simple calc)
+            stop_distance = entry_price - stop_price
+            stop_pct = (stop_distance / entry_price) * 100
+            
+            # Cap stop at max allowed
+            if stop_pct > C.MAX_STOP_LOSS_PCT:
+                stop_price = entry_price * (1 - C.MAX_STOP_LOSS_PCT / 100)
+                stop_pct = C.MAX_STOP_LOSS_PCT
+            
+            risk_dollar = account_size * (C.MAX_RISK_PER_TRADE_PCT / 100)
+            risk_per_share = entry_price - stop_price
+            shares = int(risk_dollar / risk_per_share) if risk_per_share > 0 else 0
+            
+            position_value = shares * entry_price
+            position_pct = position_value / account_size * 100
+            
+            # Cap at max single position size
+            if position_pct > C.MAX_POSITION_SIZE_PCT:
+                shares = int(account_size * C.MAX_POSITION_SIZE_PCT / 100 / entry_price)
+                position_value = shares * entry_price
+                position_pct = position_value / account_size * 100
+            
+            # Calculate ideal R:R
+            target_multiplier = 1 + C.IDEAL_RISK_REWARD * stop_pct / 100
+            target_price = entry_price * target_multiplier
+            rr_ratio = (target_price - entry_price) / (entry_price - stop_price) if (entry_price - stop_price) > 0 else 0
+            
+            result = {
+                "position_size": round(position_value, 0),
+                "shares": round(shares, 2),
+                "risk_dollar": round(risk_dollar, 0),
+                "risk_pct": round(C.MAX_RISK_PER_TRADE_PCT, 2),
+                "account_pct": round(position_pct, 2),
+                "rr_ratio": round(rr_ratio, 2),
+                "target_price": round(target_price, 2),
+                "stop_pct": round(stop_pct, 2),
+            }
+        elif strategy.upper() == "QM":
+            # Use QM position sizing
+            from modules.qm_position_rules import calc_qm_position_size
+            star_rating = float(star_rating or 3.0)
+            qm_result = calc_qm_position_size(star_rating, entry_price, stop_price, account_size)
+            
+            # Transform to unified response format
+            result = {
+                "position_size": qm_result.get("position_value", 0),
+                "shares": qm_result.get("shares", 0),
+                "risk_dollar": qm_result.get("risk_dollar", 0),
+                "risk_pct": qm_result.get("risk_pct_acct", 0),
+                "allocation_pct": (qm_result.get("position_pct_min", 0) + qm_result.get("position_pct_max", 0)) / 2,
+                "max_position_pct": qm_result.get("position_pct_max", 25),
+            }
+        elif strategy.upper() == "ML":
+            # Use ML position sizing
+            from modules.ml_position_rules import calc_ml_position_size
+            ml_result = calc_ml_position_size(entry_price, stop_price, account_size)
+            
+            # Transform to unified response format
+            result = {
+                "position_size": ml_result.get("position_value", 0),
+                "shares": ml_result.get("shares", 0),
+                "risk_dollar": ml_result.get("risk_dollars", 0),
+                "risk_pct": ml_result.get("risk_pct_account", 0),
+                "allocation_pct": ml_result.get("position_pct", 0),
+                "max_position_pct": getattr(C, "ML_MAX_SINGLE_POSITION_PCT", 25),
+            }
+        else:
+            return jsonify({"ok": False, "error": f"未知策略: {strategy}"}), 400
+        
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        logger.error(f"[calc-position-size] {exc}")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

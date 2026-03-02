@@ -27,9 +27,12 @@
     </div>
   </div>
   <div class="col-6 col-md-3">
-    <div class="metric-card">
-      <div class="metric-val">${{ "{:,.0f}".format(account_size) }}</div>
-      <div class="metric-lbl">Account Size</div>
+    <div class="metric-card" style="cursor:pointer; position:relative;" onclick="editAccountSize()" title="點擊編輯帳戶大小 Click to edit">
+      <div class="metric-val" id="accountSizeDisplay">${{ "{:,.0f}".format(account_size) }}</div>
+      <div class="metric-lbl">Account Size <i class="bi bi-pencil-square" style="font-size:0.8rem; margin-left:4px; opacity:0.6;"></i></div>
+      <div style="position:absolute; top:8px; right:8px; font-size:10px; opacity:0;" id="editHint" class="text-muted">
+        <i class="bi bi-pencil"></i>
+      </div>
     </div>
   </div>
 </div>
@@ -380,5 +383,69 @@ async function restartServer() {
     btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Restart Server';
   }
 }
+
+// ── Account Size edit handler ──────────────────────────────────────────────
+function editAccountSize() {
+  const currentVal = document.getElementById('accountSizeDisplay').textContent
+    .replace(/[\$,]/g, '');
+  
+  const modal = new bootstrap.Modal(document.getElementById('editAccountModal'));
+  document.getElementById('editAccountInput').value = currentVal;
+  document.getElementById('editAccountInput').select();
+  modal.show();
+}
+
+async function saveAccountSize() {
+  const input = document.getElementById('editAccountInput');
+  const newSize = parseFloat(input.value);
+  
+  if (!newSize || newSize <= 0) {
+    toast('❌ 帳戶大小必須 > 0', false);
+    return;
+  }
+  
+  try {
+    const r = await fetch('/api/settings/account-size', {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({value: newSize})
+    }).then(x => x.json());
+    
+    if (r.ok) {
+      document.getElementById('accountSizeDisplay').textContent = 
+        '$' + newSize.toLocaleString('en-US', {maximumFractionDigits: 0});
+      toast(`✅ ${r.message || '帳戶大小已更新'}`, true);
+      bootstrap.Modal.getInstance(document.getElementById('editAccountModal')).hide();
+    } else {
+      toast(`❌ ${r.error || '更新失敗'}`, false);
+    }
+  } catch(e) {
+    toast(`❌ 網路錯誤: ${e}`, false);
+  }
+}
 </script>
+
+<!-- Edit Account Size Modal -->
+<div class="modal fade" id="editAccountModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content" style="background:#161b22; border:1px solid #30363d;">
+      <div class="modal-header" style="border-bottom:1px solid #30363d;">
+        <h5 class="modal-title"><i class="bi bi-pencil-square me-2" style="color:var(--accent)"></i>編輯帳戶大小 / Edit Account Size</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label mb-2">帳戶總資產 / Total Account Equity (USD)</label>
+        <input type="number" id="editAccountInput" class="form-control" placeholder="100000" step="1000" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d; font-size:1.2rem;">
+        <small class="text-muted mt-2 d-block">此金額將用於所有策略的持倉計算。This amount will be used for position sizing across all strategies.</small>
+      </div>
+      <div class="modal-footer" style="border-top:1px solid #30363d;">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-accent" onclick="saveAccountSize()">
+          <i class="bi bi-check-circle me-1"></i>儲存 / Save
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}

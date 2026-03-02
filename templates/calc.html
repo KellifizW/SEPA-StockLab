@@ -1,0 +1,398 @@
+{% extends "base.html" %}
+
+{% block title %}Position Size Calculator | SEPA-StockLab{% endblock %}
+
+{% block content %}
+<div class="container-lg mt-4">
+    <div class="row">
+        <div class="col-md-10 offset-md-1">
+            <h1 class="mb-4">
+                📊 Position Size Calculator
+                <small class="text-muted">頭寸定量計算器</small>
+            </h1>
+
+            <div class="card bg-dark border-secondary mb-4">
+                <div class="card-body">
+                    <div class="row g-3">
+                        <!-- Strategy Selection -->
+                        <div class="col-md-12">
+                            <label class="form-label fw-bold">Strategy 策略</label>
+                            <div class="btn-group w-100" role="group">
+                                <input type="radio" class="btn-check" name="strategy" id="strategy-sepa" value="SEPA" checked>
+                                <label class="btn btn-outline-info" for="strategy-sepa">SEPA (Minervini)</label>
+                                
+                                <input type="radio" class="btn-check" name="strategy" id="strategy-qm" value="QM">
+                                <label class="btn btn-outline-info" for="strategy-qm">QM (Qullamaggie)</label>
+                                
+                                <input type="radio" class="btn-check" name="strategy" id="strategy-ml" value="ML">
+                                <label class="btn btn-outline-info" for="strategy-ml">ML (Martin Luk)</label>
+                            </div>
+                        </div>
+
+                        <!-- Common Inputs -->
+                        <div class="col-md-4">
+                            <label class="form-label">Ticker 股票代碼</label>
+                            <input type="text" class="form-control" id="ticker" placeholder="e.g., NVDA" style="text-transform: uppercase;">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Entry Price 入場價</label>
+                            <input type="number" class="form-control" id="entryPrice" placeholder="0.00" step="0.01" min="0">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Stop Loss 止損價</label>
+                            <input type="number" class="form-control" id="stopPrice" placeholder="0.00" step="0.01" min="0">
+                        </div>
+
+                        <!-- Account Size Override -->
+                        <div class="col-md-6">
+                            <label class="form-label">Account Size 帳戶大小</label>
+                            <input type="number" class="form-control" id="accountSize" value="{{ account_size }}" step="1000" min="0">
+                        </div>
+
+                        <!-- Strategy-Specific Inputs -->
+                        <!-- SEPA Section -->
+                        <div id="sepa-section" class="col-md-6">
+                            <label class="form-label">Target Price 目標價 (optional 可選)</label>
+                            <input type="number" class="form-control" id="targetPrice" placeholder="0.00" step="0.01" min="0">
+                        </div>
+
+                        <!-- QM Section (Hidden by default) -->
+                        <div id="qm-section" class="col-md-6" style="display:none;">
+                            <label class="form-label">Star Rating ⭐</label>
+                            <select class="form-select" id="qmStarRating">
+                                <option value="5.5">5.5 Stars (Perfect)</option>
+                                <option value="5.0" selected>5.0 Stars (Excellent)</option>
+                                <option value="4.5">4.5 Stars (Very Good)</option>
+                                <option value="4.0">4.0 Stars (Good)</option>
+                                <option value="3.5">3.5 Stars (Fair)</option>
+                                <option value="3.0">3.0 Stars (Acceptable)</option>
+                                <option value="2.5">2.5 Stars (Weak)</option>
+                            </select>
+                        </div>
+
+                        <!-- ML Section (Hidden by default) -->
+                        <div id="ml-section" class="col-md-6" style="display:none;">
+                            <label class="form-label">Star Rating ⭐</label>
+                            <select class="form-select" id="mlStarRating">
+                                <option value="5.5">5.5 Stars (Perfect)</option>
+                                <option value="5.0" selected>5.0 Stars (Excellent)</option>
+                                <option value="4.5">4.5 Stars (Very Good)</option>
+                                <option value="4.0">4.0 Stars (Good)</option>
+                                <option value="3.5">3.5 Stars (Fair)</option>
+                                <option value="3.0">3.0 Stars (Acceptable)</option>
+                                <option value="2.5">2.5 Stars (Weak)</option>
+                            </select>
+                        </div>
+
+                        <!-- Calculate Button -->
+                        <div class="col-md-12">
+                            <button class="btn btn-lg btn-success w-100" onclick="calculatePositionSize()">
+                                <i class="bi bi-calculator"></i> Calculate 計算
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results Section -->
+            <div id="resultsContainer" style="display:none;">
+                <div class="row g-3">
+                    <!-- SEPA Results -->
+                    <div id="sepaResults" class="col-md-12" style="display:none;">
+                        <div class="card bg-dark border-success">
+                            <div class="card-header bg-success bg-opacity-20">
+                                <h5 class="mb-0">📈 SEPA Sizing Results</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="row text-center">
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Position Size</div>
+                                            <div class="h4 fw-bold text-success" id="sepaPositionSize">$0</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Shares</div>
+                                            <div class="h4 fw-bold text-info" id="sepaShares">0</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Risk $</div>
+                                            <div class="h4 fw-bold text-danger" id="sepaRiskDollar">$0</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row text-center mt-3">
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Risk %</div>
+                                            <div class="h4 fw-bold text-warning" id="sepaRiskPct">0%</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">R:R Ratio</div>
+                                            <div class="h4 fw-bold text-info" id="sepaRRRatio">0:1</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">% of Account</div>
+                                            <div class="h4 fw-bold text-success" id="sepaAcctPct">0%</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- QM Results -->
+                    <div id="qmResults" class="col-md-12" style="display:none;">
+                        <div class="card bg-dark border-info">
+                            <div class="card-header bg-info bg-opacity-20">
+                                <h5 class="mb-0">📊 QM Sizing Results</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="row text-center">
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Position Size</div>
+                                            <div class="h4 fw-bold text-info" id="qmPositionSize">$0</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Shares</div>
+                                            <div class="h4 fw-bold text-info" id="qmShares">0</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Risk $</div>
+                                            <div class="h4 fw-bold text-danger" id="qmRiskDollar">$0</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row text-center mt-3">
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Risk %</div>
+                                            <div class="h4 fw-bold text-warning" id="qmRiskPct">0%</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Max Position</div>
+                                            <div class="h4 fw-bold text-muted" id="qmMaxPosition">0%</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Allocation %</div>
+                                            <div class="h4 fw-bold text-success" id="qmAllocPct">0%</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ML Results -->
+                    <div id="mlResults" class="col-md-12" style="display:none;">
+                        <div class="card bg-dark border-warning">
+                            <div class="card-header bg-warning bg-opacity-20">
+                                <h5 class="mb-0">📈 ML Sizing Results</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="row text-center">
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Position Size</div>
+                                            <div class="h4 fw-bold text-warning" id="mlPositionSize">$0</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Shares</div>
+                                            <div class="h4 fw-bold text-info" id="mlShares">0</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Risk $</div>
+                                            <div class="h4 fw-bold text-danger" id="mlRiskDollar">$0</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row text-center mt-3">
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Risk %</div>
+                                            <div class="h4 fw-bold text-warning" id="mlRiskPct">0%</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Max Position</div>
+                                            <div class="h4 fw-bold text-muted" id="mlMaxPosition">0%</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric">
+                                            <div class="text-muted small">Allocation %</div>
+                                            <div class="h4 fw-bold text-success" id="mlAllocPct">0%</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.metric {
+    padding: 1rem;
+}
+.btn-group .btn-check:checked + .btn {
+    font-weight: bold;
+}
+.form-control:focus,
+.form-select:focus {
+    border-color: var(--bs-info);
+    box-shadow: 0 0 0 0.25rem rgba(13, 202, 240, 0.25);
+}
+</style>
+
+<script>
+// Strategy selection handlers
+document.querySelectorAll('input[name="strategy"]').forEach(radio => {
+    radio.addEventListener('change', function() {
+        const strategy = this.value;
+        document.getElementById('sepa-section').style.display = strategy === 'SEPA' ? 'block' : 'none';
+        document.getElementById('qm-section').style.display = strategy === 'QM' ? 'block' : 'none';
+        document.getElementById('ml-section').style.display = strategy === 'ML' ? 'block' : 'none';
+    });
+});
+
+// Position size calculation
+async function calculatePositionSize() {
+    const strategy = document.querySelector('input[name="strategy"]:checked').value;
+    const entryPrice = parseFloat(document.getElementById('entryPrice').value);
+    const stopPrice = parseFloat(document.getElementById('stopPrice').value);
+    const accountSize = parseFloat(document.getElementById('accountSize').value);
+    
+    // Validation
+    if (!entryPrice || !stopPrice) {
+        showToast('❌ Entry & Stop prices required', 'danger');
+        return;
+    }
+    
+    if (stopPrice >= entryPrice) {
+        showToast('❌ Stop price must be below entry price', 'danger');
+        return;
+    }
+    
+    try {
+        const payload = {
+            strategy: strategy,
+            entry_price: entryPrice,
+            stop_price: stopPrice,
+            account_size: accountSize
+        };
+        
+        // Add strategy-specific fields
+        if (strategy === 'SEPA') {
+            const targetPrice = document.getElementById('targetPrice').value;
+            if (targetPrice) payload.target_price = parseFloat(targetPrice);
+        } else if (strategy === 'QM') {
+            payload.star_rating = parseFloat(document.getElementById('qmStarRating').value);
+        } else if (strategy === 'ML') {
+            payload.star_rating = parseFloat(document.getElementById('mlStarRating').value);
+        }
+        
+        const response = await fetch('/api/calc/position-size', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        
+        const data = await response.json();
+        
+        if (!data.ok) {
+            showToast(`❌ ${data.error}`, 'danger');
+            return;
+        }
+        
+        // Display results
+        displayResults(strategy, data);
+        document.getElementById('resultsContainer').style.display = 'block';
+        document.getElementById('resultsContainer').scrollIntoView({ behavior: 'smooth' });
+        
+    } catch (err) {
+        showToast(`❌ Error: ${err.message}`, 'danger');
+    }
+}
+
+function displayResults(strategy, data) {
+    // Hide all result sections
+    document.getElementById('sepaResults').style.display = 'none';
+    document.getElementById('qmResults').style.display = 'none';
+    document.getElementById('mlResults').style.display = 'none';
+    
+    if (strategy === 'SEPA') {
+        document.getElementById('sepaResults').style.display = 'block';
+        document.getElementById('sepaPositionSize').textContent = 
+            `$${data.position_size?.toFixed(0) || 0}`;
+        document.getElementById('sepaShares').textContent = 
+            `${data.shares?.toFixed(2) || 0}`;
+        document.getElementById('sepaRiskDollar').textContent = 
+            `$${data.risk_dollar?.toFixed(0) || 0}`;
+        document.getElementById('sepaRiskPct').textContent = 
+            `${data.risk_pct?.toFixed(2) || 0}%`;
+        document.getElementById('sepaRRRatio').textContent = 
+            `${data.rr_ratio?.toFixed(2) || 0}:1`;
+        document.getElementById('sepaAcctPct').textContent = 
+            `${data.account_pct?.toFixed(2) || 0}%`;
+    } else if (strategy === 'QM') {
+        document.getElementById('qmResults').style.display = 'block';
+        document.getElementById('qmPositionSize').textContent = 
+            `$${data.position_size?.toFixed(0) || 0}`;
+        document.getElementById('qmShares').textContent = 
+            `${data.shares?.toFixed(2) || 0}`;
+        document.getElementById('qmRiskDollar').textContent = 
+            `$${data.risk_dollar?.toFixed(0) || 0}`;
+        document.getElementById('qmRiskPct').textContent = 
+            `${data.risk_pct?.toFixed(2) || 0}%`;
+        document.getElementById('qmMaxPosition').textContent = 
+            `${data.max_position_pct?.toFixed(1) || 0}%`;
+        document.getElementById('qmAllocPct').textContent = 
+            `${data.allocation_pct?.toFixed(2) || 0}%`;
+    } else if (strategy === 'ML') {
+        document.getElementById('mlResults').style.display = 'block';
+        document.getElementById('mlPositionSize').textContent = 
+            `$${data.position_size?.toFixed(0) || 0}`;
+        document.getElementById('mlShares').textContent = 
+            `${data.shares?.toFixed(2) || 0}`;
+        document.getElementById('mlRiskDollar').textContent = 
+            `$${data.risk_dollar?.toFixed(0) || 0}`;
+        document.getElementById('mlRiskPct').textContent = 
+            `${data.risk_pct?.toFixed(2) || 0}%`;
+        document.getElementById('mlMaxPosition').textContent = 
+            `${data.max_position_pct?.toFixed(1) || 0}%`;
+        document.getElementById('mlAllocPct').textContent = 
+            `${data.allocation_pct?.toFixed(2) || 0}%`;
+    }
+}
+
+// Allow Enter key to calculate
+document.getElementById('stopPrice').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') calculatePositionSize();
+});
+</script>
+{% endblock %}

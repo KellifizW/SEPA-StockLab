@@ -526,6 +526,14 @@ function renderResults(rows) {
       "<td>" + fmtConfluence(r.above_avwap_low, r.above_avwap_high) + "</td>"+
       "<td>" + fmtVol(r.vol_ratio, r.vol_dry_ratio) + "</td>"+
       "<td>" + dtBadgeHtml(r.decision_tree) + "</td>"+
+      "<td class=\"text-nowrap\">" +
+        "<button class=\"btn btn-sm btn-outline-info py-0 px-2\" onclick=\"event.stopPropagation(); openQuickWatch('" + r.ticker + "', 'ML')\" title=\"加入觀察名單\">" +
+          "<i class=\"bi bi-bookmark-plus\"></i>" +
+        "</button>" +
+        "<button class=\"btn btn-sm btn-outline-warning py-0 px-2 ms-1\" onclick=\"event.stopPropagation(); openQuickPosition('" + r.ticker + "', 'ML')\" title=\"新增持倉\">" +
+          "<i class=\"bi bi-briefcase\"></i>" +
+        "</button>" +
+      "</td>"+
       "</tr>";
   }).join("");
 }
