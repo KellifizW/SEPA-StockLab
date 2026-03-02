@@ -318,13 +318,16 @@ def _qm_stage2_check(ticker: str, df: pd.DataFrame, debug_mode: bool = False) ->
 
     try:
         adr = get_adr(df)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"[QM BT Stage2] ADR calc error: {e}")
         return None
 
     min_adr = getattr(C, "QM_MIN_ADR_PCT", 5.0)
     if debug_mode:
         min_adr = 1.0  # Very relaxed for testing
     if adr < min_adr:
+        if debug_mode:
+            logger.debug(f"[QM BT Stage2] ADR veto: {adr:.2f}% < {min_adr}%")
         return None
 
     try:
@@ -359,9 +362,11 @@ def _qm_stage2_check(ticker: str, df: pd.DataFrame, debug_mode: bool = False) ->
         rng = get_6day_range_proximity(df)
     except Exception:
         return None
-    if not (rng.get("near_high", False) and rng.get("near_low", False)):
-        return None
-        return None
+    
+    # In debug mode, disable consolidation check to allow more signals through
+    if not debug_mode:
+        if not (rng.get("near_high", False) and rng.get("near_low", False)):
+            return None
 
     close = float(df["Close"].iloc[-1])
     return {
@@ -421,8 +426,19 @@ def _qm_stage3_score(ticker: str, df: pd.DataFrame, stage2: dict, debug_mode: bo
             return {"star_rating": 3.0, "setup_type": "DEBUG_NONE"}
         return None
 
-    star_rating = float(result.get("star_rating", 0.0) or 0.0)
+    # Note: analyze_qm returns 'stars' (not 'star_rating') and 'setup_type'
+    star_rating = float(result.get("stars", result.get("capped_stars", 0.0)) or 0.0)
     setup_type  = str(result.get("setup_type", "FLAG") or "FLAG")
+    
+    # In debug mode, override vetoes and provide a minimum viable star rating
+    if debug_mode and result.get("veto") and star_rating <= 0.0:
+        # The stock was vetoed (usually ADR < 5%) but we want to test Stage 3 in debug mode
+        star_rating = 3.0
+        logger.debug(
+            "[QM BT Stage3] %s debug mode overriding veto='%s', using 3.0 stars",
+            ticker, result.get("veto")
+        )
+    
     return {
         "star_rating": star_rating,
         "setup_type":  setup_type,

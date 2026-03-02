@@ -356,16 +356,28 @@ function pollQmBtJob(jobId) {
 function renderQmBacktestResults(result) {
   console.log('[QM Backtest] Rendering results...');
   
+  document.getElementById('btRunBtn').disabled = false;
+  
+  // Keep progress container visible so log link is accessible
+  document.getElementById('progressContainer').style.display = 'block';
+  document.getElementById('progressMsg').textContent = 'Backtest completed!';
+  
   if (!result.signals || result.signals.length === 0) {
-    alert('No signals found for this ticker and parameters.');
-    document.getElementById('progressContainer').style.display = 'none';
-    document.getElementById('btRunBtn').disabled = false;
+    // Show message instead of alert, keep log visible
+    document.getElementById('resultsContainer').style.display = 'block';
+    const noSignalsDiv = document.createElement('div');
+    noSignalsDiv.className = 'alert alert-info mt-3';
+    noSignalsDiv.innerHTML = `
+      <strong>ℹ️ No signals found</strong> for this ticker with current parameters.
+      <br />
+      <small class="text-muted">Check the debug log above to see Stage 2 and Stage 3 results.</small>
+    `;
+    document.getElementById('resultsContainer').innerHTML = '';
+    document.getElementById('resultsContainer').appendChild(noSignalsDiv);
     return;
   }
 
-  document.getElementById('progressContainer').style.display = 'none';
   document.getElementById('resultsContainer').style.display = 'block';
-  document.getElementById('btRunBtn').disabled = false;
 
   const summary = result.summary;
 
