@@ -896,6 +896,11 @@ async function startScan() {
   document.getElementById('progressMsg').textContent = 'Starting…';
   document.getElementById('progressTicker').textContent = '';
   document.getElementById('timingRow').classList.add('d-none');
+  // Clear and show live log
+  document.getElementById('liveLog').innerHTML = '';
+  document.getElementById('liveLogWrap').classList.remove('d-none');
+  _liveLogVis = true;
+  document.getElementById('btnToggleLog').innerHTML = '<i class="bi bi-terminal me-1"></i>Hide Live Log';
   _sepaShowAll = false;
 
   // Reset step indicators
@@ -967,7 +972,22 @@ function renderProgress(p) {
     if (conn) conn.className = j < stepNum ? 'step-connector done' : 'step-connector';
   }
 
-  if (p.log_line) appendLog(p.log_line, p.log_level || 'info');
+  // Render ALL log lines from progress
+  if (p.log_lines && Array.isArray(p.log_lines)) {
+    var logEl = document.getElementById('liveLog');
+    // Clear and rebuild with all log lines
+    logEl.innerHTML = '';
+    for (var k = 0; k < p.log_lines.length; k++) {
+      var line = p.log_lines[k];
+      var div = document.createElement('div');
+      div.className = 'log-line';
+      div.textContent = line;
+      logEl.appendChild(div);
+    }
+    // Auto-scroll to bottom
+    logEl.parentElement.scrollTop = logEl.parentElement.scrollHeight;
+  }
+  
   setStatus(pct + '%');
 }
 

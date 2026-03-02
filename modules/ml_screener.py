@@ -46,14 +46,35 @@ _STAR   = "⭐"
 # Progress tracking  (same pattern as qm_screener.py, for web UI polling)
 # ─────────────────────────────────────────────────────────────────────────────
 _ml_scan_lock   = threading.Lock()
-_ml_progress    = {"stage": "idle", "pct": 0, "msg": "", "ticker": ""}
+_ml_progress    = {"stage": "idle", "pct": 0, "msg": "", "ticker": "", "log_lines": []}
+_ml_log_lines   = []  # Keep running log of all messages
 _ml_cancel_flag: Optional[threading.Event] = None
 
 
 def _progress(stage: str, pct: int, msg: str = "", ticker: str = "") -> None:
     """Update the shared ML scan progress dict (polled by app.py)."""
+    import datetime
     with _ml_scan_lock:
-        _ml_progress.update({"stage": stage, "pct": pct, "msg": msg, "ticker": ticker})
+        # Build complete log line with timestamp
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        if ticker:
+            log_line = f"[{ts}] [{stage}] {ticker}: {msg}"
+        else:
+            log_line = f"[{ts}] [{stage}] {msg}"
+        
+        # Append to running log (keep last 200 lines to avoid unbounded growth)
+        _ml_log_lines.append(log_line)
+        if len(_ml_log_lines) > 200:
+            _ml_log_lines.pop(0)
+        
+        # Update progress dict with recent log lines (last 50) for UI
+        _ml_progress.update({
+            "stage": stage,
+            "pct": pct,
+            "msg": msg,
+            "ticker": ticker,
+            "log_lines": list(_ml_log_lines[-50:])  # Last 50 lines for UI
+        })
     logger.debug("[ML Progress] %s %d%% — %s %s", stage, pct, ticker, msg)
 
 

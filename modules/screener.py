@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 # ─── Scan progress / cancel (module-level, single-scan-at-a-time) ─────────────
 _scan_lock      = threading.Lock()
 _scan_cancel    = threading.Event()   # set this to request stop
-_scan_progress  = {"stage": "idle", "pct": 0, "msg": "", "ticker": ""}
+_scan_progress  = {"stage": "idle", "pct": 0, "msg": "", "ticker": "", "log_lines": []}
+_scan_log_lines = []  # Keep running log of all messages
 
 def set_scan_cancel(event: threading.Event):
     """Register external cancel event from app.py."""
@@ -51,8 +52,29 @@ def get_scan_progress() -> dict:
         return dict(_scan_progress)
 
 def _progress(stage: str, pct: int, msg: str = "", ticker: str = ""):
+    """Update scan progress with stage, percentage, message, and ticker."""
+    import datetime
     with _scan_lock:
-        _scan_progress.update({"stage": stage, "pct": pct, "msg": msg, "ticker": ticker})
+        # Build complete log line
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        if ticker:
+            log_line = f"[{ts}] [{stage}] {ticker}: {msg}"
+        else:
+            log_line = f"[{ts}] [{stage}] {msg}"
+        
+        # Append to running log (keep last 200 lines to avoid unbounded growth)
+        _scan_log_lines.append(log_line)
+        if len(_scan_log_lines) > 200:
+            _scan_log_lines.pop(0)
+        
+        # Update progress dict with recent log lines (last 50) for UI
+        _scan_progress.update({
+            "stage": stage,
+            "pct": pct,
+            "msg": msg,
+            "ticker": ticker,
+            "log_lines": list(_scan_log_lines[-50:])  # Last 50 lines for UI
+        })
 
 def _cancelled() -> bool:
     return _scan_cancel.is_set()

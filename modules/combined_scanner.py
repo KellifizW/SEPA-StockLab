@@ -42,7 +42,8 @@ _RESET  = "\033[0m"
 # ─── Combined scan progress / cancel (module-level) ──────────────────────────
 _combined_lock      = threading.Lock()
 _combined_cancel    = threading.Event()
-_combined_progress  = {"stage": "idle", "pct": 0, "msg": "", "ticker": ""}
+_combined_progress  = {"stage": "idle", "pct": 0, "msg": "", "ticker": "", "log_lines": []}
+_combined_log_lines = []  # Keep running log of all messages
 
 def set_combined_cancel(event: threading.Event):
     """Register external cancel event from app.py."""
@@ -54,8 +55,29 @@ def get_combined_progress() -> dict:
         return dict(_combined_progress)
 
 def _progress(stage: str, pct: int, msg: str = "", ticker: str = ""):
+    """Update combined scan progress with complete logging."""
+    import datetime
     with _combined_lock:
-        _combined_progress.update({"stage": stage, "pct": pct, "msg": msg, "ticker": ticker})
+        # Build complete log line with timestamp
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        if ticker:
+            log_line = f"[{ts}] [{stage}] {ticker}: {msg}"
+        else:
+            log_line = f"[{ts}] [{stage}] {msg}"
+        
+        # Append to running log (keep last 200 lines to avoid unbounded growth)
+        _combined_log_lines.append(log_line)
+        if len(_combined_log_lines) > 200:
+            _combined_log_lines.pop(0)
+        
+        # Update progress dict with recent log lines (last 50) for UI
+        _combined_progress.update({
+            "stage": stage,
+            "pct": pct,
+            "msg": msg,
+            "ticker": ticker,
+            "log_lines": list(_combined_log_lines[-50:])  # Last 50 lines for UI
+        })
 
 def _cancelled() -> bool:
     return _combined_cancel.is_set()

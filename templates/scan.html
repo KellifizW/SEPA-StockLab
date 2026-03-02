@@ -503,10 +503,9 @@ async function startScan() {
   document.getElementById('btnStop').disabled = false;
   document.getElementById('scanLoading').classList.remove('d-none');
   document.getElementById('scanStatus').textContent = 'Scan in progress…';
-  // Reset live log
-  _lastLogTicker = '';
+  // Reset live log and show it
   document.getElementById('liveLog').innerHTML = '';
-  document.getElementById('liveLogWrap').classList.add('d-none');
+  document.getElementById('liveLogWrap').classList.remove('d-none');
   setStep(0);
 
   let r;
@@ -546,18 +545,55 @@ function renderProgress(p) {
   document.getElementById('progressMsg').textContent    = p.msg    || '';
   document.getElementById('progressTicker').textContent = p.ticker || '';
 
-  // Live log for per-ticker scoring (Stage 3 & Stage 2)
+  // Live log — render ALL log lines from progress
   const liveLogWrap = document.getElementById('liveLogWrap');
   const liveLog     = document.getElementById('liveLog');
-  if (p.ticker && p.ticker !== _lastLogTicker) {
-    _lastLogTicker = p.ticker;
+  if (p.log_lines && Array.isArray(p.log_lines)) {
+    // Show the log area
     liveLogWrap.classList.remove('d-none');
-    const ts = new Date().toLocaleTimeString();
-    const line = document.createElement('div');
-    line.innerHTML = `<span style="color:#58a6ff">${ts}</span> <span style="color:#d2a8ff">${p.ticker}</span> <span style="color:#8b949e">${p.msg || ''}</span>`;
-    liveLog.appendChild(line);
-    // Keep max 50 lines
-    while (liveLog.children.length > 50) liveLog.removeChild(liveLog.firstChild);
+    
+    // Clear and rebuild with all log lines
+    liveLog.innerHTML = '';
+    for (let k = 0; k < p.log_lines.length; k++) {
+      const logLine = p.log_lines[k];
+      const div = document.createElement('div');
+      div.style.fontSize = '0.75rem';
+      div.style.fontFamily = 'monospace';
+      div.style.color = '#8b949e';
+      div.style.marginBottom = '2px';
+      
+      // Parse and color-code log entries: [HH:MM:SS] [stage] ticker: msg
+      // Format: [HH:MM:SS] [stage] ticker: msg  or  [HH:MM:SS] [stage] msg
+      const regex = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*(?:([A-Z]+):\s*)?(.*)$/;
+      const match = logLine.match(regex);
+      
+      if (match) {
+        const [, ts, stage, ticker, msg] = match;
+        const parts = [];
+        
+        // Add timestamp
+        let html = `<span style="color:#58a6ff">[${ts}]</span> `;
+        
+        // Add stage
+        html += `<span style="color:#79c0ff">[${stage}]</span> `;
+        
+        // Add ticker if present
+        if (ticker) {
+          html += `<span style="color:#d2a8ff"><strong>${ticker}</strong></span> `;
+        }
+        
+        // Add message
+        html += `<span style="color:#8b949e">${msg}</span>`;
+        
+        div.innerHTML = html;
+      } else {
+        div.textContent = logLine;
+      }
+      
+      liveLog.appendChild(div);
+    }
+    
+    // Auto-scroll to bottom
     liveLogWrap.scrollTop = liveLogWrap.scrollHeight;
   }
 
