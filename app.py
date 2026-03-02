@@ -13,6 +13,8 @@ import logging
 import threading
 import subprocess
 import webbrowser
+import signal
+import atexit
 
 # Force UTF-8 stdout/stderr on Windows (avoids cp950 encode errors for ✓ ✗ → etc.)
 if hasattr(sys.stdout, "reconfigure"):
@@ -1362,11 +1364,12 @@ def api_qm_analyze():
 
 @app.route("/api/ml/scan/run", methods=["POST"])
 def api_ml_scan_run():
-    data          = request.get_json(silent=True) or {}
-    min_star      = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
-    top_n         = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
-    scanner_mode  = str(data.get("scanner_mode", "standard")).strip().lower()
-    stage1_source = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
+    data               = request.get_json(silent=True) or {}
+    min_star           = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
+    top_n              = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
+    scanner_mode       = str(data.get("scanner_mode", "standard")).strip().lower()
+    stage1_source      = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
+    use_universe_cache = bool(data.get("use_universe_cache", False))
     jid          = _new_job()
     cancel_ev = _get_cancel(jid)
     _ml_job_ids.add(jid)
@@ -1388,7 +1391,9 @@ def api_ml_scan_run():
         try:
             from modules.ml_screener import run_ml_scan, set_ml_scan_cancel
             set_ml_scan_cancel(cancel_ev)
-            result = run_ml_scan(min_star=min_star, top_n=top_n, scanner_mode=scanner_mode, stage1_source=stage1_source)
+            result = run_ml_scan(min_star=min_star, top_n=top_n, scanner_mode=scanner_mode,
+                                 stage1_source=stage1_source,
+                                 use_universe_cache=use_universe_cache)
             
             # Defensive: ensure result is a valid tuple of DataFrames
             if isinstance(result, tuple) and len(result) == 2:
@@ -1498,6 +1503,16 @@ def api_ml_scan_run():
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"job_id": jid})
+
+
+@app.route("/api/ml/universe-cache", methods=["GET"])
+def api_ml_universe_cache():
+    """Return metadata about the persisted ML Stage-1 universe cache."""
+    try:
+        from modules.ml_screener import get_ml_universe_cache_info
+        return jsonify(get_ml_universe_cache_info())
+    except Exception as exc:
+        return jsonify({"exists": False, "error": str(exc)}), 500
 
 
 @app.route("/api/ml/scan/cancel/<jid>", methods=["POST"])
@@ -3734,12 +3749,46 @@ if __name__ == "__main__":
     print("  │  http://localhost:5000                    │")
     print("  │  Press Ctrl+C to stop                    │")
     print("  └──────────────────────────────────────────┘\n")
+    sys.stdout.flush()
     
     # Auto-open browser after a short delay
     def _open_browser():
         import time
-        time.sleep(1.5)  # Wait for Flask server to start
-        webbrowser.open("http://localhost:5000")
+        time.sleep(2)  # Wait for Flask server to start
+        try:
+            webbrowser.open("http://localhost:5000")
+        except:
+            pass  # Ignore browser open errors
     
-    threading.Thread(target=_open_browser, daemon=True).start()
-    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)
+    browser_thread = threading.Thread(target=_open_browser, daemon=True)
+    browser_thread.start()
+    
+    # Running Flask directly with signal handling for clean shutdown
+    def _graceful_shutdown(signum=None, frame=None):
+        # Cancel all running scan jobs
+        with _jobs_lock:
+            for jid in list(_cancel_events.keys()):
+                _cancel_events[jid].set()
+        print("\n\n  ⏹  關閉伺服器... Shutting down server...\n")
+        sys.stdout.flush()
+        sys.exit(0)
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, _graceful_shutdown)
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
+    
+    try:
+        # Run Flask with thread safety
+        app.run(
+            debug=False,
+            host="127.0.0.1",
+            port=5000,
+            threaded=True,
+            use_reloader=False,
+            use_debugger=False
+        )
+    except KeyboardInterrupt:
+        _graceful_shutdown()
+    except Exception as e:
+        print(f"\n\n  ❌ 錯誤 Error: {e}\n")
+        sys.exit(1)

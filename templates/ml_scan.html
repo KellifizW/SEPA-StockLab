@@ -22,6 +22,7 @@
   .scanner-mode-tab:hover:not(.active) { background:#21262d; color:#c9d1d9; }
   .ml-row:hover { background: #0a1a12 !important; cursor: pointer; }
   .filter-bar { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .cache-info-panel { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; }
   .situation-panel, .theme-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; font-size:12px; }
   .regime-pill { display:inline-block; padding:2px 8px; border-radius:12px; font-weight:600; font-size:11px; }
   .regime-uptrend   { background:#0e4429; color:#3fb950; }
@@ -63,6 +64,22 @@
 
 <div class="row g-3 mb-4">
   <div class="col-12">
+    <!-- ─── Universe Cache Info ─────────────────────────────────────── -->
+    <div class="cache-info-panel" id="mlCacheInfoPanel">
+      <div class="d-flex justify-content-between align-items-center">
+        <span class="fw-bold small">
+          <i class="bi bi-database me-1" style="color:var(--accent)"></i>
+          股票清單快取 Universe Cache
+        </span>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="loadCacheInfo()" title="重新整理 Refresh">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+      <div class="mt-1 small" id="mlCacheStatus" style="color:#8b949e">
+        <i class="bi bi-hourglass-split me-1"></i>正在查詢快取狀態…
+      </div>
+    </div>
+
     <div class="filter-bar">
       <div class="row g-3 align-items-end">
         <div class="col-auto">
@@ -102,6 +119,15 @@
           <button class="btn btn-outline-secondary btn-sm" onclick="loadLast()">
             <i class="bi bi-clock-history me-1"></i>載入上次
           </button>
+        </div>
+        <div class="col-auto">
+          <div class="form-check form-switch mt-1" style="min-width:190px" data-bs-toggle="tooltip"
+               title="跳過 Stage 1 重新下載，直接使用最近一次儲存的股票清單快取。三個掃描模式共用同一快取。">
+            <input class="form-check-input" type="checkbox" id="useUniverseCache" role="switch">
+            <label class="form-check-label text-secondary" for="useUniverseCache" style="font-size:12px">
+              使用快取清單 Use cached universe
+            </label>
+          </div>
         </div>
       </div>
       <div id="progressArea" class="mt-3 d-none">
@@ -268,7 +294,38 @@ document.addEventListener("DOMContentLoaded", () => {
   );
   loadLast();
   loadSituationalAwareness();
+  loadCacheInfo();
 });
+
+async function loadCacheInfo() {
+  const el = document.getElementById("mlCacheStatus");
+  try {
+    const d = await fetch("/api/ml/universe-cache").then(r => r.json());
+    if (!d.exists) {
+      el.innerHTML = '<i class="bi bi-x-circle text-secondary me-1"></i>' +
+        '尚無快取 No cache yet — 首次掃描將自動儲存 First scan will save automatically';
+      document.getElementById("useUniverseCache").disabled = true;
+    } else {
+      const savedAt = d.saved_at || "";
+      const age = d.age_minutes != null
+        ? (d.age_minutes < 60
+            ? d.age_minutes.toFixed(0) + " 分鐘前"
+            : (d.age_minutes / 60).toFixed(1) + " 小時前")
+        : "";
+      const srcLabel = d.source === "nasdaq_ftp" ? "NASDAQ FTP" : (d.source || "?");
+      el.innerHTML =
+        '<i class="bi bi-check-circle-fill me-1" style="color:#3fb950"></i>' +
+        '<strong style="color:#3fb950">' + (d.count || 0).toLocaleString() + ' 隻股票</strong>' +
+        ' &mdash; 儲存於 ' + savedAt.replace("T", " ") +
+        (age ? ' <span class="text-muted">(' + age + ')</span>' : '') +
+        ' &mdash; 來源: ' + srcLabel +
+        ' <span class="text-muted ms-2">✓ 可使用快取</span>';
+      document.getElementById("useUniverseCache").disabled = false;
+    }
+  } catch(e) {
+    el.innerHTML = '<i class="bi bi-exclamation-triangle text-warning me-1"></i>無法取得快取資訊';
+  }
+}
 
 function setScannerMode(mode) {
   _scannerMode = mode;
@@ -328,9 +385,10 @@ async function loadSituationalAwareness() {
 }
 
 async function startScan() {
-  const minStar = parseFloat(document.getElementById("minStar").value);
-  const topN    = parseInt(document.getElementById("topN").value);
-  const source  = document.getElementById("mlSource").value;
+  const minStar          = parseFloat(document.getElementById("minStar").value);
+  const topN             = parseInt(document.getElementById("topN").value);
+  const source           = document.getElementById("mlSource").value;
+  const useCache         = document.getElementById("useUniverseCache").checked;
   document.getElementById("btnScan").disabled = true;
   document.getElementById("btnCancel").classList.remove("d-none");
   document.getElementById("progressArea").classList.remove("d-none");
@@ -342,7 +400,11 @@ async function startScan() {
     const resp = await fetch("/api/ml/scan/run", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ min_star: minStar, top_n: topN, scanner_mode: _scannerMode, stage1_source: source })
+      body: JSON.stringify({
+        min_star: minStar, top_n: topN,
+        scanner_mode: _scannerMode, stage1_source: source,
+        use_universe_cache: useCache
+      })
     });
     const data = await resp.json();
     _jobId = data.job_id;
@@ -383,7 +445,20 @@ function pollProgress() {
         document.getElementById("progressBar").style.width = "100%";
         document.getElementById("progressStage").textContent =
           "掃描完成 (" + elapsed + "s) — 找到 " + rows.length + " 隻符合條件股票";
+        // ── Completion popup notification (mirrors combined_scan pattern) ──
+        const modeLabel = { standard: "標準", triple: "頻道掃描", combined: "合併" }[_scannerMode] || _scannerMode;
+        const stars4 = rows.filter(r => (r.ml_star || 0) >= 4).length;
+        const logHint = r.log_path ? '<br><small class="text-muted">日誌: ' + r.log_path + '</small>' : '';
+        toastCompletion(
+          '✅ ML ' + modeLabel + ' 掃描完成！<br>' +
+          '找到 <strong>' + rows.length + '</strong> 隻股票' +
+          (stars4 ? '（其中 <strong>' + stars4 + '</strong> 隻 ≥4★）' : '') +
+          ' — ' + elapsed + 's' + logHint,
+          true
+        );
         resetScanUI(true);
+        // Refresh cache info panel so saved_at updates
+        loadCacheInfo();
       } else if (r.status === "error") {
         clearInterval(_pollInterval);
         toast("掃描出錯：" + (r.error || ""), false);

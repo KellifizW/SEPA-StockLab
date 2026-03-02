@@ -42,6 +42,9 @@ _BOLD   = "\033[1m"
 _RESET  = "\033[0m"
 _STAR   = "⭐"
 
+# ── Universe cache file (shared by all 3 ML scan modes) ───────────────────────
+_UNIVERSE_CACHE_FILE = ROOT / "data" / "ml_universe_cache.json"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Progress tracking  (same pattern as qm_screener.py, for web UI polling)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,13 +98,70 @@ def _is_cancelled() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — Coarse filter (reuses same universe as QM)
+# Universe cache helpers  (shared across standard / triple / combined modes)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _save_universe_cache(tickers: list[str], source: str) -> None:
+    """Persist the Stage-1 ticker list to disk for reuse across modes."""
+    import json as _json
+    try:
+        payload = {
+            "tickers":  tickers,
+            "count":    len(tickers),
+            "source":   source,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        _UNIVERSE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _UNIVERSE_CACHE_FILE.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        logger.info("[ML Universe Cache] Saved %d tickers → %s", len(tickers), _UNIVERSE_CACHE_FILE.name)
+    except Exception as exc:
+        logger.warning("[ML Universe Cache] Save failed: %s", exc)
+
+
+def _load_universe_cache() -> dict | None:
+    """Load cached ticker list; returns None if file is absent or corrupted."""
+    import json as _json
+    try:
+        if _UNIVERSE_CACHE_FILE.exists():
+            data = _json.loads(_UNIVERSE_CACHE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data.get("tickers"), list) and data["tickers"]:
+                return data
+    except Exception as exc:
+        logger.warning("[ML Universe Cache] Load failed: %s", exc)
+    return None
+
+
+def get_ml_universe_cache_info() -> dict:
+    """
+    Public API — returns metadata about the stored universe cache.
+    Used by the UI to display last cache timestamp and ticker count.
+
+    Returns dict with keys: exists, saved_at, count, source, age_minutes.
+    """
+    data = _load_universe_cache()
+    if data is None:
+        return {"exists": False, "saved_at": None, "count": 0, "source": None, "age_minutes": None}
+    saved_at_str = data.get("saved_at", "")
+    age_minutes: float | None = None
+    try:
+        from datetime import timezone
+        saved_dt = datetime.fromisoformat(saved_at_str)
+        age_minutes = round((datetime.now() - saved_dt).total_seconds() / 60, 1)
+    except Exception:
+        pass
+    return {
+        "exists":      True,
+        "saved_at":    saved_at_str,
+        "count":       data.get("count", len(data.get("tickers", []))),
+        "source":      data.get("source", "unknown"),
+        "age_minutes": age_minutes,
+    }
 
 def run_ml_stage1(min_price: float = None,
                   min_avg_vol: int = None,
                   verbose: bool = True,
-                  stage1_source: str | None = None) -> list[str]:
+                  stage1_source: str | None = None,
+                  use_cache: bool = False) -> list[str]:
     """
     Stage 1 — Coarse filter. Returns a list of candidate ticker strings.
 
@@ -109,6 +169,14 @@ def run_ml_stage1(min_price: float = None,
       • Price ≥ $5 (avoid penny stocks)
       • Avg volume ≥ 300K shares (liquidity)
       • No fundamental filter — pure technical system
+
+    Parameters
+    ----------
+    use_cache : bool
+        If True, load the previously saved ticker list from
+        data/ml_universe_cache.json instead of hitting finviz/NASDAQ FTP.
+        All three ML scan modes (standard, triple, combined) share the
+        same cache file so a single fresh download covers every mode.
     """
     from modules.data_pipeline import get_universe
 
@@ -116,7 +184,20 @@ def run_ml_stage1(min_price: float = None,
     min_avg_vol = min_avg_vol or getattr(C, "ML_MIN_AVG_VOLUME", 300_000)
     stage1_source = (stage1_source or getattr(C, "STAGE1_SOURCE", "finviz")).lower()
 
-    # ── NASDAQ FTP route ───────────────────────────────────────────────────
+    # ── Fast-path: return cached universe ─────────────────────────────────
+    if use_cache:
+        cached = _load_universe_cache()
+        if cached:
+            tickers = cached["tickers"]
+            saved_at = cached.get("saved_at", "")
+            _progress("Stage 1", 10,
+                      f"✓ 使用快取股票清單 ({len(tickers):,} 個, 儲存於 {saved_at}) Use cached universe")
+            logger.info("[ML Stage1] Using cached universe: %d tickers saved at %s", len(tickers), saved_at)
+            return tickers
+        else:
+            _progress("Stage 1", 2, "⚠ 快取不存在，將重新下載 Cache not found, downloading fresh…")
+            logger.warning("[ML Stage1] use_cache=True but no cache found; downloading fresh data")
+
     if stage1_source == "nasdaq_ftp":
         _progress("Stage 1", 2, "連接 NASDAQ FTP 中… Connecting to NASDAQ FTP…")
         logger.info("[ML Stage1] Source: NASDAQ FTP (price>%.0f, vol>%d)", min_price, min_avg_vol)
@@ -132,6 +213,7 @@ def run_ml_stage1(min_price: float = None,
                            and str(t).strip().replace("-", "").isalpha()]
                 _progress("Stage 1", 10, f"✓ Stage 1 完成 (NASDAQ FTP): {len(tickers):,} 個候選股票")
                 logger.info("[ML Stage1] ✓ NASDAQ FTP: %d candidates in %.1fs", len(tickers), elapsed)
+                _save_universe_cache(tickers, source="nasdaq_ftp")
                 return tickers
             else:
                 logger.warning("[ML Stage1] NASDAQ FTP returned empty, falling back to finvizfinance")
@@ -197,6 +279,7 @@ def run_ml_stage1(min_price: float = None,
     if tickers:
         _progress("Stage 1", 10, f"✓ Stage 1 完成: {len(tickers):,} 個候選股票")
         logger.info("[ML Stage1] ✓ %d raw candidates", len(tickers))
+        _save_universe_cache(tickers, source=stage1_source)
     else:
         _progress("Stage 1", 10, "⚠ Stage 1 未找到候選股票")
         logger.warning("[ML Stage1] No candidates found")
@@ -657,6 +740,7 @@ def _save_scan_results_csv(df_passed: pd.DataFrame, df_all: pd.DataFrame,
 def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
                 top_n: Optional[int] = None, stage1_source: Optional[str] = None,
                 scanner_mode: str = "standard",
+                use_universe_cache: bool = False,
                 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Full 3-stage Martin Luk pullback scan.
@@ -670,6 +754,10 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     scanner_mode   : "standard" (existing 3-stage pipeline),
                      "triple"   (Martin Luk 3-channel pre-scan builds universe),
                      "combined" (triple + standard merged)
+    use_universe_cache : if True, Stage 1 loads tickers from the last saved
+                     cache file (data/ml_universe_cache.json) instead of
+                     hitting finviz / NASDAQ FTP. All three ML scan modes
+                     share the same cache file.
 
     Returns:
         (df_passed, df_all) where:
@@ -699,12 +787,16 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
             logger.warning("[ML Scan] Could not check market environment: %s", exc)
 
     # ── Stage 1 ───────────────────────────────────────────────────────────
-    candidates = run_ml_stage1(verbose=verbose, stage1_source=stage1_source)
+    candidates = run_ml_stage1(verbose=verbose, stage1_source=stage1_source,
+                               use_cache=use_universe_cache)
     if _is_cancelled():
         return pd.DataFrame(), pd.DataFrame()
     if not candidates:
         _progress("Error", 100, "Stage 1 未找到候選股票")
         return pd.DataFrame(), pd.DataFrame()
+    # Normalise to list[dict] — run_ml_stage1 returns list[str]
+    if candidates and isinstance(candidates[0], str):
+        candidates = [{"ticker": t, "channel": ""} for t in candidates]
     logger.info("[ML Scan] Stage1: %d candidates", len(candidates))
 
     # ── Optional: Triple-scanner channel pre-scan ─────────────────────────
@@ -743,7 +835,7 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
             logger.warning("[ML Scan] Triple scanner failed (continuing with standard): %s", exc)
 
     # ── Stage 2 ───────────────────────────────────────────────────────────
-    s2_rows = run_ml_stage2(candidates, verbose=verbose)
+    s2_rows = run_ml_stage2([r["ticker"] for r in candidates], verbose=verbose)
     if _is_cancelled():
         return pd.DataFrame(), pd.DataFrame()
     if not s2_rows:
