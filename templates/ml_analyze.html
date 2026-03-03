@@ -222,6 +222,34 @@
     </div>
   </div>
 
+  <!-- Row 2b: AVWAP Analysis + Entry Levels (Chapter 6) -->
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-md-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-bullseye me-1" style="color:#d2a8ff"></i>
+          AVWAP 分析 Anchored VWAP Analysis
+          <small class="text-secondary ms-1">Chapter 6</small>
+        </div>
+        <div class="card-body" id="avwapAnalysisArea">
+          <div class="text-secondary text-center" style="font-size:12px">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-currency-dollar me-1" style="color:#3fb950"></i>
+          入場價位 Entry Levels
+          <small class="text-secondary ms-1">量化參考</small>
+        </div>
+        <div class="card-body" id="entryLevelsArea">
+          <div class="text-secondary text-center" style="font-size:12px">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Row 3: Daily Chart -->
   <div class="row g-3 mb-3">
     <div class="col-12">
@@ -422,6 +450,31 @@
             <div id="watchSlotBContainer" style="height:420px;background:#0d1117;overflow:hidden">
               <div class="text-center py-5 text-secondary"><div class="spinner-border spinner-border-sm" style="color:#3fb950"></div></div>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ML Watch Score + Dynamic Trade Plan -->
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-lg-5">
+        <div class="card h-100">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-speedometer2 me-1" style="color:#e3b341"></i>動態評分 Watch Score</span>
+            <span id="mlWatchScoreBadge" class="badge bg-secondary" style="font-size:13px">—</span>
+          </div>
+          <div class="card-body" id="mlWatchScoreArea">
+            <div class="text-secondary text-center" style="font-size:12px">等待盤中數據…</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-7">
+        <div class="card h-100">
+          <div class="card-header">
+            <i class="bi bi-signpost-split me-1" style="color:#3fb950"></i>動態交易計劃 Live Trade Plan
+          </div>
+          <div class="card-body" id="mlWatchTradePlanArea">
+            <div class="text-secondary text-center" style="font-size:12px">等待盤中數據…</div>
           </div>
         </div>
       </div>
@@ -662,10 +715,12 @@ function renderAnalysis(r) {
     renderPremktPlan(r);  // Populate premarket plan with daily analysis
   }
 
-  // New areas: Decision Tree, Scorecard, Short Research
+  // New areas: Decision Tree, Scorecard, Short Research, AVWAP, Entry Levels
   renderDecisionTree(r.decision_tree);
   renderScorecard(r.pullback_scorecard);
   renderShortResearch(r.short_research);
+  renderAvwapAnalysis(r.avwap_analysis);
+  renderEntryLevels(r.entry_levels);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -674,21 +729,24 @@ function renderAnalysis(r) {
 function renderDecisionTree(dt) {
   const el = document.getElementById('dtArea');
   if (!el) return;
-  if (!dt || !dt.steps) {
+  // Backend returns 'questions' (array) and 'signal' (GO/CAUTION/NO-GO)
+  const items = dt ? (dt.questions || dt.steps || []) : [];
+  const verdict = dt ? (dt.signal || dt.verdict || '') : '';
+  if (!dt || items.length === 0) {
     el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:13px">— 暫無數據 —</div>';
     return;
   }
-  const verdictCls = dt.verdict === 'GO' ? 'text-success' : dt.verdict === 'CAUTION' ? 'text-warning' : 'text-danger';
-  const verdictIcon = dt.verdict === 'GO' ? '✓' : dt.verdict === 'CAUTION' ? '△' : '✗';
-  const stepsHtml = (dt.steps || []).map((s, i) =>
+  const verdictCls = verdict === 'GO' ? 'text-success' : verdict === 'CAUTION' ? 'text-warning' : 'text-danger';
+  const verdictIcon = verdict === 'GO' ? '✓' : verdict === 'CAUTION' ? '△' : '✗';
+  const stepsHtml = items.map((s, i) =>
     `<div class="d-flex align-items-start mb-1" style="font-size:11px">
       <span class="me-1 fw-bold ${s.passed ? 'text-success' : 'text-danger'}">${s.passed ? '✓' : '✗'}</span>
-      <span class="${s.passed ? '' : 'text-secondary'}">Q${i + 1}: ${s.question_zh || s.question || ''}</span>
+      <span class="${s.passed ? '' : 'text-secondary'}">Q${i + 1}: ${s.label || s.question_zh || s.question || ''}</span>
     </div>`
   ).join('');
   el.innerHTML = `
     <div class="text-center mb-3">
-      <span class="fw-bold ${verdictCls}" style="font-size:1.6rem">${verdictIcon} ${dt.verdict}</span>
+      <span class="fw-bold ${verdictCls}" style="font-size:1.6rem">${verdictIcon} ${verdict}</span>
       <div class="text-secondary mt-1" style="font-size:12px">${dt.pass_count || 0}/9 步通過</div>
     </div>
     <div>${stepsHtml}</div>`;
@@ -750,6 +808,156 @@ function renderShortResearch(sr) {
       <div class="text-success mb-2" style="font-size:13px">✓ 無空頭訊號</div>
       <div class="text-secondary" style="font-size:11px">${sr.research_note || ''}</div>`;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * AVWAP Analysis — Chapter 6 Anchored VWAP position + signals
+ * ════════════════════════════════════════════════════════════════════════ */
+function renderAvwapAnalysis(aa) {
+  const el = document.getElementById('avwapAnalysisArea');
+  if (!el) return;
+  if (!aa) {
+    el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:12px">— 暫無 AVWAP 數據 —</div>';
+    return;
+  }
+  function px(v) { return v != null ? ('$' + parseFloat(v).toFixed(2)) : '—'; }
+  function pct(v) { return v != null ? (v >= 0 ? '+' : '') + parseFloat(v).toFixed(2) + '%' : '—'; }
+
+  // Signal badge
+  const sigMap = {
+    BULLISH:         { cls: 'bg-success',  zh: '看好' },
+    NEUTRAL_BULLISH: { cls: 'bg-info',     zh: '中性偏好' },
+    NEUTRAL:         { cls: 'bg-secondary', zh: '中性' },
+    BEARISH:         { cls: 'bg-danger',   zh: '看淡' },
+  };
+  const sm = sigMap[aa.signal] || sigMap.NEUTRAL;
+
+  let html = '';
+  // Position + Signal
+  html += `<div class="d-flex align-items-center gap-2 mb-2">
+    <span class="badge ${sm.cls}" style="font-size:11px">${sm.zh}</span>
+    <span style="font-size:11px;color:#8b949e">${aa.detail_zh || ''}</span>
+  </div>`;
+
+  // AVWAP price table
+  html += `<table class="table table-sm table-borderless mb-2" style="font-size:11px">
+    <tbody>
+      <tr>
+        <td style="color:#8b949e;width:45%"><i class="bi bi-arrow-up-circle me-1" style="color:#f85149"></i>阻力 AVWAP (Swing High)</td>
+        <td class="text-end fw-bold">${px(aa.avwap_high_price)}</td>
+        <td class="text-end" style="color:${aa.above_avwap_high ? '#3fb950' : '#f85149'}">${aa.above_avwap_high ? '▲ 上方' : '▼ 下方'} ${pct(aa.prox_high_pct)}</td>
+      </tr>
+      <tr>
+        <td style="color:#8b949e"><i class="bi bi-arrow-down-circle me-1" style="color:#3fb950"></i>支撐 AVWAP (Swing Low)</td>
+        <td class="text-end fw-bold">${px(aa.avwap_low_price)}</td>
+        <td class="text-end" style="color:${aa.above_avwap_low ? '#3fb950' : '#f85149'}">${aa.above_avwap_low ? '▲ 上方' : '▼ 下方'} ${pct(aa.prox_low_pct)}</td>
+      </tr>
+    </tbody>
+  </table>`;
+
+  // Trade signals
+  if (aa.trade_signals && aa.trade_signals.length > 0) {
+    html += '<div class="mt-1">';
+    aa.trade_signals.forEach(function(sig) {
+      const sentMap = { bullish: 'border-left:3px solid #3fb950;background:#0a1f0a',
+                        bearish: 'border-left:3px solid #f85149;background:#1a0000',
+                        neutral: 'border-left:3px solid #e3b341;background:#1a1000' };
+      const st = sentMap[sig.sentiment] || sentMap.neutral;
+      html += `<div class="px-2 py-1 mb-1 rounded-end" style="${st};font-size:10px">${sig.zh}</div>`;
+    });
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Entry Levels — quantified EMA/AVWAP/support/resistance + ideal zone
+ * ════════════════════════════════════════════════════════════════════════ */
+function renderEntryLevels(lv) {
+  const el = document.getElementById('entryLevelsArea');
+  if (!el) return;
+  if (!lv) {
+    el.innerHTML = '<div class="text-secondary text-center py-2" style="font-size:12px">— 暫無數據 —</div>';
+    return;
+  }
+  function px(v) { return v != null ? ('$' + parseFloat(v).toFixed(2)) : '—'; }
+  function pctBadge(v) {
+    if (v == null) return '';
+    const c = v >= 0 ? '#3fb950' : '#f85149';
+    return `<span style="color:${c};font-size:10px">(${v >= 0 ? '+' : ''}${parseFloat(v).toFixed(2)}%)</span>`;
+  }
+  let html = '';
+
+  // EMA levels
+  html += `<table class="table table-sm table-borderless mb-2" style="font-size:11px">
+    <thead><tr><th style="color:#8b949e;font-weight:500">EMA</th><th class="text-end" style="color:#8b949e">價格</th><th class="text-end" style="color:#8b949e">距離</th></tr></thead>
+    <tbody>`;
+  [9, 21, 50, 150].forEach(function(p) {
+    const v = lv['ema' + p];
+    const d = lv['ema' + p + '_pct'];
+    const isBelow = d != null && d < 0;
+    html += `<tr>
+      <td><span style="color:${p <= 21 ? '#58a6ff' : '#e3b341'}">EMA ${p}</span></td>
+      <td class="text-end fw-bold">${px(v)}</td>
+      <td class="text-end">${pctBadge(d)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+
+  // Ideal entry zone
+  if (lv.ideal_entry_low || lv.ideal_entry_high) {
+    html += `<div class="p-2 rounded mb-2" style="background:#0d2818;border:1px solid #238636;font-size:11px">
+      <i class="bi bi-bullseye me-1" style="color:#3fb950"></i>
+      <strong>理想入場區</strong>：${px(lv.ideal_entry_low)} — ${px(lv.ideal_entry_high)}
+    </div>`;
+  }
+
+  // Max chase price
+  if (lv.max_chase_price) {
+    html += `<div class="p-2 rounded mb-2" style="background:#200000;border:1px solid #da3633;font-size:11px">
+      <i class="bi bi-exclamation-triangle me-1" style="color:#f85149"></i>
+      <strong>追價上限</strong>：${px(lv.max_chase_price)} <span style="color:#8b949e">(LOD ${px(lv.lod)} + 3%)</span>
+    </div>`;
+  }
+
+  // Support levels
+  if (lv.supports && lv.supports.length > 0) {
+    html += '<div class="mb-1" style="font-size:10px;color:#3fb950"><strong>支撐位</strong></div>';
+    lv.supports.forEach(function(s) {
+      const w = Math.min(100, Math.max(20, 100 - s.distance_pct * 15));
+      html += `<div class="d-flex justify-content-between align-items-center mb-1" style="font-size:10px">
+        <span style="color:#8b949e">${s.label}</span>
+        <div class="d-flex align-items-center gap-2">
+          <div style="width:60px;height:4px;background:#21262d;border-radius:2px;overflow:hidden">
+            <div style="width:${w}%;height:100%;background:#3fb950;border-radius:2px"></div>
+          </div>
+          <span class="fw-bold">${px(s.price)}</span>
+          <span style="color:#8b949e">-${s.distance_pct}%</span>
+        </div>
+      </div>`;
+    });
+  }
+
+  // Resistance levels
+  if (lv.resistances && lv.resistances.length > 0) {
+    html += '<div class="mt-2 mb-1" style="font-size:10px;color:#f85149"><strong>阻力位</strong></div>';
+    lv.resistances.forEach(function(s) {
+      const w = Math.min(100, Math.max(20, 100 - s.distance_pct * 15));
+      html += `<div class="d-flex justify-content-between align-items-center mb-1" style="font-size:10px">
+        <span style="color:#8b949e">${s.label}</span>
+        <div class="d-flex align-items-center gap-2">
+          <div style="width:60px;height:4px;background:#21262d;border-radius:2px;overflow:hidden">
+            <div style="width:${w}%;height:100%;background:#f85149;border-radius:2px"></div>
+          </div>
+          <span class="fw-bold">${px(s.price)}</span>
+          <span style="color:#8b949e">+${s.distance_pct}%</span>
+        </div>
+      </div>`;
+    });
+  }
+
+  el.innerHTML = html;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -853,42 +1061,139 @@ function renderMlCommentary(r) {
   const sdesc = setupDesc[setupCode] || `\u672a\u8b58\u5225\u5f62\u614b (${setupCode})\u3002`;
   html += `<div class="cmt-info"><strong>${setupCode}</strong>\uff08\u4fe1\u5fc3\u5ea6 ${setupConf}%\uff09\uff1a${sdesc}</div>`;
 
-  // ── Section 3: What Martin would watch ─────────────────────────────────
+  // ── Section 3: What Martin would watch (QUANTIFIED) ─────────────────
   html += '<div class="mt-3 mb-2"><strong style="font-size:13px;color:#e3b341"><i class="bi bi-eye me-1"></i>Martin \u5165\u5834\u6ce8\u610f\u4e8b\u9805</strong></div>';
+  const el_data = r.entry_levels || {};
+  const avwap_a = r.avwap_analysis || {};
   const watchPoints = [];
 
-  // Based on setup type
+  // Helper: format price with $ sign
+  function fmtPx(v) { return v != null ? ('$' + parseFloat(v).toFixed(2)) : '\u2014'; }
+
+  // Based on setup type \u2014 quantified
   if (setupCode === 'PB_EMA' || setupCode === 'BR_RETEST') {
-    watchPoints.push('\u78ba\u8a8d\u56de\u8abf\u65e5\u6210\u4ea4\u91cf<strong>\u8457\u5be6\u840e\u7e2e</strong>\uff0c\u7d55\u5c0d\u4e0d\u8981\u5728\u9ad8\u6210\u4ea4\u91cf\u56de\u8abf\u65e5\u5165\u5834');
-    watchPoints.push('\u5f85\u80a1\u50f9<strong>\u53cd\u5f48\u81f3 21 EMA \u4e0a\u65b9</strong>\u4e14\u6613\u65e5\u6536\u9234\u8207\u4e0a\u65e5\u6536\u9234\u76f8\u8fd1\u6216\u9ad8\u65bc\u4e0a\u65e5\u6642\u624d\u5165\u5834');
+    watchPoints.push({
+      text: '\u78ba\u8a8d\u56de\u8abf\u65e5\u6210\u4ea4\u91cf<strong>\u8457\u5be6\u840e\u7e2e</strong>\uff0c\u7d55\u5c0d\u4e0d\u8981\u5728\u9ad8\u6210\u4ea4\u91cf\u56de\u8abf\u65e5\u5165\u5834',
+      sentiment: 'neutral'
+    });
+    const ema21_px = el_data.ema21;
+    const prev_close = el_data.prev_close;
+    watchPoints.push({
+      text: '\u5f85\u80a1\u50f9<strong>\u53cd\u5f48\u81f3 21 EMA ' + fmtPx(ema21_px) + ' \u4e0a\u65b9</strong>\u4e14\u6613\u65e5\u6536\u76e4' +
+            (prev_close ? ' \u2265 \u524d\u65e5\u6536\u76e4 ' + fmtPx(prev_close) : ' \u8207\u4e0a\u65e5\u6536\u76e4\u76f8\u8fd1\u6216\u9ad8\u65bc\u4e0a\u65e5') + '\u6642\u624d\u5165\u5834',
+      sentiment: 'bullish'
+    });
   }
   if (setupCode === 'EP') {
-    watchPoints.push('\u8df3\u7a7a\u7f3a\u53e3\u5165\u5834\uff1a\u5728<strong>\u958b\u5e02\u524d 30 \u5206\u9418</strong>\u6c7a\u5b9a\u662f\u5426\u5165\u5834\uff0c\u907f\u514d\u5728\u958b\u5e02\u5377\u52d5\u671f\u9032\u5165');
-    watchPoints.push('\u786e\u8a8d\u7f3a\u53e3\u5f8c\u80a1\u50f9<strong>\u4e0d\u56de\u586b\u7f3a\u53e3</strong>\uff0c\u5982\u56de\u586b\u5247\u8a8d\u8f38\u51fa\u5834');
+    watchPoints.push({
+      text: '\u8df3\u7a7a\u7f3a\u53e3\u5165\u5834\uff1a\u5728<strong>\u958b\u5e02\u524d 30 \u5206\u9418</strong>\u6c7a\u5b9a\u662f\u5426\u5165\u5834\uff0c\u907f\u514d\u5728\u958b\u5e02\u5377\u52d5\u671f\u9032\u5165',
+      sentiment: 'neutral'
+    });
+    watchPoints.push({
+      text: '\u78ba\u8a8d\u7f3a\u53e3\u5f8c\u80a1\u50f9<strong>\u4e0d\u56de\u586b\u7f3a\u53e3</strong>\uff0c\u5982\u56de\u586b\u5247\u8a8d\u8f38\u51fa\u5834',
+      sentiment: 'bearish'
+    });
   }
 
-  // Based on dim scores
+  // Based on dim scores \u2014 quantified
   if ((aD.stacking || '').includes('\u5b8c\u7f8e')) {
-    watchPoints.push('EMA \u5b8c\u7f8e\u6392\u5217\u2014\u8a72\u80a1\u7b26\u5408 Martin \u7684\u6838\u5fc3\u7be9\u9078\u689d\u4ef6\uff0c\u8da8\u52e2\u4e2d\u56de\u8abf\u901a\u5e38\u5c31\u662f\u6700\u597d\u7684\u5165\u5834\u6a5f\u6703');
+    // EMA 完美排列 → 顯示理想回調入場區
+    const idealLow  = el_data.ema21 ? fmtPx(el_data.ema21) : 'EMA21';
+    const idealHigh = el_data.ema9  ? fmtPx(el_data.ema9)  : 'EMA9';
+    watchPoints.push({
+      text: 'EMA \u5b8c\u7f8e\u6392\u5217 \u2714 \u2014 <strong>\u7406\u60f3\u56de\u8abf\u5165\u5834\u5340</strong>\uff1a' + idealLow + ' (EMA21) \u81f3 ' + idealHigh + ' (EMA9)\u3002Martin \u8a8d\u70ba\u8da8\u52e2\u4e2d\u56de\u8abf\u81f3 EMA21 \u9644\u8fd1\u5c31\u662f\u6700\u597d\u7684\u5165\u5834\u6a5f\u6703\uff0c\u8d8a\u63a5\u8fd1 EMA21 \u8d8a\u7406\u60f3\u3002',
+      sentiment: 'bullish'
+    });
+  }
+  if ((aD.stacking || '').includes('\u5b8c\u7f8e') && el_data.ema50) {
+    watchPoints.push({
+      text: '\u5982\u56de\u8abf\u6df1\u5ea6\u8d85\u904e EMA50 ' + fmtPx(el_data.ema50) + '\uff0c\u53ef\u80fd\u8868\u793a\u8da8\u52e2\u8f49\u5f31\u2014\u2014\u61c9\u964d\u4f4e\u5009\u4f4d\u6216\u89c0\u671b\u3002',
+      sentiment: 'neutral'
+    });
   }
   if (cD.support_proximity) {
-    watchPoints.push(`\u80a1\u50f9\u63a5\u8fd1\u652f\u6490 AVWAP \u2014 <em>${cD.support_proximity}</em>\uff0c\u76e3\u632f\u7b49\u5019\u78ba\u8a8d\u652f\u6490\u4f5c\u7528`);
+    watchPoints.push({
+      text: '\u80a1\u50f9\u63a5\u8fd1\u652f\u6490 AVWAP ' + fmtPx(el_data.avwap_low) + ' \u2014 <em>' + cD.support_proximity + '</em>\uff0c\u76e3\u632f\u7b49\u5019\u78ba\u8a8d\u652f\u6490\u4f5c\u7528',
+      sentiment: 'bullish'
+    });
   }
   if ((bD.extended || '').includes('\u904e\u5ea6')) {
-    watchPoints.push('\u26a0\ufe0f \u80a1\u50f9\u904e\u5ea6\u5ef6\u4f38\uff0cMartin \u4e0d\u6703\u8ffd\u9ad8\uff0c\u7b49\u5f85<strong>\u6b63\u5e38\u7684\u56de\u8abf\u78ba\u8a8d\u652f\u6490</strong>\u524d\u518d\u8003\u616e\u5165\u5834');
+    watchPoints.push({
+      text: '\u26a0\ufe0f \u80a1\u50f9\u904e\u5ea6\u5ef6\u4f38\uff0cMartin \u4e0d\u6703\u8ffd\u9ad8\uff0c\u7b49\u5f85<strong>\u6b63\u5e38\u7684\u56de\u8abf\u78ba\u8a8d\u652f\u6490</strong>\u524d\u518d\u8003\u616e\u5165\u5834',
+      sentiment: 'bearish'
+    });
   }
   if (e.is_veto) {
-    watchPoints.push('\u274c \u6b62\u640d\u5927\u65bc 2.5%\uff0cMartin \u4e0d\u4f1a\u9032\u5165\u6b64\u8001\uff0c\u7b49\u5f85\u80a1\u50f9\u7d50\u69cb\u6539\u5584\uff08\u66f4\u7dca\u5bc6\u7684\u79fb\u52d5\u6a21\u5f0f\uff09');
+    watchPoints.push({
+      text: '\u274c \u6b62\u640d\u5927\u65bc 2.5%\uff0cMartin \u4e0d\u4f1a\u9032\u5165\u6b64\u7968\uff0c\u7b49\u5f85\u80a1\u50f9\u7d50\u69cb\u6539\u5584\uff08\u66f4\u7dca\u5bc6\u7684\u79fb\u52d5\u6a21\u5f0f\uff09',
+      sentiment: 'bearish'
+    });
   }
 
-  // General watchpoints
-  watchPoints.push('\u91cd\u8981\u652f\u6490\u4f4d\uff1aEMA9 (\u6700\u77ed\u671f\u653f\u7b56)\u3001EMA21 (\u4e2d\u671f\u8da8\u52e2)\u3001\u652f\u6490 AVWAP \u4e09\u5c64\u652f\u6490\u5171\u5c45\u70ba\u7406\u683c\u5165\u5834\u6dfb');
-  watchPoints.push('\u5165\u5834\u5f8c\u7b2c 1 \u5929\uff1a\u786e\u8a8d<strong>\u6536\u9234\u9ad8\u65bc\u958b\u9234</strong>\uff0c\u5426\u5247\u5373\u65e5\u51fa\u5834 (Martin \u4e0d\u6301\u6709\u8f38\u5bb6)');
+  // AVWAP trading signals from backend analysis
+  if (avwap_a.trade_signals && avwap_a.trade_signals.length > 0) {
+    avwap_a.trade_signals.forEach(function(sig) {
+      watchPoints.push({
+        text: sig.zh,
+        sentiment: sig.sentiment || 'neutral'
+      });
+    });
+  }
+
+  // Quantified support levels
+  if (el_data.supports && el_data.supports.length > 0) {
+    const supTxt = el_data.supports.slice(0, 3).map(function(s) {
+      return s.label + ' ' + fmtPx(s.price) + ' (\u8ddd ' + s.distance_pct + '%)';
+    }).join(' \u2192 ');
+    watchPoints.push({
+      text: '\u91cd\u8981\u652f\u6490\u4f4d\uff1a' + supTxt + ' \u2014 \u4e09\u5c64\u652f\u6490\u5171\u5c45\u70ba\u7406\u60f3\u5165\u5834\u9ede',
+      sentiment: 'bullish'
+    });
+  }
+
+  // Max chase price
+  if (el_data.max_chase_price) {
+    watchPoints.push({
+      text: '\u8ffd\u50f9\u4e0a\u9650 ' + fmtPx(el_data.max_chase_price) + '\uff08\u7576\u65e5\u4f4e\u9ede ' + fmtPx(el_data.lod) + ' + 3%\uff09\uff0c\u8d85\u904e\u6b64\u50f9\u7981\u6b62\u8ffd\u5165',
+      sentiment: 'bearish'
+    });
+  }
+
+  // Entry confirmation \u2014 FIXED: \u6536\u9234 -> \u6536\u76e4
+  watchPoints.push({
+    text: '\u5165\u5834\u5f8c\u7b2c 1 \u5929\uff1a\u78ba\u8a8d<strong>\u6536\u76e4\u9ad8\u65bc\u958b\u76e4</strong>\uff0c\u5426\u5247\u5373\u65e5\u51fa\u5834 (Martin \u4e0d\u6301\u6709\u8f38\u5bb6)',
+    sentiment: 'neutral'
+  });
   if (stars >= 4.0) {
-    watchPoints.push('\u2605 \u8a55\u5206 ' + stars.toFixed(1) + '\u2605\uff0c\u78ba\u8a8d\u50c5\u7136\u6709\u6548 \u2014 Martin \u6703\u7528\u6b64\u5206\u6578\u51b3\u5b9a\u5009\u4f4d\u5927\u5c0f\uff1a' + stars.toFixed(1) + '\u2605 = ' + (stars >= 4.5 ? '15-25' : '10-15') + '% \u8cc7\u91d1\u914d\u7f6e');
+    watchPoints.push({
+      text: '\u2605 \u8a55\u5206 ' + stars.toFixed(1) + '\u2605\uff0c\u78ba\u8a8d\u5009\u7136\u6709\u6548 \u2014 Martin \u6703\u7528\u6b64\u5206\u6578\u6c7a\u5b9a\u5009\u4f4d\u5927\u5c0f\uff1a' + stars.toFixed(1) + '\u2605 = ' + (stars >= 4.5 ? '15-25' : '10-15') + '% \u8cc7\u91d1\u914d\u7f6e',
+      sentiment: 'bullish'
+    });
   }
 
-  watchPoints.forEach(p => { html += `<div class="cmt-info" style="border-left-color:#e3b341;background:#1a1000">\ud83d\udc40 ${p}</div>`; });
+  // Render with sentiment badges
+  const sentimentMeta = {
+    bullish:  { cls: 'border-left-color:#3fb950;background:#0a1f0a', badge: '\u770b\u597d', badgeCls: 'bg-success' },
+    bearish:  { cls: 'border-left-color:#f85149;background:#1a0000', badge: '\u770b\u6de1', badgeCls: 'bg-danger' },
+    neutral:  { cls: 'border-left-color:#e3b341;background:#1a1000', badge: '\u4e2d\u6027', badgeCls: 'bg-warning text-dark' },
+  };
+  const bullCount = watchPoints.filter(w => w.sentiment === 'bullish').length;
+  const bearCount = watchPoints.filter(w => w.sentiment === 'bearish').length;
+  const overallSentiment = bullCount > bearCount + 1 ? 'bullish' : bearCount > bullCount + 1 ? 'bearish' : 'neutral';
+  const overallMeta = sentimentMeta[overallSentiment] || sentimentMeta.neutral;
+  html += '<div class="d-flex align-items-center gap-2 mb-2"><span class="badge ' + overallMeta.badgeCls + '" style="font-size:11px">' + overallMeta.badge + '</span><span style="font-size:11px;color:#8b949e">\u6574\u9ad4\u50be\u5411 (\u770b\u597d:' + bullCount + ' / \u770b\u6de1:' + bearCount + ' / \u4e2d\u6027:' + (watchPoints.length - bullCount - bearCount) + ')</span></div>';
+
+  // Sort: bullish first, then neutral, then bearish
+  const sentimentOrder = { bullish: 0, neutral: 1, bearish: 2 };
+  watchPoints.sort(function(a, b) {
+    return (sentimentOrder[a.sentiment] || 1) - (sentimentOrder[b.sentiment] || 1);
+  });
+
+  watchPoints.forEach(function(wp) {
+    const meta = sentimentMeta[wp.sentiment] || sentimentMeta.neutral;
+    html += '<div class="cmt-info" style="' + meta.cls + '"><span class="badge ' + meta.badgeCls + ' me-1" style="font-size:9px">' + meta.badge + '</span> ' + wp.text + '</div>';
+  });
+
 
   el.innerHTML = html;
 }
@@ -1316,6 +1621,9 @@ function initWatchMode(ticker) {
     loadSlotChart('B', _watchSlots.B.type, ticker);
   }, 200);
 
+  // Fetch ML watch signals (dynamic scoring, trade plan, VWAP)
+  fetchMlWatchSignals(ticker);
+
   // Start auto-refresh every 5 minutes
   if (_mlWatchInterval) clearInterval(_mlWatchInterval);
   _mlWatchInterval = setInterval(() => refreshWatchMode(ticker), 300000);
@@ -1332,7 +1640,176 @@ function refreshWatchMode(ticker) {
       loadSlotChart(slotId, type, ticker);
     }
   });
+  // Refresh ML watch signals (dynamic scoring, trade plan)
+  fetchMlWatchSignals(ticker);
   startCountdownTimer();
+}
+
+/* ── ML Watch Signals Fetch + Render ─────────────────────────────────── */
+
+async function fetchMlWatchSignals(ticker) {
+  try {
+    const resp = await fetch('/api/ml/watch_signals/' + ticker);
+    if (!resp.ok) throw new Error('API ' + resp.status);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'No data');
+
+    // Store AVWAP + daily EMA values globally for chart overlays
+    window._mlWatchAvwapHigh = data.avwap_high || 0;
+    window._mlWatchAvwapLow  = data.avwap_low  || 0;
+    window._mlWatchDailyEmas = data.daily_emas  || {};
+
+    // Update price display
+    if (data.current_price) {
+      document.getElementById('watchPrice').textContent = '$' + data.current_price.toFixed(2);
+    }
+
+    // Render watch score
+    renderMlWatchScore(data);
+
+    // Render dynamic trade plan
+    renderMlWatchTradePlan(data);
+
+    // Enhanced intraday commentary from watch_signals
+    const status = getMarketStatus();
+    renderIntradayCommentary(data, status);
+
+    // Render premarket plan with richer data
+    renderPremktPlan(data);
+
+  } catch(e) {
+    console.warn('ML watch signals fetch failed:', e.message);
+  }
+}
+
+function renderMlWatchScore(data) {
+  const el = document.getElementById('mlWatchScoreArea');
+  const badge = document.getElementById('mlWatchScoreBadge');
+  if (!el) return;
+
+  const score = data.watch_score || 0;
+  const breakdown = data.watch_breakdown || [];
+  const ironRules = data.watch_iron_rules || [];
+
+  // Update badge
+  if (badge) {
+    const bgCls = score >= 70 ? 'bg-success' : score >= 40 ? 'bg-warning text-dark' : 'bg-danger';
+    badge.className = 'badge ' + bgCls;
+    badge.style.fontSize = '13px';
+    badge.textContent = score + '/100';
+  }
+
+  let html = '';
+
+  // Score gauge bar
+  const gaugeColor = score >= 70 ? '#3fb950' : score >= 40 ? '#e3b341' : '#f85149';
+  html += '<div class="mb-2"><div style="height:6px;background:#21262d;border-radius:3px;overflow:hidden">' +
+    '<div style="width:' + score + '%;height:100%;background:' + gaugeColor + ';border-radius:3px;transition:width 0.5s"></div></div></div>';
+
+  // Iron rules (blocking)
+  if (ironRules.length > 0) {
+    ironRules.forEach(function(ir) {
+      const bg = ir.severity === 'block' ? 'background:#200000;border:1px solid #da3633' : 'background:#1a1000;border:1px solid #9e6a03';
+      const icon = ir.severity === 'block' ? '🚫' : '⚠️';
+      html += '<div class="p-2 rounded mb-1" style="' + bg + ';font-size:10px">' + icon + ' <strong>' + ir.rule + '</strong>: ' + ir.msg + '</div>';
+    });
+  }
+
+  // Breakdown table
+  html += '<table class="table table-sm table-borderless mb-0" style="font-size:10px">';
+  breakdown.forEach(function(b) {
+    const ptsColor = b.pts > 0 ? '#3fb950' : b.pts < 0 ? '#f85149' : '#8b949e';
+    html += '<tr><td style="color:#8b949e;width:30%">' + b.dim + '</td>' +
+      '<td class="text-end" style="color:' + ptsColor + ';font-weight:bold;width:15%">' + (b.pts >= 0 ? '+' : '') + b.pts + '</td>' +
+      '<td style="color:#c9d1d9">' + b.note + '</td></tr>';
+  });
+  html += '</table>';
+
+  el.innerHTML = html;
+}
+
+function renderMlWatchTradePlan(data) {
+  const el = document.getElementById('mlWatchTradePlanArea');
+  if (!el) return;
+
+  const cp = data.current_price;
+  const orh = data.orh;
+  const orl = data.orl;
+  const lod = data.lod;
+  const hod = data.hod;
+  const chase = data.chase_status || {};
+  const vwap = data.vwap_status || {};
+  const ema = data.ema_status || {};
+  const avwapH = data.avwap_high;
+  const avwapL = data.avwap_low;
+  const dailyEmas = data.daily_emas || {};
+  const advice = data.setup_advice || 'monitoring';
+
+  function px(v) { return v != null ? ('$' + parseFloat(v).toFixed(2)) : '—'; }
+
+  let html = '';
+
+  // Advice badge
+  const adviceMap = {
+    strong_entry:      { cls: 'bg-success',   zh: '強勢入場' },
+    mid_entry_breakout:{ cls: 'bg-info',      zh: '中段突破機會' },
+    flush_v_recovery:  { cls: 'bg-success',   zh: 'V 形反彈' },
+    early_entry_watch: { cls: 'bg-warning text-dark', zh: 'OR 建立中' },
+    premarket_plan:    { cls: 'bg-secondary', zh: '盤前計劃' },
+    avoid_chase:       { cls: 'bg-danger',    zh: '禁止追高' },
+    monitoring:        { cls: 'bg-secondary', zh: '監視中' },
+  };
+  const am = adviceMap[advice] || adviceMap.monitoring;
+  html += '<div class="mb-2"><span class="badge ' + am.cls + '" style="font-size:12px">' + am.zh + '</span></div>';
+
+  // Key levels grid
+  html += '<div class="row g-2 mb-2">';
+  const levels = [
+    { label: 'ORH', val: orh, color: '#e3b341' },
+    { label: 'LOD', val: lod, color: '#f85149' },
+    { label: 'VWAP', val: vwap.price, color: '#ff9500' },
+    { label: 'EMA 21', val: dailyEmas.ema21 || ema.ema21, color: '#3fb950' },
+  ];
+  levels.forEach(function(lv) {
+    html += '<div class="col-6 col-md-3"><div style="background:#1a0a0a;border:1px solid #30363d;border-radius:6px;padding:6px;text-align:center">' +
+      '<div style="font-size:10px;color:#8b949e">' + lv.label + '</div>' +
+      '<div style="font-weight:bold;color:' + lv.color + '">' + px(lv.val) + '</div></div></div>';
+  });
+  html += '</div>';
+
+  // AVWAP levels
+  if (avwapH || avwapL) {
+    html += '<div class="d-flex gap-3 mb-2" style="font-size:11px">';
+    if (avwapH) html += '<span style="color:#d49fff">▲ AVWAP 阻力 ' + px(avwapH) + '</span>';
+    if (avwapL) html += '<span style="color:#58a6ff">▼ AVWAP 支撐 ' + px(avwapL) + '</span>';
+    html += '</div>';
+  }
+
+  // Chase warning
+  if (!chase.safe) {
+    html += '<div class="p-2 rounded mb-2" style="background:#200000;border:1px solid #da3633;font-size:11px">' +
+      '<i class="bi bi-exclamation-triangle me-1" style="color:#f85149"></i>' +
+      '<strong>追價警告</strong>：距 LOD +' + chase.chase_pct.toFixed(1) + '% — Martin 規則：>3% 禁止入場</div>';
+  }
+
+  // Dynamic entry rules
+  html += '<div style="font-size:11px;color:#8b949e;line-height:1.8;margin-top:4px">';
+  if (advice === 'strong_entry') {
+    html += '<div style="color:#3fb950">✅ ORH 突破 + EMA9 上方 + VWAP 上方 — 可入場，止損 LOD ' + px(lod) + '</div>';
+  } else if (advice === 'flush_v_recovery') {
+    html += '<div style="color:#3fb950">✅ V 形反彈確認 — 在恢復確認後入場，止損 Flush 低點</div>';
+  } else if (advice === 'mid_entry_breakout') {
+    html += '<div>📌 等待 5 分鐘突破前根柱高點確認</div>';
+  } else if (advice === 'early_entry_watch') {
+    html += '<div>⏳ 前 15 分鐘建立 Opening Range — 耐心等待</div>';
+  } else if (advice === 'avoid_chase') {
+    html += '<div style="color:#f85149">⛔ 距 LOD 太遠 — 等待回調至 EMA 或 VWAP 再考慮</div>';
+  } else {
+    html += '<div>👀 監視 EMA 9/21 排列、VWAP 支撐確認</div>';
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
 }
 
 /* ── Slot Management ─────────────────────────────────────────────────── */
@@ -1522,38 +1999,70 @@ function renderIntradayCommentary(signals, status) {
   const advice = signals.setup_advice || 'no_data';
   
   if (status.status === 'closed') {
-    html += `<div class=\"cmt-info\" style=\"border-color:#f85149;background:#1a0a0a\"><i class=\"bi bi-x-circle me-1\" style=\"color:#f85149\"></i><strong>美股現已收盤</strong> — 切換至<button class=\"btn btn-link p-0\" style=\"color:#3fb950\" onclick="switchMlMode('review')">複盤模式</button>查看完整分析</div>`;
+    html += '<div class="cmt-info" style="border-color:#f85149;background:#1a0a0a"><i class="bi bi-x-circle me-1" style="color:#f85149"></i><strong>美股現已收盤</strong> — 切換至<button class="btn btn-link p-0" style="color:#3fb950" onclick="switchMlMode(\'review\')">複盤模式</button>查看完整分析</div>';
   } else if (status.status === 'premarket') {
-    html += '<div class=\"cmt-warn\"><i class=\"bi bi-clock me-1\"></i><strong>盤前時段</strong> — 股票未開盤，數據行為不代表盤中表現</div>';
+    // Enhanced premarket: show daily AVWAP/EMA levels + Martin checklist
+    html += '<div class="cmt-warn"><i class="bi bi-clock me-1"></i><strong>盤前時段</strong> — Martin 的盤前檢查清單：</div>';
+    const dailyE = signals.daily_emas || {};
+    const avH = signals.avwap_high;
+    const avL = signals.avwap_low;
+    if (dailyE.ema21) html += '<div class="cmt-info" style="font-size:11px"><i class="bi bi-dash-circle me-1"></i>EMA 21 支撐位：$' + dailyE.ema21.toFixed(2) + ' — 回調入場目標</div>';
+    if (avL) html += '<div class="cmt-info" style="font-size:11px"><i class="bi bi-dash-circle me-1"></i>AVWAP 支撐：$' + avL.toFixed(2) + ' — 第二道防線</div>';
+    if (avH) html += '<div class="cmt-info" style="font-size:11px"><i class="bi bi-dash-circle me-1"></i>AVWAP 阻力：$' + avH.toFixed(2) + ' — 突破目標</div>';
+    html += '<div class="cmt-info" style="font-size:11px;color:#e3b341"><i class="bi bi-check2-circle me-1"></i>等待開盤後 15 分鐘 ORH 形成，勿在盤前入場</div>';
   } else {
-    // Market is open
-    const chasePct = signals.chase_pct || 0;
-    const emai9Diff = signals.ema9_diff || 0;
-    const ema21Diff = signals.ema21_diff || 0;
+    // Market is open — use rich signal data from watch_signals API
+    const chase = signals.chase_status || {};
+    const chasePct = chase.chase_pct || signals.chase_pct || 0;
+    const emaS = signals.ema_status || {};
+    const vwapS = signals.vwap_status || {};
+    const flushV = signals.flush_v_status || {};
+    const activeSignals = signals.active_signals || [];
     
+    // Primary advice
     if (advice === 'avoid_chase') {
-      html += '<div class=\"cmt-fail\"><i class=\"bi bi-exclamation-triangle me-1\"></i><strong>⛔ 禁止追高</strong> — 距 LOD 已 ' + chasePct.toFixed(1) + '%，Martin 規則：>3% 不進場</div>';
+      html += '<div class="cmt-fail"><i class="bi bi-exclamation-triangle me-1"></i><strong>⛔ 禁止追高</strong> — 距 LOD 已 +' + chasePct.toFixed(1) + '%，Martin 規則：>3% 不進場</div>';
+    } else if (advice === 'strong_entry') {
+      html += '<div class="cmt-pass"><i class="bi bi-lightning-charge me-1"></i><strong>✅ 強勢入場</strong> — ORH 突破 + EMA9 上方 + VWAP 上方，全部確認</div>';
+    } else if (advice === 'flush_v_recovery') {
+      html += '<div class="cmt-pass"><i class="bi bi-arrow-up me-1"></i><strong>✅ V 形反彈</strong> — Flush 深度 ' + (flushV.depth_pct || 0).toFixed(1) + '%，恢復 ' + (flushV.recovery_pct || 0).toFixed(0) + '%</div>';
     } else if (advice === 'mid_entry_breakout') {
-      html += '<div class=\"cmt-pass\"><i class=\"bi bi-lightning me-1\"></i><strong>✓ 5分鐘突破進場機會</strong> — 股票從支撐反彈，監視 5 分鐘前一根柱的突破</div>';
+      html += '<div class="cmt-pass"><i class="bi bi-lightning me-1"></i><strong>✓ 突破進場機會</strong> — EMA 21 上方 + VWAP 上方，監視 5 分鐘突破</div>';
     } else if (advice === 'early_entry_watch') {
-      html += '<div class=\"cmt-warn\"><i class=\"bi bi-hourglass-split me-1\"></i><strong>⏳ Opening Range 建立中</strong> — 等待首 15 分鐘完成，避免前 15 分鐘追入</div>';
+      html += '<div class="cmt-warn"><i class="bi bi-hourglass-split me-1"></i><strong>⏳ Opening Range 建立中</strong> — 等待首 15 分鐘完成</div>';
     } else {
-      html += '<div class=\"cmt-info\"><i class=\"bi bi-info-circle me-1\"></i><strong>監視中…</strong> — EMA 9 vs 21 排列、VWAP 支撐確認</div>';
+      html += '<div class="cmt-info"><i class="bi bi-info-circle me-1"></i><strong>監視中…</strong></div>';
     }
     
-    // Additional signals
-    if (emai9Diff > 0 && ema21Diff > 0) {
-      html += '<div class=\"cmt-pass\" style=\"border-left-color:#3fb950;background:#0a1a0a\"><i class=\"bi bi-check me-1\"></i>股價在 EMA 9 和 21 上方 ✓</div>';
-    } else if (emai9Diff < 0) {
-      html += '<div class=\"cmt-fail\"><i class=\"bi bi-dash me-1\"></i>⚠️ 股價跌穿 EMA 9 — 謹慎進場</div>';
+    // VWAP position signal
+    if (vwapS.above === true) {
+      html += '<div class="cmt-pass" style="border-left-color:#ff9500;background:#1a1000;font-size:11px"><i class="bi bi-check me-1"></i>VWAP $' + (vwapS.price || 0).toFixed(2) + ' 上方 (' + (vwapS.diff_pct >= 0 ? '+' : '') + (vwapS.diff_pct || 0).toFixed(2) + '%) — 多頭主導</div>';
+    } else if (vwapS.above === false) {
+      html += '<div class="cmt-fail" style="font-size:11px"><i class="bi bi-dash me-1"></i>⚠️ VWAP $' + (vwapS.price || 0).toFixed(2) + ' 下方 — 空方主導</div>';
     }
     
-    if (signals.flush_recovery) {
-      html += '<div class=\"cmt-pass\" style=\"border-left-color:#3fb950;background:#0a1a0a\"><i class=\"bi bi-arrow-up me-1\"></i>V 形反彈信號 ✓ — 股票從支撐快速恢復</div>';
+    // EMA position
+    if (emaS.above_both) {
+      html += '<div class="cmt-pass" style="border-left-color:#3fb950;background:#0a1a0a;font-size:11px"><i class="bi bi-check me-1"></i>股價在 EMA 9 和 21 上方 ✓</div>';
+    } else if (emaS.ema9_diff != null && emaS.ema9_diff < 0) {
+      html += '<div class="cmt-fail" style="font-size:11px"><i class="bi bi-dash me-1"></i>⚠️ 股價跌穿 EMA 9 — 謹慎進場</div>';
+    }
+    
+    // Flush V-recovery
+    if (flushV.detected) {
+      html += '<div class="cmt-pass" style="border-left-color:#3fb950;background:#0a1a0a;font-size:11px"><i class="bi bi-arrow-up me-1"></i>V 形反彈信號 ✓</div>';
+    }
+    
+    // Active AVWAP signal
+    const avwapI = signals.avwap_intraday || {};
+    if (avwapI.position === 'ABOVE_BOTH') {
+      html += '<div class="cmt-pass" style="font-size:11px"><i class="bi bi-bullseye me-1"></i>雙 AVWAP 上方 — 趨勢健康</div>';
+    } else if (avwapI.position === 'BELOW_BOTH') {
+      html += '<div class="cmt-fail" style="font-size:11px"><i class="bi bi-bullseye me-1"></i>雙 AVWAP 下方 — 空方主導</div>';
     }
   }
   
-  el.innerHTML = html || '<div class=\"text-secondary\">—</div>';
+  el.innerHTML = html || '<div class="text-secondary">—</div>';
 
   // Append to signal history log on every refresh
   try { appendWatchLog(signals, status); } catch(e) {}
@@ -1627,6 +2136,19 @@ async function _loadIntradayForSlot(slotId, interval, ticker) {
       const vw = slot.chart.addLineSeries({ color:'#ff9500', lineWidth:1.5, lineStyle:2, title:'', priceLineVisible:false, lastValueVisible:false });
       vw.setData(data.vwap); slot.series.vwap = vw;
     }
+    // AVWAP reference lines from daily analysis (stored by fetchMlWatchSignals)
+    if (window._mlWatchAvwapHigh && window._mlWatchAvwapHigh > 0) {
+      cs.createPriceLine({ price: window._mlWatchAvwapHigh, color:'#d49fff', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'AVWAP\u2191 $'+window._mlWatchAvwapHigh.toFixed(2) });
+    }
+    if (window._mlWatchAvwapLow && window._mlWatchAvwapLow > 0) {
+      cs.createPriceLine({ price: window._mlWatchAvwapLow, color:'#58a6ff', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'AVWAP\u2193 $'+window._mlWatchAvwapLow.toFixed(2) });
+    }
+    // Daily EMA reference lines
+    if (window._mlWatchDailyEmas) {
+      const de = window._mlWatchDailyEmas;
+      if (de.ema21) cs.createPriceLine({ price: de.ema21, color:'#3fb95066', lineWidth:1, lineStyle:1, axisLabelVisible:false, title:'D-EMA21' });
+      if (de.ema50) cs.createPriceLine({ price: de.ema50, color:'#e3b34166', lineWidth:1, lineStyle:1, axisLabelVisible:false, title:'D-EMA50' });
+    }
     // Populate legend with toggle buttons
     const legendEl = document.getElementById('watchSlot' + slotId + 'Legend');
     if (legendEl) {
@@ -1637,7 +2159,7 @@ async function _loadIntradayForSlot(slotId, interval, ticker) {
       legendEl.innerHTML = items.map(it =>
         `<span class="ind-toggle" id="ml-wch-${slotId}-${it.name}" onclick="toggleMlWatchSeries('${slotId}','${it.name}',this)">`+
         `<span style="display:inline-block;width:14px;height:2px;background:${it.color};vertical-align:middle"></span>&nbsp;${it.label}</span>`
-      ).join('');
+      ).join('') + '<span style="font-size:9px;color:#8b949e;margin-left:6px">(虛線=日線 AVWAP/EMA)</span>';
     }
     if (data.orh && data.orh > 0) cs.createPriceLine({ price:data.orh, color:'#e3b341', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'ORH $'+data.orh.toFixed(2) });
     if (data.lod && data.lod > 0) cs.createPriceLine({ price:data.lod, color:'#f85149', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'LOD $'+data.lod.toFixed(2) });
@@ -1701,11 +2223,36 @@ async function _loadDailyForSlot(slotId, ticker) {
       slot.chart.priceScale('vol').applyOptions({ scaleMargins:{top:0.82,bottom:0}, drawTicks:false, borderVisible:false });
       vs.setData(data.volume);
     }
+    slot.series = {};
     [['ema9','#00d4ff','EMA 9'],['ema21','#3fb950','EMA 21'],['ema50','#e3b341','EMA 50'],['ema150','#f85149','EMA 150']].forEach(([k,c,t]) => {
-      if (data[k] && data[k].length) slot.chart.addLineSeries({ color:c, lineWidth:1.5, title:t, priceLineVisible:false, lastValueVisible:false }).setData(data[k]);
+      if (data[k] && data[k].length) {
+        const s = slot.chart.addLineSeries({ color:c, lineWidth:1.5, title:t, priceLineVisible:false, lastValueVisible:false });
+        s.setData(data[k]); slot.series[k] = s;
+      }
     });
-    if (data.avwap_high && data.avwap_high.length) slot.chart.addLineSeries({ color:'#d49fff', lineWidth:1.5, lineStyle:2, title:'AVWAP 供給', priceLineVisible:false, lastValueVisible:false }).setData(data.avwap_high);
-    if (data.avwap_low  && data.avwap_low.length)  slot.chart.addLineSeries({ color:'#58a6ff', lineWidth:1.5, lineStyle:2, title:'AVWAP 支撐', priceLineVisible:false, lastValueVisible:false }).setData(data.avwap_low);
+    if (data.avwap_high && data.avwap_high.length) {
+      const ah = slot.chart.addLineSeries({ color:'#d49fff', lineWidth:1.5, lineStyle:2, title:'AVWAP 供給', priceLineVisible:false, lastValueVisible:false });
+      ah.setData(data.avwap_high); slot.series.avwap_high = ah;
+    }
+    if (data.avwap_low  && data.avwap_low.length) {
+      const al = slot.chart.addLineSeries({ color:'#58a6ff', lineWidth:1.5, lineStyle:2, title:'AVWAP 支撐', priceLineVisible:false, lastValueVisible:false });
+      al.setData(data.avwap_low); slot.series.avwap_low = al;
+    }
+    // Toggle legend for daily chart
+    const legendEl = document.getElementById('watchSlot' + slotId + 'Legend');
+    if (legendEl) {
+      const items = [];
+      if (slot.series.ema9)       items.push({ name:'ema9',       label:'EMA 9',      color:'#00d4ff' });
+      if (slot.series.ema21)      items.push({ name:'ema21',      label:'EMA 21',     color:'#3fb950' });
+      if (slot.series.ema50)      items.push({ name:'ema50',      label:'EMA 50',     color:'#e3b341' });
+      if (slot.series.ema150)     items.push({ name:'ema150',     label:'EMA 150',    color:'#f85149' });
+      if (slot.series.avwap_high) items.push({ name:'avwap_high', label:'AVWAP\u2191', color:'#d49fff' });
+      if (slot.series.avwap_low)  items.push({ name:'avwap_low',  label:'AVWAP\u2193', color:'#58a6ff' });
+      legendEl.innerHTML = items.map(it =>
+        `<span class="ind-toggle" id="ml-wch-${slotId}-${it.name}" onclick="toggleMlWatchSeries('${slotId}','${it.name}',this)">`+
+        `<span style="display:inline-block;width:14px;height:2px;background:${it.color};vertical-align:middle"></span>&nbsp;${it.label}</span>`
+      ).join('');
+    }
     const entry = parseFloat(document.body.getAttribute('data-ml-entry'));
     const stop  = parseFloat(document.body.getAttribute('data-ml-stop'));
     const t3r   = parseFloat(document.body.getAttribute('data-ml-3r'));
@@ -1758,9 +2305,25 @@ async function _loadWeeklyForSlot(slotId, ticker) {
       slot.chart.priceScale('vol').applyOptions({ scaleMargins:{top:0.82,bottom:0}, drawTicks:false, borderVisible:false });
       wv.setData(data.volume);
     }
+    slot.series = {};
     [['ema9w','#00d4ff','W-EMA 9'],['ema21w','#3fb950','W-EMA 21'],['ema50w','#e3b341','W-EMA 50']].forEach(([k,c,t]) => {
-      if (data[k] && data[k].length) slot.chart.addLineSeries({ color:c, lineWidth:1.5, title:t, priceLineVisible:false, lastValueVisible:false }).setData(data[k]);
+      if (data[k] && data[k].length) {
+        const s = slot.chart.addLineSeries({ color:c, lineWidth:1.5, title:t, priceLineVisible:false, lastValueVisible:false });
+        s.setData(data[k]); slot.series[k] = s;
+      }
     });
+    // Toggle legend for weekly chart
+    const legendEl = document.getElementById('watchSlot' + slotId + 'Legend');
+    if (legendEl) {
+      const items = [];
+      if (slot.series.ema9w)  items.push({ name:'ema9w',  label:'W-EMA 9',  color:'#00d4ff' });
+      if (slot.series.ema21w) items.push({ name:'ema21w', label:'W-EMA 21', color:'#3fb950' });
+      if (slot.series.ema50w) items.push({ name:'ema50w', label:'W-EMA 50', color:'#e3b341' });
+      legendEl.innerHTML = items.map(it =>
+        `<span class="ind-toggle" id="ml-wch-${slotId}-${it.name}" onclick="toggleMlWatchSeries('${slotId}','${it.name}',this)">`+
+        `<span style="display:inline-block;width:14px;height:2px;background:${it.color};vertical-align:middle"></span>&nbsp;${it.label}</span>`
+      ).join('');
+    }
     slot.chart.timeScale().fitContent();
     // Default 2Y range
     setTimeout(() => setSlotRange(slotId, 104, document.querySelector('#watchSlot' + slotId + 'Legend .slot-range-btn.active')), 60);
@@ -1783,23 +2346,31 @@ function appendWatchLog(signals, status) {
   const advice = signals.setup_advice || 'monitoring';
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
-  const chasePct = signals.chase_pct || 0;
-  const ema9Diff = signals.ema9_diff || 0;
+  // Support both old format (chase_pct, ema9_diff) and new (chase_status, ema_status)
+  const chase = signals.chase_status || {};
+  const chasePct = chase.chase_pct || signals.chase_pct || 0;
+  const emaS = signals.ema_status || {};
+  const ema9Diff = emaS.ema9_diff || signals.ema9_diff || 0;
+  const wScore = signals.watch_score;
 
   let summaryIcon = '⏳';
   let summaryText = '監視中';
   if (advice === 'avoid_chase') { summaryIcon = '⛔'; summaryText = '禁止追高 +' + chasePct.toFixed(1) + '%'; }
-  else if (advice === 'mid_entry_breakout') { summaryIcon = '✅'; summaryText = '5分突破機會'; }
-  else if (advice === 'early_entry_watch') { summaryIcon = '⏳'; summaryText = 'Opening Range 建立中'; }
+  else if (advice === 'strong_entry') { summaryIcon = '🟢'; summaryText = '強勢入場'; }
+  else if (advice === 'flush_v_recovery') { summaryIcon = '🟢'; summaryText = 'V 形反彈'; }
+  else if (advice === 'mid_entry_breakout') { summaryIcon = '✅'; summaryText = '突破機會'; }
+  else if (advice === 'early_entry_watch') { summaryIcon = '⏳'; summaryText = 'OR 建立中'; }
   const posClass = ema9Diff >= 0 ? 'color:#3fb950' : 'color:#f85149';
+  const scoreHtml = wScore != null ? '<span style="margin-left:8px;font-size:10px;color:#e3b341">⚡' + wScore + '</span>' : '';
   const entry = {
     time: timeStr, status: status.status,
-    html: `<div style="border-left:3px solid #30363d;padding:4px 8px;margin-bottom:6px;background:#1c2128;border-radius:0 4px 4px 0">` +
-          `<span style="color:#8b949e;font-size:11px">${timeStr} NY&nbsp;</span>` +
-          `<span style="background:${status.color};color:#0d1117;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600">${status.label}</span>` +
-          `&nbsp;<strong>${summaryIcon} ${summaryText}</strong>` +
-          `<span style="${posClass};margin-left:8px;font-size:11px">EMA9 ${ema9Diff >= 0 ? '+' : ''}${(ema9Diff * 100).toFixed(2)}%</span>` +
-          `</div>`
+    html: '<div style="border-left:3px solid #30363d;padding:4px 8px;margin-bottom:6px;background:#1c2128;border-radius:0 4px 4px 0">' +
+          '<span style="color:#8b949e;font-size:11px">' + timeStr + ' NY&nbsp;</span>' +
+          '<span style="background:' + status.color + ';color:#0d1117;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600">' + status.label + '</span>' +
+          '&nbsp;<strong>' + summaryIcon + ' ' + summaryText + '</strong>' +
+          '<span style="' + posClass + ';margin-left:8px;font-size:11px">EMA9 ' + (ema9Diff >= 0 ? '+' : '') + ema9Diff.toFixed(2) + '%</span>' +
+          scoreHtml +
+          '</div>'
   };
 
   _mlCommentaryLog.unshift(entry);

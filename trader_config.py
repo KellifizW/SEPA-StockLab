@@ -930,6 +930,31 @@ ML_LEADER_HISTORY_DAYS       = 90      # Days of leader scanner history to retai
 ML_THEME_HISTORY_DAYS        = 60      # Days of theme tracking history to retain
 ML_SCORECARD_HISTORY_DAYS    = 365     # Days of trade quality scorecard history
 
+# ── ML Watch Mode — Dynamic Intraday Scoring (Chapter 7, 9) ──────────────
+ML_WATCH_REFRESH_SEC         = 300     # Auto-refresh interval (5 minutes)
+ML_WATCH_MAX_CHASE_PCT       = 3.0     # Max chase % above LOD before warning
+ML_WATCH_VWAP_PROX_PCT       = 0.5    # VWAP proximity threshold for signal (%)
+ML_WATCH_ORH_WINDOW_MIN      = 15     # Opening Range High window (minutes)
+ML_WATCH_FLUSH_V_MIN_PCT     = 1.5    # Minimum flush depth for V-recovery (%)
+ML_WATCH_FLUSH_V_RECOVERY_PCT = 0.7   # Min recovery ratio (50-70% of flush) for V-signal
+
+# ML Watch Score weights (7-dimension dynamic scoring, 0-100 scale)
+ML_WSCORE_VWAP_ABOVE         = 15     # Price above VWAP
+ML_WSCORE_VWAP_BELOW         = -10    # Price below VWAP
+ML_WSCORE_EMA9_ABOVE         = 10     # Price above intraday EMA 9
+ML_WSCORE_EMA9_BELOW         = -8     # Price below intraday EMA 9
+ML_WSCORE_EMA21_ABOVE        = 10     # Price above intraday EMA 21
+ML_WSCORE_EMA21_BELOW        = -10    # Price below intraday EMA 21
+ML_WSCORE_ORH_BREAK          = 15     # ORH breakout confirmed
+ML_WSCORE_ORL_BREAK          = -15    # ORL breakdown
+ML_WSCORE_CHASE_OK           = 10     # Chase < 3% (safe entry zone)
+ML_WSCORE_CHASE_HIGH         = -20    # Chase > 3% (too extended)
+ML_WSCORE_FLUSH_V            = 12     # Flush → V-recovery detected
+ML_WSCORE_HL_CONFIRMED       = 10     # Higher lows confirmed intraday
+ML_WSCORE_HL_LOWER           = -8     # Lower lows forming
+ML_WSCORE_MKT_BULL           = 5      # Market regime bullish (from daily analysis)
+ML_WSCORE_MKT_BEAR           = -15    # Market regime bearish
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TELEGRAM BOT  (Polling 方式通訊 + 管理員審批系統)
 # ─────────────────────────────────────────────────────────────────────────────

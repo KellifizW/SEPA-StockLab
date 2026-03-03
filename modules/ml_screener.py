@@ -617,6 +617,7 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
     # Builds a 7-dimension dim_scores dict and delegates to the same function
     # used by the single-stock analyzer — guarantees screener ↔ analyzer parity.
     star = getattr(C, "ML_STAR_BASE", 2.5)
+    _dim_scores = {}  # initialise before try block for decision_tree access
     try:
         from modules.ml_analyzer import compute_star_rating as _csr
         from modules.ml_setup_detector import (
@@ -727,14 +728,38 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
             logger.debug("[ML S3] %s event-channel [%s]: hard vetoes disabled",
                          ticker, row.get("channel"))
 
+        # Build dim_scores WITH detail sub-dicts so that
+        # evaluate_entry_decision_tree() can read nested fields.
+        _stop_pct_val = 99.0
+        if "ATR_14" in df.columns and close_price > 0:
+            _atr_v = float(df["ATR_14"].iloc[-1])
+            if _atr_v > 0:
+                _stop_pct_val = (_atr_v / close_price) * 100.0
+
         _dim_scores = {
-            "A": {"score": _dim_a_score, "is_veto": _dim_a_veto},
-            "B": {"score": _dim_b_score},
-            "C": {"score": _dim_c_score},
-            "D": {"score": _dim_d_score},
-            "E": {"score": _dim_e_score, "is_veto": _dim_e_veto},
-            "F": {"score": _dim_f_score},
-            "G": {"score": _dim_g_score, "is_veto": _dim_g_veto},
+            "A": {"score": _dim_a_score, "is_veto": _dim_a_veto,
+                  "detail": {"ema_alignment": {
+                      "all_stacked": all_stacked,
+                      "all_rising": all_rising,
+                      "ema_21_rising": slope_direction in ("rising", "rising_fast"),
+                  }}},
+            "B": {"score": _dim_b_score,
+                  "detail": {"higher_lows": _hl}},
+            "C": {"score": _dim_c_score,
+                  "detail": {"confluence_count": _cf.get("count", 0),
+                             "support_proximity": None}},
+            "D": {"score": _dim_d_score,
+                  "detail": {"dry_ratio": round(dry_ratio, 3),
+                             "vol_ratio": round(vol_ratio, 2)}},
+            "E": {"score": _dim_e_score, "is_veto": _dim_e_veto,
+                  "detail": {"stop_pct": round(_stop_pct_val, 2),
+                             "chase_check": {"is_chase": too_extended,
+                                             "pct_above_lod": 0}}},
+            "F": {"score": _dim_f_score,
+                  "detail": {"mom_3m": mom_3m, "mom_6m": mom_6m}},
+            "G": {"score": _dim_g_score, "is_veto": _dim_g_veto,
+                  "detail": {"regime": _mkt_env or "UNKNOWN",
+                             "market": _mkt_env or "UNKNOWN"}},
         }
         _star_result = _csr(_dim_scores)
         if _star_result.get("veto"):
@@ -779,6 +804,27 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         "vol_ratio":        round(vol_ratio, 2),
         "vol_dry_ratio":    round(dry_ratio, 3),
     })
+
+    # ── Lightweight decision tree for scan table badge ────────────────────
+    # Uses the same 9-step logic from ml_analyzer but with the inline dim_scores
+    # already computed above, avoiding a second full analysis pass.
+    try:
+        from modules.ml_analyzer import evaluate_entry_decision_tree as _eval_dt
+        _dt_input = {
+            "dim_scores": _dim_scores if _dim_scores else {},
+            "setup_type": setup_info,
+            "trade_plan": {},
+        }
+        _dt_result = _eval_dt(_dt_input)
+        row_out["decision_tree"] = {
+            "signal":     _dt_result.get("signal", ""),
+            "pass_count": _dt_result.get("pass_count", 0),
+            "total":      _dt_result.get("total", 9),
+        }
+    except Exception as _dt_exc:
+        logger.debug("[ML S3] %s decision tree skipped: %s", ticker, _dt_exc)
+        row_out["decision_tree"] = None
+
     return row_out
 
 

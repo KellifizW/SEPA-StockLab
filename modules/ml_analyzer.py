@@ -493,17 +493,27 @@ def _score_dim_g() -> dict:
         if regime in ("CONFIRMED_UPTREND", "BULL_CONFIRMED"):
             adj += 0.8
             detail["market"] = "確認上升趨勢 ✓"
-        elif regime == "UPTREND_UNDER_PRESSURE":
-            adj += 0.2
-            detail["market"] = "上升趨勢受壓"
-        elif regime == "MARKET_IN_CORRECTION":
-            adj -= 0.8
-            detail["market"] = "市場修正中 — 減少倉位"
+        elif regime == "BULL_UNCONFIRMED":
+            adj += 0.4
+            detail["market"] = "牛市未確認 — 觀望為主"
+        elif regime in ("BULL_EARLY", "BOTTOM_FORMING"):
+            adj += 0.3
+            detail["market"] = "牛市初期 / 築底中 — 可小量試探"
+        elif regime in ("UPTREND_UNDER_PRESSURE", "TRANSITION"):
+            adj += 0.0
+            detail["market"] = "過渡期 / 上升趨勢受壓 — 減少倉位"
+        elif regime in ("CHOPPY", "BEAR_RALLY"):
+            adj -= 0.5
+            detail["market"] = "震盪市 / 熊市反彈 — 減少交易頻率"
+        elif regime in ("MARKET_IN_CORRECTION", "BEAR_CONFIRMED"):
+            adj -= 1.5
+            detail["market"] = "市場修正 / 確認熊市 — 停止新倉"
         elif regime == "DOWNTREND":
             adj -= 2.0
             veto = True
             detail["market"] = "⛔ 下降趨勢 — 停止交易"
         else:
+            adj += 0.0
             detail["market"] = f"市場狀態: {regime}"
     except Exception as exc:
         logger.debug("[ML DimG] market_env unavailable: %s", exc)
@@ -604,6 +614,190 @@ def compute_star_rating(dim_scores: dict[str, dict],
 # ─────────────────────────────────────────────────────────────────────────────
 # Trade plan builder (Martin Luk formula-based)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_entry_levels(df: pd.DataFrame, close: float,
+                          trade_plan: dict) -> dict:
+    """
+    Compute quantified entry price levels for Martin Luk's entry notes.
+
+    Returns EMA values, AVWAP levels, ideal entry zone, max chase price,
+    and support/resistance levels with actual dollar amounts.
+    """
+    from modules.data_pipeline import (
+        get_avwap_from_swing_high, get_avwap_from_swing_low,
+    )
+
+    result: dict = {"close": round(close, 2)}
+
+    # ── EMA price levels ──────────────────────────────────────────────────
+    for period in [9, 21, 50, 150]:
+        col = f"EMA_{period}"
+        if col in df.columns:
+            val = float(df[col].iloc[-1])
+            result[f"ema{period}"] = round(val, 2)
+            result[f"ema{period}_pct"] = round((close - val) / val * 100, 2) if val > 0 else 0
+        else:
+            result[f"ema{period}"] = None
+            result[f"ema{period}_pct"] = None
+
+    # ── AVWAP levels ──────────────────────────────────────────────────────
+    avwap_high = get_avwap_from_swing_high(df)
+    avwap_low = get_avwap_from_swing_low(df)
+    result["avwap_high"] = round(avwap_high.get("avwap_value", 0), 2) if avwap_high.get("avwap_value") else None
+    result["avwap_low"] = round(avwap_low.get("avwap_value", 0), 2) if avwap_low.get("avwap_value") else None
+    result["above_avwap_high"] = avwap_high.get("above_avwap", False)
+    result["above_avwap_low"] = avwap_low.get("above_avwap", False)
+
+    # ── Previous day high/low ─────────────────────────────────────────────
+    if len(df) >= 2:
+        result["prev_high"] = round(float(df["High"].iloc[-2]), 2)
+        result["prev_low"] = round(float(df["Low"].iloc[-2]), 2)
+        result["prev_close"] = round(float(df["Close"].iloc[-2]), 2)
+    else:
+        result["prev_high"] = result["prev_low"] = result["prev_close"] = None
+
+    # ── LOD and max chase price ───────────────────────────────────────────
+    lod = float(df["Low"].iloc[-1]) if len(df) >= 1 else close
+    max_chase_pct = getattr(C, "ML_WATCH_MAX_CHASE_PCT", 3.0)
+    result["lod"] = round(lod, 2)
+    result["max_chase_price"] = round(lod * (1 + max_chase_pct / 100), 2)
+
+    # ── Ideal entry zone (between 21 EMA and close, near support AVWAP) ──
+    ema21 = result.get("ema21")
+    entry_stop = trade_plan.get("stop")
+    if ema21 and ema21 < close:
+        result["ideal_entry_low"] = round(ema21, 2)
+        result["ideal_entry_high"] = round(ema21 * 1.005, 2)  # tight zone
+    elif entry_stop:
+        result["ideal_entry_low"] = round(entry_stop * 1.003, 2)
+        result["ideal_entry_high"] = round(entry_stop * 1.01, 2)
+    else:
+        result["ideal_entry_low"] = None
+        result["ideal_entry_high"] = None
+
+    # ── Key support/resistance summary for commentary ─────────────────────
+    supports = []
+    resistances = []
+    for label, val in [
+        ("EMA9", result.get("ema9")),
+        ("EMA21", result.get("ema21")),
+        ("EMA50", result.get("ema50")),
+        ("AVWAP_Low", result.get("avwap_low")),
+    ]:
+        if val and val < close:
+            supports.append({"label": label, "price": val,
+                             "distance_pct": round((close - val) / close * 100, 2)})
+    for label, val in [
+        ("AVWAP_High", result.get("avwap_high")),
+        ("Prev_High", result.get("prev_high")),
+    ]:
+        if val and val > close:
+            resistances.append({"label": label, "price": val,
+                                "distance_pct": round((val - close) / close * 100, 2)})
+    result["supports"] = sorted(supports, key=lambda x: x["distance_pct"])
+    result["resistances"] = sorted(resistances, key=lambda x: x["distance_pct"])
+
+    return result
+
+
+def _compute_avwap_analysis(df: pd.DataFrame, close: float) -> dict:
+    """
+    Detailed AVWAP analysis following Martin Luk's Chapter 6 methodology.
+
+    Anchored VWAP analysis including:
+    - Swing high AVWAP (resistance/supply zone)
+    - Swing low AVWAP (support/demand zone)
+    - Price position relative to both
+    - Trading signals based on AVWAP confluence
+    """
+    from modules.data_pipeline import (
+        get_avwap_from_swing_high, get_avwap_from_swing_low,
+    )
+
+    avwap_high = get_avwap_from_swing_high(df)
+    avwap_low = get_avwap_from_swing_low(df)
+
+    ah_val = avwap_high.get("avwap_value")
+    al_val = avwap_low.get("avwap_value")
+    above_high = avwap_high.get("above_avwap", False)
+    above_low = avwap_low.get("above_avwap", False)
+
+    # ── Position analysis ─────────────────────────────────────────────────
+    position = "UNKNOWN"
+    signal = "NEUTRAL"
+    signal_zh = "中性"
+    detail_zh = ""
+
+    if above_high and above_low:
+        position = "ABOVE_BOTH"
+        signal = "BULLISH"
+        signal_zh = "看好"
+        detail_zh = "股價在雙 AVWAP 上方 — 多頭主導，趨勢健康"
+    elif above_low and not above_high:
+        position = "BETWEEN"
+        signal = "NEUTRAL_BULLISH"
+        signal_zh = "中性偏好"
+        detail_zh = "股價在支撐 AVWAP 上方但阻力 AVWAP 下方 — 等待突破阻力"
+    elif not above_low and not above_high:
+        position = "BELOW_BOTH"
+        signal = "BEARISH"
+        signal_zh = "看淡"
+        detail_zh = "股價在雙 AVWAP 下方 — 空方主導"
+    elif not above_low and above_high:
+        position = "MIXED"
+        signal = "NEUTRAL"
+        signal_zh = "中性"
+        detail_zh = "AVWAP 交叉信號矛盾 — 觀望"
+
+    # ── Proximity analysis ────────────────────────────────────────────────
+    prox_high = None
+    prox_low = None
+    if ah_val and ah_val > 0:
+        prox_high = round((close - ah_val) / ah_val * 100, 2)
+    if al_val and al_val > 0:
+        prox_low = round((close - al_val) / al_val * 100, 2)
+
+    # ── Trading signals per Martin Ch6 ────────────────────────────────────
+    trade_signals = []
+    if al_val and 0 < prox_low <= 1.5:
+        trade_signals.append({
+            "type": "SUPPORT_TEST",
+            "sentiment": "bullish",
+            "zh": f"📍 股價接近支撐 AVWAP ${al_val:.2f} (距 {prox_low:.1f}%) — 潛在買入點",
+        })
+    if ah_val and prox_high is not None and 0 < prox_high <= 1.0:
+        trade_signals.append({
+            "type": "RESISTANCE_APPROACH",
+            "sentiment": "neutral",
+            "zh": f"⚡ 股價接近阻力 AVWAP ${ah_val:.2f} (距 {prox_high:.1f}%) — 觀察突破",
+        })
+    if ah_val and prox_high is not None and prox_high > 2.0:
+        trade_signals.append({
+            "type": "ABOVE_RESISTANCE",
+            "sentiment": "bullish",
+            "zh": f"✅ 股價已突破阻力 AVWAP ${ah_val:.2f} — AVWAP 由阻轉撐",
+        })
+    if al_val and prox_low is not None and prox_low < -1.0:
+        trade_signals.append({
+            "type": "BELOW_SUPPORT",
+            "sentiment": "bearish",
+            "zh": f"⛔ 股價跌破支撐 AVWAP ${al_val:.2f} (距 {prox_low:.1f}%) — 支撐失效",
+        })
+
+    return {
+        "avwap_high_price": round(ah_val, 2) if ah_val else None,
+        "avwap_low_price": round(al_val, 2) if al_val else None,
+        "above_avwap_high": above_high,
+        "above_avwap_low": above_low,
+        "position": position,
+        "signal": signal,
+        "signal_zh": signal_zh,
+        "detail_zh": detail_zh,
+        "prox_high_pct": prox_high,
+        "prox_low_pct": prox_low,
+        "trade_signals": trade_signals,
+    }
+
 
 def _build_trade_plan(stars: float, row: dict) -> dict:
     """
@@ -767,6 +961,20 @@ def analyze_ml(ticker: str,
         "mom_3m":            mom.get("3m"),
         "mom_6m":            mom.get("6m"),
     }
+
+    # ── Entry Levels — Quantified price levels for Martin's entry notes ─────
+    try:
+        result["entry_levels"] = _compute_entry_levels(df, close, trade_plan)
+    except Exception as exc:
+        logger.debug("[ML Analyze] Entry levels failed: %s", exc)
+        result["entry_levels"] = None
+
+    # ── AVWAP Analysis — detailed AVWAP confluence analysis ─────────────────
+    try:
+        result["avwap_analysis"] = _compute_avwap_analysis(df, close)
+    except Exception as exc:
+        logger.debug("[ML Analyze] AVWAP analysis failed: %s", exc)
+        result["avwap_analysis"] = None
 
     # ── NEW Phase 1: Pullback Quality Scorecard ─────────────────────────────
     try:

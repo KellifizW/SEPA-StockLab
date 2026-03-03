@@ -208,12 +208,15 @@ def _load_qm_last_scan() -> dict:
 _ML_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "ml_last_scan.json"
 
 
-def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None):
+def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None,
+                       triple_summary: Optional[dict] = None):
     try:
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
                 "all_scored_count": len(all_rows) if all_rows else len(rows),
                 "all_scored": all_rows or []}
+        if triple_summary:
+            data["triple_summary"] = triple_summary
         _ML_LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
@@ -1459,8 +1462,6 @@ def api_ml_scan_run():
                     clean_rows.append(row)
                 rows = clean_rows
             
-            _save_ml_last_scan(rows, all_rows=all_rows)
-
             # Theme report and triple channel summary
             themes = []
             triple_summary = {}
@@ -1488,6 +1489,10 @@ def api_ml_scan_run():
             except Exception as _tse:
                 logging.warning("ML triple summary calculation failed: %s", _tse)
                 triple_summary = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+
+            # Persist scan results + triple_summary (computed above)
+            _save_ml_last_scan(rows, all_rows=all_rows,
+                               triple_summary=triple_summary)
 
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
@@ -3883,6 +3888,391 @@ def qm_watch_signals(ticker: str):
             "data_source": _data_source,
             "refresh_ts": int(_time.time()),
             **signals,
+        }))
+
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "ticker": ticker}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ML Watch Signals — Martin Luk 盯盤模式 dynamic signal bundle
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_ml_intraday_signals(
+    candles_5m: list,
+    ema9: float, ema21: float, vwap: float,
+    orh: float, orl: float, lod: float, hod: float,
+    prev_close: float, avwap_high: float, avwap_low: float,
+    daily_dim_g_score: float,
+) -> dict:
+    """
+    Martin Luk intraday watch signal engine.
+
+    Returns:
+      active_signals   : list[str]  human-readable signals (with emoji)
+      signal_counts    : dict       {total, bullish, bearish, neutral}
+      vwap_status      : dict       {price, diff_pct, above}
+      ema_status       : dict       {ema9, ema9_diff, ema21, ema21_diff, above_both}
+      orh_status       : dict       {orh, orl, orh_broken, orl_broken}
+      chase_status     : dict       {chase_pct, safe}
+      flush_v_status   : dict       {detected, depth_pct, recovery_pct}
+      higher_lows      : dict       {count, valid, trend}
+      avwap_intraday   : dict       {high, low, above_high, above_low, position}
+      watch_score      : int        0-100 composite score
+      watch_breakdown  : list[dict] per-dimension score breakdown
+      watch_iron_rules : list[dict] blocking rules
+      setup_advice     : str        action recommendation key
+    """
+    import math
+    signals: list = []
+    w_score = 0
+    w_breakdown: list = []
+    w_iron_rules: list = []
+
+    current_price = candles_5m[-1]["close"] if candles_5m else 0
+
+    # ── VWAP position (Chapter 6) ─────────────────────────────────────────
+    vwap_diff = ((current_price - vwap) / vwap * 100) if vwap > 0 else 0
+    vwap_above = current_price > vwap if vwap > 0 else False
+    if vwap_above:
+        signals.append("🟢 股價在 VWAP 上方 Price above VWAP — 多頭主導")
+        w_score += C.ML_WSCORE_VWAP_ABOVE
+        w_breakdown.append({"dim": "VWAP", "pts": C.ML_WSCORE_VWAP_ABOVE,
+                            "note": f"股價在 VWAP ${vwap:.2f} 上方 ({vwap_diff:+.1f}%)"})
+    elif vwap > 0:
+        signals.append("🔴 股價在 VWAP 下方 Price below VWAP — 空方主導")
+        w_score += C.ML_WSCORE_VWAP_BELOW
+        w_breakdown.append({"dim": "VWAP", "pts": C.ML_WSCORE_VWAP_BELOW,
+                            "note": f"股價在 VWAP ${vwap:.2f} 下方 ({vwap_diff:+.1f}%)"})
+    else:
+        w_breakdown.append({"dim": "VWAP", "pts": 0, "note": "VWAP 數據不可用"})
+
+    # ── EMA position (Chapter 5, 7) ───────────────────────────────────────
+    ema9_diff = ((current_price - ema9) / ema9 * 100) if ema9 > 0 else 0
+    ema21_diff = ((current_price - ema21) / ema21 * 100) if ema21 > 0 else 0
+    above_ema9 = current_price > ema9 if ema9 > 0 else False
+    above_ema21 = current_price > ema21 if ema21 > 0 else False
+
+    if above_ema9:
+        w_score += C.ML_WSCORE_EMA9_ABOVE
+        signals.append(f"🟢 股價在 EMA9 ${ema9:.2f} 上方")
+    else:
+        w_score += C.ML_WSCORE_EMA9_BELOW
+        signals.append(f"🔴 股價跌穿 EMA9 ${ema9:.2f}")
+
+    if above_ema21:
+        w_score += C.ML_WSCORE_EMA21_ABOVE
+        signals.append(f"🟢 股價在 EMA21 ${ema21:.2f} 上方")
+    else:
+        w_score += C.ML_WSCORE_EMA21_BELOW
+        signals.append(f"🔴 股價跌穿 EMA21 ${ema21:.2f} — 關鍵支撐失守")
+    w_breakdown.append({"dim": "EMA 排列", "pts": (C.ML_WSCORE_EMA9_ABOVE if above_ema9 else C.ML_WSCORE_EMA9_BELOW) +
+                        (C.ML_WSCORE_EMA21_ABOVE if above_ema21 else C.ML_WSCORE_EMA21_BELOW),
+                        "note": f"EMA9 {'▲' if above_ema9 else '▼'} EMA21 {'▲' if above_ema21 else '▼'}"})
+
+    # ── ORH breakout / breakdown (Chapter 7) ──────────────────────────────
+    orh_broken = False
+    orl_broken = False
+    orh_candle_count = max(1, C.ML_WATCH_ORH_WINDOW_MIN // 5)
+    if len(candles_5m) > orh_candle_count and orh > 0:
+        rest = candles_5m[orh_candle_count:]
+        orh_broken = any(c["close"] > orh for c in rest)
+        orl_broken = any(c["close"] < orl for c in rest)
+
+    if orh_broken:
+        w_score += C.ML_WSCORE_ORH_BREAK
+        signals.append(f"🟢 突破 ORH ${orh:.2f} — Opening Range High 突破確認")
+        w_breakdown.append({"dim": "ORH 突破", "pts": C.ML_WSCORE_ORH_BREAK, "note": f"ORH ${orh:.2f} 已突破"})
+    elif orl_broken:
+        w_score += C.ML_WSCORE_ORL_BREAK
+        signals.append(f"🔴 跌破 ORL ${orl:.2f} — Opening Range Low 失守")
+        w_breakdown.append({"dim": "ORH 突破", "pts": C.ML_WSCORE_ORL_BREAK, "note": f"ORL ${orl:.2f} 已跌破"})
+    else:
+        w_breakdown.append({"dim": "ORH 突破", "pts": 0, "note": "ORH 範圍內整理中"})
+
+    # ── Chase distance from LOD (Chapter 9) ───────────────────────────────
+    chase_pct = ((current_price - lod) / lod * 100) if lod > 0 else 0
+    chase_safe = chase_pct <= C.ML_WATCH_MAX_CHASE_PCT
+    if chase_safe:
+        w_score += C.ML_WSCORE_CHASE_OK
+        w_breakdown.append({"dim": "追價距離", "pts": C.ML_WSCORE_CHASE_OK,
+                            "note": f"距 LOD {chase_pct:.1f}% — 安全入場區"})
+    else:
+        w_score += C.ML_WSCORE_CHASE_HIGH
+        signals.append(f"🔴 追價過高 距 LOD {chase_pct:.1f}% — Martin 規則：>{C.ML_WATCH_MAX_CHASE_PCT}% 禁入場")
+        w_breakdown.append({"dim": "追價距離", "pts": C.ML_WSCORE_CHASE_HIGH,
+                            "note": f"距 LOD {chase_pct:.1f}% — 超過安全線"})
+        w_iron_rules.append({"rule": "CHASE_TOO_HIGH",
+                             "msg": f"追價 {chase_pct:.1f}% 超過 {C.ML_WATCH_MAX_CHASE_PCT}% 上限",
+                             "severity": "warn"})
+
+    # ── Flush → V-recovery (Chapter 7) ────────────────────────────────────
+    flush_detected = False
+    flush_depth = 0
+    flush_recovery = 0
+    if len(candles_5m) >= 4:
+        open_px = candles_5m[0]["open"]
+        flush_window = candles_5m[:max(3, C.ML_FLUSH_MAX_MINUTES // 5)]
+        min_low = min(c["low"] for c in flush_window)
+        flush_depth = ((open_px - min_low) / open_px * 100) if open_px > 0 else 0
+        if flush_depth >= C.ML_WATCH_FLUSH_V_MIN_PCT:
+            recovery = (current_price - min_low) / (open_px - min_low) if open_px != min_low else 0
+            flush_recovery = recovery
+            if recovery >= C.ML_WATCH_FLUSH_V_RECOVERY_PCT:
+                flush_detected = True
+                w_score += C.ML_WSCORE_FLUSH_V
+                signals.append(f"🟢 Flush→V 反彈信號 深度 {flush_depth:.1f}% 恢復 {recovery*100:.0f}%")
+                w_breakdown.append({"dim": "Flush V", "pts": C.ML_WSCORE_FLUSH_V,
+                                    "note": f"V 形反彈確認 (深度{flush_depth:.1f}%)"})
+
+    # ── Higher lows intraday (Chapter 7) ──────────────────────────────────
+    hl_count = 0
+    hl_valid = False
+    hl_trend = "flat"
+    if len(candles_5m) >= 6:
+        # Detect swing lows
+        swing_lows = []
+        for i in range(1, len(candles_5m) - 1):
+            if candles_5m[i]["low"] < candles_5m[i-1]["low"] and candles_5m[i]["low"] < candles_5m[i+1]["low"]:
+                swing_lows.append(candles_5m[i]["low"])
+        if len(swing_lows) >= 2:
+            hl_count = sum(1 for i in range(1, len(swing_lows)) if swing_lows[i] > swing_lows[i-1])
+            hl_valid = hl_count >= 2
+            hl_trend = "ascending" if hl_valid else ("mixed" if hl_count > 0 else "descending")
+
+    if hl_valid:
+        w_score += C.ML_WSCORE_HL_CONFIRMED
+        signals.append(f"🟢 更高低點 Higher lows ({hl_count}) — 上升結構")
+        w_breakdown.append({"dim": "低點結構", "pts": C.ML_WSCORE_HL_CONFIRMED, "note": f"{hl_count} 個更高低點"})
+    elif hl_trend == "descending":
+        w_score += C.ML_WSCORE_HL_LOWER
+        signals.append("🔴 低點下移 — 弱勢結構")
+        w_breakdown.append({"dim": "低點結構", "pts": C.ML_WSCORE_HL_LOWER, "note": "低點持續下移"})
+    else:
+        w_breakdown.append({"dim": "低點結構", "pts": 0, "note": "結構不明"})
+
+    # ── AVWAP intraday position (Chapter 6) ───────────────────────────────
+    above_avwap_high = current_price > avwap_high if avwap_high and avwap_high > 0 else None
+    above_avwap_low = current_price > avwap_low if avwap_low and avwap_low > 0 else None
+    avwap_position = "UNKNOWN"
+    if above_avwap_high and above_avwap_low:
+        avwap_position = "ABOVE_BOTH"
+        signals.append(f"🟢 股價在雙 AVWAP 上方 — 趨勢健康")
+    elif above_avwap_low and not above_avwap_high:
+        avwap_position = "BETWEEN"
+        signals.append(f"⚠️ 股價在支撐/阻力 AVWAP 之間 — 等待方向")
+    elif not above_avwap_low and not above_avwap_high:
+        avwap_position = "BELOW_BOTH"
+        signals.append(f"🔴 股價在雙 AVWAP 下方 — 空方主導")
+
+    # ── Market regime from daily analysis (Dim G) ─────────────────────────
+    if daily_dim_g_score >= 0:
+        w_score += C.ML_WSCORE_MKT_BULL
+        w_breakdown.append({"dim": "市場環境", "pts": C.ML_WSCORE_MKT_BULL, "note": "日線市場環境有利"})
+    else:
+        w_score += C.ML_WSCORE_MKT_BEAR
+        w_breakdown.append({"dim": "市場環境", "pts": C.ML_WSCORE_MKT_BEAR, "note": "日線市場環境不利"})
+        if daily_dim_g_score <= -0.5:
+            w_iron_rules.append({"rule": "MARKET_BEARISH",
+                                 "msg": "市場環境嚴重不利 — 建議觀望不入場",
+                                 "severity": "block"})
+
+    # ── Clamp score 0-100 ─────────────────────────────────────────────────
+    w_score = max(0, min(100, w_score + 50))  # center at 50
+
+    # ── Setup advice ──────────────────────────────────────────────────────
+    n_candles = len(candles_5m)
+    if n_candles <= 1:
+        setup_advice = "premarket_plan"
+    elif n_candles <= 3:
+        setup_advice = "early_entry_watch"
+    elif flush_detected:
+        setup_advice = "flush_v_recovery"
+    elif not chase_safe:
+        setup_advice = "avoid_chase"
+    elif orh_broken and above_ema9 and vwap_above:
+        setup_advice = "strong_entry"
+    elif above_ema21 and vwap_above:
+        setup_advice = "mid_entry_breakout"
+    else:
+        setup_advice = "monitoring"
+
+    # ── Signal counts ─────────────────────────────────────────────────────
+    bullish = sum(1 for s in signals if "🟢" in s)
+    bearish = sum(1 for s in signals if "🔴" in s)
+    neutral = sum(1 for s in signals if "⚠️" in s)
+
+    return {
+        "active_signals": signals,
+        "signal_counts": {"total": len(signals), "bullish": bullish, "bearish": bearish, "neutral": neutral},
+        "vwap_status": {"price": round(vwap, 2) if vwap else None, "diff_pct": round(vwap_diff, 2), "above": vwap_above},
+        "ema_status": {"ema9": round(ema9, 2) if ema9 else None, "ema9_diff": round(ema9_diff, 2),
+                       "ema21": round(ema21, 2) if ema21 else None, "ema21_diff": round(ema21_diff, 2),
+                       "above_both": above_ema9 and above_ema21},
+        "orh_status": {"orh": round(orh, 2) if orh else None, "orl": round(orl, 2) if orl else None,
+                       "orh_broken": orh_broken, "orl_broken": orl_broken},
+        "chase_status": {"chase_pct": round(chase_pct, 2), "safe": chase_safe},
+        "flush_v_status": {"detected": flush_detected, "depth_pct": round(flush_depth, 2), "recovery_pct": round(flush_recovery * 100, 1)},
+        "higher_lows": {"count": hl_count, "valid": hl_valid, "trend": hl_trend},
+        "avwap_intraday": {
+            "high": round(avwap_high, 2) if avwap_high else None,
+            "low": round(avwap_low, 2) if avwap_low else None,
+            "above_high": above_avwap_high, "above_low": above_avwap_low,
+            "position": avwap_position},
+        "watch_score": w_score,
+        "watch_breakdown": w_breakdown,
+        "watch_iron_rules": w_iron_rules,
+        "setup_advice": setup_advice,
+    }
+
+
+@app.route("/api/ml/watch_signals/<ticker>")
+def ml_watch_signals(ticker: str):
+    """
+    ML 盯盤模式 — real-time intraday signal bundle for Martin Luk watch mode.
+    Returns JSON: current_price, signals, watch_score, trade_plan, AVWAP levels, etc.
+    """
+    import datetime, time as _time
+    try:
+        ticker = ticker.upper().strip()
+        _data_source = "intraday"
+
+        import yfinance as yf
+        import math as _math
+
+        def _df_to_candles(df) -> list:
+            result = []
+            for ts, row in df.iterrows():
+                t_unix = int(ts.timestamp()) if hasattr(ts, 'timestamp') else int(ts)
+                o, h, l, c, v = row.get('Open'), row.get('High'), row.get('Low'), row.get('Close'), row.get('Volume', 0)
+                if any(x is None or (isinstance(x, float) and (_math.isnan(x) or _math.isinf(x))) for x in [o, h, l, c]):
+                    continue
+                result.append({"time": t_unix, "open": float(o), "high": float(h),
+                               "low": float(l), "close": float(c), "volume": int(v or 0)})
+            return result
+
+        # Fetch 5m candles
+        try:
+            df_5m = yf.Ticker(ticker).history(period="2d", interval="5m", prepost=False)
+            candles_5m = _df_to_candles(df_5m) if not df_5m.empty else []
+        except Exception:
+            candles_5m = []
+
+        # Daily data for AVWAP, EMA, ATR
+        df_d = None
+        avwap_high_val = avwap_low_val = None
+        daily_dim_g = 0.0
+        try:
+            from modules.data_pipeline import (
+                get_historical, get_atr,
+                get_avwap_from_swing_high, get_avwap_from_swing_low,
+            )
+            df_d = get_historical(ticker, period="6mo")
+            if df_d is not None and not df_d.empty:
+                # Compute EMAs on daily data for reference
+                for n in (9, 21, 50, 150):
+                    df_d[f"EMA_{n}"] = df_d["Close"].ewm(span=n, adjust=False).mean()
+
+                # AVWAP from daily swings
+                ah = get_avwap_from_swing_high(df_d)
+                al = get_avwap_from_swing_low(df_d)
+                avwap_high_val = ah.get("avwap_value") if ah else None
+                avwap_low_val = al.get("avwap_value") if al else None
+
+                # Market env for dim G reference
+                try:
+                    from modules.market_env import assess as mkt_assess
+                    mkt = mkt_assess(verbose=False)
+                    regime = mkt.get("regime", "") if isinstance(mkt, dict) else ""
+                    g_map = {
+                        "BULL_CONFIRMED": 0.8, "CONFIRMED_UPTREND": 0.8,
+                        "BULL_UNCONFIRMED": 0.4,
+                        "BOTTOM_FORMING": 0.3, "BULL_EARLY": 0.3,
+                        "TRANSITION": 0.0, "UPTREND_UNDER_PRESSURE": 0.0,
+                        "BEAR_RALLY": -0.5, "CHOPPY": -0.5,
+                        "BEAR_CONFIRMED": -1.5, "MARKET_IN_CORRECTION": -1.5,
+                        "DOWNTREND": -2.0,
+                    }
+                    daily_dim_g = g_map.get(regime, 0.0)
+                except Exception:
+                    daily_dim_g = 0.0
+        except Exception as _e:
+            logging.getLogger(__name__).warning(f"ML watch daily data failed for {ticker}: {_e}")
+
+        # Session extremes from 5m candles
+        hod = lod = orh = orl = None
+        prev_close = None
+        if candles_5m:
+            hod = max(c["high"] for c in candles_5m)
+            lod = min(c["low"] for c in candles_5m)
+            orh_n = max(1, C.ML_WATCH_ORH_WINDOW_MIN // 5)
+            if len(candles_5m) >= orh_n:
+                orh = max(c["high"] for c in candles_5m[:orh_n])
+                orl = min(c["low"] for c in candles_5m[:orh_n])
+        elif df_d is not None and not df_d.empty:
+            _data_source = "fallback_daily"
+            hod = float(df_d["High"].iloc[-1])
+            lod = float(df_d["Low"].iloc[-1])
+
+        if df_d is not None and not df_d.empty and len(df_d) >= 2:
+            prev_close = float(df_d["Close"].iloc[-2])
+
+        # Compute intraday EMA/VWAP from 5m candles
+        ema9_val = ema21_val = vwap_val = 0
+        if candles_5m:
+            closes = [c["close"] for c in candles_5m]
+            k9, k21 = 2.0 / 10, 2.0 / 22
+            if len(closes) >= 9:
+                ema = sum(closes[:9]) / 9
+                for c in closes[9:]:
+                    ema = c * k9 + ema * (1 - k9)
+                ema9_val = ema
+            if len(closes) >= 21:
+                ema = sum(closes[:21]) / 21
+                for c in closes[21:]:
+                    ema = c * k21 + ema * (1 - k21)
+                ema21_val = ema
+            # Session VWAP
+            tp_vol_sum = sum(((c["high"] + c["low"] + c["close"]) / 3) * c["volume"] for c in candles_5m)
+            vol_sum = sum(c["volume"] for c in candles_5m)
+            if vol_sum > 0:
+                vwap_val = tp_vol_sum / vol_sum
+
+        # Run ML signal engine
+        ml_signals = _get_ml_intraday_signals(
+            candles_5m=candles_5m,
+            ema9=ema9_val, ema21=ema21_val, vwap=vwap_val,
+            orh=orh or 0, orl=orl or 0, lod=lod or 0, hod=hod or 0,
+            prev_close=prev_close or 0,
+            avwap_high=avwap_high_val or 0, avwap_low=avwap_low_val or 0,
+            daily_dim_g_score=daily_dim_g,
+        )
+
+        current_price = candles_5m[-1]["close"] if candles_5m else (
+            float(df_d["Close"].iloc[-1]) if df_d is not None and not df_d.empty else None)
+        last_ts = candles_5m[-1]["time"] if candles_5m else None
+
+        # Daily EMA levels for trade plan reference
+        daily_emas = {}
+        if df_d is not None and not df_d.empty:
+            for n in (9, 21, 50, 150):
+                col = f"EMA_{n}"
+                if col in df_d.columns:
+                    daily_emas[f"ema{n}"] = round(float(df_d[col].iloc[-1]), 2)
+
+        return jsonify(_clean({
+            "ok": True,
+            "ticker": ticker,
+            "current_price": current_price,
+            "last_ts": last_ts,
+            "hod": hod, "lod": lod, "orh": orh, "orl": orl,
+            "prev_close": prev_close,
+            "data_source": _data_source,
+            "refresh_ts": int(_time.time()),
+            "daily_emas": daily_emas,
+            "avwap_high": round(avwap_high_val, 2) if avwap_high_val else None,
+            "avwap_low": round(avwap_low_val, 2) if avwap_low_val else None,
+            **ml_signals,
         }))
 
     except Exception as exc:

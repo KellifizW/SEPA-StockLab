@@ -60,7 +60,14 @@
     /* Navbar clock + yfinance status */
     .nav-clock { font-size: 11px; font-weight: 500; letter-spacing: .3px;
                  font-variant-numeric: tabular-nums; white-space: nowrap; }
-    #navYfStatus { font-size: 11px; cursor: default; }
+    #navYfStatus { font-size: 11px; cursor: pointer; padding: 4px 8px !important;
+                   transition: all .2s ease; border-radius: 4px; }
+    #navYfStatus:hover { transform: scale(1.05); box-shadow: 0 2px 6px rgba(0,212,255,.3); }
+    #navYfStatus.checking { opacity: 0.7; pointer-events: none; }
+    #navYfStatus .check-spinner { display: inline-block; width: 10px; height: 10px;
+                   border: 2px solid currentColor; border-right-color: transparent;
+                   border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 4px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #0d1117; }
     ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
@@ -195,7 +202,9 @@
         <li class="nav-item d-flex align-items-center gap-1">
           <span id="navClockHK" class="badge bg-dark border border-secondary nav-clock">HK --:--:--</span>
           <span id="navClockET" class="badge bg-dark border border-secondary nav-clock">ET --:--:--</span>
-          <span id="navYfStatus" class="badge" style="display:none"></span>
+          <span id="navYfStatus" class="badge bg-secondary" title="yfinance 檢查器 (Click to check)">
+            <i class="bi bi-cloud-check me-1"></i>yF —
+          </span>
         </li>
         <li class="nav-item"><a class="nav-link" href="/latest-report" target="_blank"><i class="bi bi-file-earmark-text me-1"></i>Report</a></li>
       </ul>
@@ -426,32 +435,80 @@ function _updateNavClocks() {
 _updateNavClocks();
 setInterval(_updateNavClocks, 1000);
 
-/* ── yfinance status badge (polls every 15s) ────────────────────────────── */
+/* ── yfinance status badge (polls every 15s + click to check) ────────────── */
+let _yf_last_check_time = 0;
+let _yf_is_checking = false;
+
+async function _checkYfStatusNow() {
+  if (_yf_is_checking) return;
+  _yf_is_checking = true;
+  const el = document.getElementById('navYfStatus');
+  el.classList.add('checking');
+  
+  try {
+    const r = await fetch('/api/yf-status').then(x => x.json());
+    _yf_last_check_time = Date.now();
+    _updateYfStatusDisplay(r);
+    
+    // Show popup with details
+    const restricted = r.rate_limited ? ' ⚠️ 被限制！' : '';
+    const errorMsg = r.errors > 0 ? `\n❌ 錯誤: ${r.errors}` : '';
+    const detailMsg = `yfinance 狀態檢查\n✓ 呼叫: ${r.calls}\n${r.errors > 0 ? '❌ 錯誤: ' + r.errors : '✓ 無誤'}${restricted}`;
+    toast(detailMsg, !r.rate_limited);
+  } catch(e) {
+    toast('❌ 檢查失敗: ' + e.message, false);
+  } finally {
+    _yf_is_checking = false;
+    el.classList.remove('checking');
+  }
+}
+
+function _updateYfStatusDisplay(r) {
+  const el = document.getElementById('navYfStatus');
+  if (!el) return;
+  
+  if (r.rate_limited) {
+    el.className = 'badge bg-danger';
+    el.title = '⚠️ yfinance 已被限制！\n限制時間戳: ' + new Date(r.rate_limit_ts * 1000).toLocaleTimeString('zh-HK') + '\n呼叫: ' + r.calls + ' | 錯誤: ' + r.errors + '\n點擊檢查或稍候再試';
+    el.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>yF 限速';
+  } else if (r.errors > 0) {
+    el.className = 'badge bg-warning text-dark';
+    el.title = '⚠️ yfinance 有錯誤\n錯誤: ' + r.errors + ' | 呼叫: ' + r.calls + '\n點擊重新檢查';
+    el.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>yF ⚠️' + r.errors;
+  } else if (r.calls > 0) {
+    el.className = 'badge bg-success';
+    el.title = '✓ yfinance 正常 — 呼叫: ' + r.calls + '\n點擊檢查最新狀態';
+    el.innerHTML = '<i class="bi bi-check-circle me-1"></i>yF ✓ ' + r.calls;
+  } else {
+    el.className = 'badge bg-secondary';
+    el.title = '尚未呼叫 yfinance\n點擊檢查狀態';
+    el.innerHTML = '<i class="bi bi-cloud-check me-1"></i>yF —';
+  }
+  el.style.display = '';
+}
+
 async function _pollNavYfStatus() {
   try {
     const r = await fetch('/api/yf-status').then(x => x.json());
+    _updateYfStatusDisplay(r);
+  } catch(e) { 
+    // Network error — still show badge but grey out
     const el = document.getElementById('navYfStatus');
-    if (!el) return;
-    if (r.rate_limited) {
-      el.style.display = '';
-      el.className = 'badge bg-danger';
-      el.title = 'yfinance 觸發限速 Rate Limited！\n呼叫次數: ' + r.calls + '  錯誤: ' + r.errors + '\n請稍候再試 Please wait before retrying.';
-      el.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>yF 限速';
-    } else if (r.errors > 0) {
-      el.style.display = '';
-      el.className = 'badge bg-warning text-dark';
-      el.title = 'yfinance 有錯誤 Errors: ' + r.errors + ' / 呼叫次數: ' + r.calls;
-      el.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>yF ' + r.errors + '錯';
-    } else if (r.calls > 0) {
-      el.style.display = '';
-      el.className = 'badge bg-success';
-      el.title = 'yfinance 正常 OK — 呼叫次數: ' + r.calls;
-      el.innerHTML = '<i class="bi bi-check-circle me-1"></i>yF&nbsp;' + r.calls;
-    } else {
-      el.style.display = 'none';
+    if (el) {
+      el.className = 'badge bg-secondary';
+      el.title = '⚠️ 無法連接伺服器';
     }
-  } catch(e) { /* network error — stay hidden */ }
+  }
 }
+
+// Add click handler to yF badge
+window.addEventListener('DOMContentLoaded', () => {
+  const yf_el = document.getElementById('navYfStatus');
+  if (yf_el) {
+    yf_el.addEventListener('click', _checkYfStatusNow);
+  }
+});
+
 _pollNavYfStatus();
 setInterval(_pollNavYfStatus, 15000);
 

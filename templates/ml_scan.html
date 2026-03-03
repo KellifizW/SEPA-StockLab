@@ -457,8 +457,7 @@ async function loadLast() {
     const data = await fetch("/api/ml/scan/last").then(r => r.json());
     if (data.rows && data.rows.length > 0) {
       renderResults(data.rows);
-      if (data.themes) renderThemes(data.themes);
-      toast("已載入上次掃描結果 (" + data.rows.length + " 隻)", true);
+      if (data.themes) renderThemes(data.themes);      if (data.triple_summary) renderTripleSummary(data.triple_summary);      toast("已載入上次掃描結果 (" + data.rows.length + " 隻)", true);
     }
   } catch(e) {}
 }
@@ -549,7 +548,7 @@ function setupBadgeHtml(code) {
 
 function dtBadgeHtml(dt) {
   if (!dt) return "<span class=\"text-secondary\" style=\"font-size:11px\">&mdash;</span>";
-  const verdict = dt.verdict || "";
+  const verdict = dt.signal || dt.verdict || "";
   const pass    = dt.pass_count != null ? dt.pass_count : "?";
   const cls     = verdict === "GO" ? "text-success" : verdict === "CAUTION" ? "text-warning" : "text-danger";
   const icon    = verdict === "GO" ? "&#10003;" : verdict === "CAUTION" ? "&#9651;" : "&#10007;";
