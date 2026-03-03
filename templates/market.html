@@ -48,170 +48,8 @@
   </div>
 </div>
 
-<div id="result" class="d-none">
-
-  <!-- Regime banner -->
-  <div id="regimeBanner" class="card mb-3 p-3">
-    <div class="d-flex align-items-center gap-3 flex-wrap">
-      <div id="regimeEmoji" style="font-size:2.5rem"></div>
-      <div>
-        <div id="regimeName" class="fw-bold" style="font-size:1.4rem"></div>
-        <div id="regimeDate" class="text-muted small"></div>
-      </div>
-      <div class="ms-auto text-end" id="actionNote" style="max-width:350px; font-size:0.85rem"></div>
-    </div>
-  </div>
-
-  <!-- Index metrics -->
-  <div class="row g-3 mb-3" id="indexCards"></div>
-
-  <!-- Key indicators -->
-  <div class="row g-3 mb-3">
-    <div class="col-12 col-md-4">
-      <div class="card">
-        <div class="card-header">Distribution Days</div>
-        <div class="card-body text-center">
-          <div id="distDays" class="display-4 fw-bold"></div>
-          <div class="text-muted small mt-1">SPY last 25 sessions &nbsp;(≥5 = warning)</div>
-          <div class="mt-2 text-muted small">QQQ: <span id="qqqDist"></span></div>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-4">
-      <div class="card">
-        <div class="card-header">Market Breadth</div>
-        <div class="card-body text-center">
-          <div id="breadth" class="display-4 fw-bold"></div>
-          <div class="text-muted small mt-1">% US stocks above SMA200</div>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-4">
-      <div class="card">
-        <div class="card-header">New High / (NH+NL)</div>
-        <div class="card-body text-center">
-          <div id="nhNl" class="display-4 fw-bold"></div>
-          <div class="text-muted small mt-1">52-week new highs ratio</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Action matrix + sector leaders -->
-  <div class="row g-3">
-    <div class="col-12 col-md-6">
-      <div class="card">
-        <div class="card-header"><i class="bi bi-sliders me-2"></i>Action Matrix
-          <i class="bi bi-question-circle ms-2" style="cursor:help; color:#8b949e;" data-bs-toggle="tooltip" data-bs-placement="top" title="Action Matrix 根據 Minervini 的市場環境分類，自動建議你的持倉上限、資金部署比例和止損策略。當市場處於牛市確認時，可全力進攻；當市場走弱或進入熊市，系統會限制你的部位數和資金比，並收緊止損，以保護資本。"></i>
-        </div>
-        <div class="card-body" id="actionMatrix"></div>
-        <div class="card-footer bg-transparent border-top-0 pt-0">
-          <details class="small text-muted">
-            <summary style="cursor:pointer;">什麼是 Action Matrix？</summary>
-            <div class="mt-2" style="line-height:1.6;">
-              Action Matrix 根據 <strong>Mark Minervini</strong> 的市場環境理論（《Trade Like a Stock Market Wizard》第 12-13 章），<br>
-              依據當前 Regime（市場階段）自動輸出三項交易參數：
-              <ul class="mt-1 mb-1">
-                <li><strong>Max Positions</strong> — 同時持有的最大部位數</li>
-                <li><strong>Max Deployment</strong> — 總資金可投入的最大比例</li>
-                <li><strong>Stop Mode</strong> — 止損寬鬆度（NORMAL → TIGHT → VERY_TIGHT → EXITS）</li>
-              </ul>
-              <span style="color:#58a6ff;">BULL_CONFIRMED</span>：全力進攻，最多 8 個部位、100% 資金<br>
-              <span style="color:#e3b341;">TRANSITION</span>：僅選最優 A 級標的，50% 資金、收緊止損<br>
-              <span style="color:#f85149;">BEAR_CONFIRMED</span>：不開新倉，保護資本
-            </div>
-          </details>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-6">
-      <div class="card">
-        <div class="card-header"><i class="bi bi-building me-2"></i>Sector Performance</div>
-        <div class="card-body" id="sectorBox"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 指數 K 線 Index Charts -->
-  <div class="row g-3 mt-3" id="indexChartsRow" style="display:none">
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span><i class="bi bi-bar-chart-line me-2"></i>指數 K 線 Index Charts (90D)</span>
-          <div class="d-flex gap-3 small" style="color:#8b949e">
-            <span><span style="display:inline-block;width:12px;height:2px;background:#58a6ff;vertical-align:middle"></span> SMA50</span>
-            <span><span style="display:inline-block;width:12px;height:2px;background:#f85149;vertical-align:middle"></span> SMA200</span>
-          </div>
-        </div>
-        <div class="card-body p-0">
-          <div class="row g-0">
-            <div class="col-12 col-md-6" style="border-bottom:1px solid #21262d">
-              <div class="px-3 pt-2 text-muted small">SPY &mdash; S&amp;P 500</div>
-              <div id="lwcSpyChart" style="height:200px;width:100%"></div>
-            </div>
-            <div class="col-12 col-md-6" style="border-left:1px solid #21262d;border-bottom:1px solid #21262d">
-              <div class="px-3 pt-2 text-muted small">QQQ &mdash; NASDAQ 100</div>
-              <div id="lwcQqqChart" style="height:200px;width:100%"></div>
-            </div>
-            <div class="col-12 col-md-6">
-              <div class="px-3 pt-2 text-muted small">IWM &mdash; Russell 2000</div>
-              <div id="lwcIwmChart" style="height:200px;width:100%"></div>
-            </div>
-            <div class="col-12 col-md-6" style="border-left:1px solid #21262d">
-              <div class="px-3 pt-2 text-muted small">DIA &mdash; Dow Jones</div>
-              <div id="lwcDiaChart" style="height:200px;width:100%"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Market Regime History -->
-  <div class="row g-3 mt-3">
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header"><i class="bi bi-clock-history me-2"></i>Market Regime History (Last 30 days)</div>
-        <div class="card-body p-0">
-          <div id="historyLoading" class="p-4 text-center text-muted">
-            <div class="spinner-border spinner-border-sm text-info"></div>
-            <div class="small mt-2">Loading regime history…</div>
-          </div>
-          <!-- 市場廣度趨勢圖 Breadth & NH/NL Trend Chart -->
-          <div id="breadthChartWrap" style="display:none;border-bottom:1px solid #21262d;background:#0d1117;padding:12px 14px 4px">
-            <div class="small text-muted mb-1">市場廣度與新高/新低趨勢 Breadth &amp; NH/NL Trend (Last 30 days)</div>
-            <div style="position:relative;height:130px"><canvas id="breadthChart"></canvas></div>
-          </div>
-          <div id="historyTable" style="display:none">
-            <div class="table-responsive">
-              <table class="table table-hover mb-0">
-                <thead><tr>
-                  <th>Date</th><th>Regime</th><th>Distribution Days</th><th>Breadth %</th><th>NH/NL %</th><th>Action</th>
-                </tr></thead>
-                <tbody id="historyBody"></tbody>
-              </table>
-            </div>
-          </div>
-          <div id="historyEmpty" style="display:none" class="p-4 text-center text-muted">
-            <i class="bi bi-inbox fs-2 d-block mb-2"></i>
-            No market history yet. Run market assessment to start tracking.
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Log file path -->
-  <div id="marketLogBar" class="mt-3 d-none">
-    <div class="card" style="background:#0d1520; border-color:#1e2d3d;">
-      <div class="card-body py-2 d-flex align-items-center gap-2 small">
-        <i class="bi bi-journal-text" style="color:var(--accent)"></i>
-        <span class="text-muted">Log file:</span>
-        <code id="marketLogPath" style="color:#58a6ff; font-size:0.8rem;"></code>
-      </div>
-    </div>
-  </div>
-</div>
+<!-- Result — content injected by /htmx/market/result/<jid> via htmx.ajax() -->
+<div id="result" class="d-none"></div>
 <script>
 let _marketPollId = null;
 let _marketStartTime = null;
@@ -261,7 +99,6 @@ async function runAssess() {
   document.getElementById('btnAssess').disabled = true;
   document.getElementById('loading').classList.remove('d-none');
   document.getElementById('result').classList.add('d-none');
-  document.getElementById('marketLogBar').classList.add('d-none');
 
   // Save step labels on first run
   for (let i = 1; i <= 7; i++) {
@@ -293,11 +130,8 @@ async function runAssess() {
       setTimeout(() => {
         document.getElementById('loading').classList.add('d-none');
         document.getElementById('btnAssess').disabled = false;
-        renderMarket(job.result);
-        if (job.log_file) {
-          document.getElementById('marketLogPath').textContent = job.log_file;
-          document.getElementById('marketLogBar').classList.remove('d-none');
-        }
+        document.getElementById('result').classList.remove('d-none');
+        htmx.ajax('GET', `/htmx/market/result/${r.job_id}`, {target: '#result', swap: 'innerHTML'});
         toastCompletion(`✅ 市場評估完成 — 市場狀態: ${(job.result||{}).regime||'UNKNOWN'}`, true);
       }, 400);
     } else if (job.status === 'error') {
@@ -305,101 +139,12 @@ async function runAssess() {
       clearInterval(_marketTimerId);
       document.getElementById('loading').classList.add('d-none');
       document.getElementById('btnAssess').disabled = false;
-      if (job.log_file) {
-        document.getElementById('marketLogPath').textContent = job.log_file;
-        document.getElementById('marketLogBar').classList.remove('d-none');
-      }
-      toast(`Error: ${job.error||'Unknown'}`, false);
+      const errMsg = job.log_file
+        ? `Error: ${job.error||'Unknown'} — log: ${job.log_file}`
+        : `Error: ${job.error||'Unknown'}`;
+      toast(errMsg, false);
     }
   }, 1500);
-}
-
-function renderMarket(d) {
-  const emojis = {BULL_CONFIRMED:'🟢',BULL_UNCONFIRMED:'🟢',TRANSITION:'🟡',
-                  BOTTOM_FORMING:'🔵',BEAR_RALLY:'🟡',BEAR_CONFIRMED:'🔴',UNKNOWN:'⚪'};
-  const colours= {BULL_CONFIRMED:'#3fb950',BULL_UNCONFIRMED:'#3fb950',
-                  TRANSITION:'#e3b341',BOTTOM_FORMING:'#58a6ff',
-                  BEAR_RALLY:'#e3b341',BEAR_CONFIRMED:'#f85149',UNKNOWN:'#8b949e'};
-  const regimeClass = {BULL_CONFIRMED:'regime-bull',BULL_UNCONFIRMED:'regime-bull',
-                        TRANSITION:'regime-trans',BOTTOM_FORMING:'regime-bottom',
-                        BEAR_RALLY:'regime-trans',BEAR_CONFIRMED:'regime-bear',UNKNOWN:''};
-
-  const regime = d.regime || 'UNKNOWN';
-  document.getElementById('regimeBanner').className = `card mb-3 p-3 ${regimeClass[regime]||''}`;
-  document.getElementById('regimeEmoji').textContent = emojis[regime]||'⚪';
-  document.getElementById('regimeName').style.color = colours[regime]||'#fff';
-  document.getElementById('regimeName').textContent  = regime.replace(/_/g,' ');
-  document.getElementById('regimeDate').textContent  = `Assessed: ${d.assessed_at||''}`;
-  document.getElementById('actionNote').textContent  = d.action_matrix?.note||'';
-
-  // Index cards
-  const indices = [
-    ['SPY','S&P 500',d.spy_trend],
-    ['QQQ','NASDAQ 100',d.qqq_trend],
-    ['IWM','Russell 2000',d.iwm_trend],
-    ['DIA','Dow Jones',d.dia_trend],
-  ];
-  const idxHtml = indices.map(([sym,name,t]) => {
-    if (!t||t.status==='NO DATA') return '';
-    const sc = t.trend_score||0;
-    const clr = t.status==='UPTREND' ? '#3fb950' : t.status==='WEAKENING' ? '#e3b341' : '#f85149';
-    const smas = Object.entries(t.above_smas||{}).map(([k,v])=>
-      `<span class="badge ${v?'bg-success':'bg-danger'} me-1">${k.replace('sma','SMA')}</span>`
-    ).join('');
-    return `<div class="col-6 col-md-3">
-      <div class="card">
-        <div class="card-body text-center py-2">
-          <div class="text-muted small">${sym} — ${name}</div>
-          <div class="fw-bold mt-1" style="color:${clr}">${t.status}</div>
-          <div class="mt-1 small">Score ${sc}/4 &nbsp;|&nbsp; YTD ${t.ytd_pct>0?'+':''}${Number(t.ytd_pct||0).toFixed(1)}%</div>
-          <div class="mt-1">${smas}</div>
-          <div class="mt-1 text-muted small">From 52wH: ${Number(t.pct_from_52w_high||0).toFixed(1)}%</div>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-  document.getElementById('indexCards').innerHTML = idxHtml;
-
-  // Dist days
-  const dd = d.distribution_days ?? '—';
-  const ddClr = dd >= 6 ? '#f85149' : dd >= 4 ? '#e3b341' : '#3fb950';
-  document.getElementById('distDays').style.color = ddClr;
-  document.getElementById('distDays').textContent  = dd;
-  document.getElementById('qqqDist').textContent   = d.qqq_dist_days ?? '—';
-
-  // Breadth
-  const br = d.breadth_pct;
-  const brClr = br>=60?'#3fb950':br>=40?'#e3b341':'#f85149';
-  document.getElementById('breadth').style.color = brClr;
-  document.getElementById('breadth').textContent  = br!=null ? br+'%' : '—';
-
-  // NH/NL
-  const nh = d.nh_nl_ratio;
-  const nhClr = nh>=60?'#3fb950':nh>=40?'#e3b341':'#f85149';
-  document.getElementById('nhNl').style.color = nhClr;
-  document.getElementById('nhNl').textContent  = nh!=null ? nh+'%' : '—';
-
-  // Action matrix
-  const am = d.action_matrix || {};
-  document.getElementById('actionMatrix').innerHTML = `
-    <div class="row g-2 text-center mb-3">
-      <div class="col-6"><div class="metric-card p-2"><div class="fw-bold fs-4">${am.max_open_positions??'—'}</div><div class="metric-lbl">Max Positions</div></div></div>
-      <div class="col-6"><div class="metric-card p-2"><div class="fw-bold fs-4">${am.max_portfolio_pct??'—'}%</div><div class="metric-lbl">Max Deployment</div></div></div>
-    </div>
-    <div><strong>Stop Mode:</strong> <span class="badge bg-secondary">${am.stop_mode||'—'}</span></div>
-    <div class="mt-2 text-muted small">${am.note||''}</div>`;
-
-  // Sectors
-  const leading  = d.leading_sectors||[];
-  const lagging  = d.lagging_sectors||[];
-  document.getElementById('sectorBox').innerHTML = `
-    ${leading.length ? `<div class="mb-2"><strong class="text-success">Leading:</strong><br/>${leading.map(s=>`<span class="badge" style="background:#1b6e2e;color:#3fb950;margin:2px">${s}</span>`).join('')}</div>` : ''}
-    ${lagging.length ? `<div><strong class="text-danger">Lagging:</strong><br/>${lagging.map(s=>`<span class="badge" style="background:#3e0a0a;color:#f85149;margin:2px">${s}</span>`).join('')}</div>` : ''}
-    ${!leading.length && !lagging.length ? '<span class="text-muted">Sector data unavailable.</span>' : ''}`;
-
-  document.getElementById('result').classList.remove('d-none');
-  loadMarketHistory();
-  loadIndexCharts();
 }
 
 async function loadMarketHistory() {

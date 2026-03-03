@@ -78,6 +78,8 @@ _tg_thread = None           # Will be set in __main__
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _jobs: dict = {}          # { job_id: {"status": "pending|done|error", "result": ...} }
+_qm_analyze_cache: dict = {}  # ticker -> clean result dict (for /htmx/qm/analyze/result)
+_ml_analyze_cache: dict = {}  # ticker -> clean result dict (for /htmx/ml/analyze/result)
 _jobs_lock = threading.Lock()
 _cancel_events: dict = {}  # { job_id: threading.Event }
 
@@ -1357,6 +1359,7 @@ def api_qm_analyze():
             tp = clean_result['trade_plan']
             if isinstance(tp, dict):
                 print(f"[DEBUG] After _clean: day2_stop type = {type(tp.get('day2_stop'))}, value = {tp.get('day2_stop')}")
+        _qm_analyze_cache[ticker] = clean_result  # Store for /htmx/qm/analyze/result
         log_rel = str(analyze_log_file.relative_to(ROOT)) if analyze_log_file.exists() else ""
         return jsonify({"ok": True, "ticker": ticker,
                         "result": clean_result, "log_file": log_rel})
@@ -1620,6 +1623,7 @@ def api_ml_analyze():
         from modules.ml_analyzer import analyze_ml
         result = analyze_ml(ticker, print_report=False)
         clean_result = _clean(result) if result else {}
+        _ml_analyze_cache[ticker] = clean_result  # Store for /htmx/ml/analyze/result
         log_rel = str(analyze_log_file.relative_to(ROOT)) if analyze_log_file.exists() else ""
         return jsonify({"ok": True, "ticker": ticker,
                         "result": clean_result, "log_file": log_rel})
@@ -1870,6 +1874,7 @@ def api_vcp():
             result = detect_vcp(df)
             last_close = float(df["Close"].iloc[-1]) if not df.empty else None
             result["current_price"] = round(last_close, 2) if last_close else None
+            result["ticker"] = ticker   # preserved for /htmx/vcp/result/<jid>
             _finish_job(jid, result=_clean(result))
         except Exception as exc:
             _finish_job(jid, error=str(exc))
@@ -2287,6 +2292,96 @@ def htmx_positions_add():
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
         return resp
+
+
+@app.route("/htmx/analyze/result/<jid>")
+def htmx_analyze_result(jid):
+    """Return server-rendered HTML partial for SEPA analyze results.
+    Called by analyze.html via htmx.ajax() after the background job completes.
+    Swapped into <div id="result"> using innerHTML swap.
+    """
+    job = _get_job(jid)
+    if job.get("status") != "done":
+        return make_response(
+            "<p class='text-danger py-3'><i class='bi bi-exclamation-triangle-fill me-2'></i>"
+            "Result not ready or not found.</p>", 200
+        )
+    d = job.get("result") or {}
+    ticker = str(d.get("ticker", "")).upper()
+    return render_template("_analyze_result.html", d=d, ticker=ticker)
+
+
+@app.route("/htmx/vcp/result/<jid>")
+def htmx_vcp_result(jid):
+    """Return server-rendered HTML partial for VCP analysis results.
+    Called by vcp.html via htmx.ajax() after the background job completes.
+    Swapped into <div id="result"> using innerHTML swap.
+    ticker is stored in the result dict (added in api_vcp) and also
+    accepted as a fallback query-string param: ?ticker=NVDA
+    """
+    job = _get_job(jid)
+    if job.get("status") != "done":
+        return make_response(
+            "<p class='text-danger py-3'><i class='bi bi-exclamation-triangle-fill me-2'></i>"
+            "Result not ready or not found.</p>", 200
+        )
+    d = job.get("result") or {}
+    ticker = str(d.get("ticker") or request.args.get("ticker", "")).upper()
+    return render_template("_vcp_result.html", d=d, ticker=ticker)
+
+
+@app.route("/htmx/market/result/<jid>")
+def htmx_market_result(jid):
+    """Return server-rendered HTML partial for Market Environment results.
+    Called by market.html via htmx.ajax() after the background job completes.
+    Swapped into <div id="result"> using innerHTML swap.
+    The partial includes placeholders for index LWC charts and history table;
+    its inline <script> calls loadMarketHistory() and loadIndexCharts() which
+    are defined in market.html.
+    """
+    job = _get_job(jid)
+    if job.get("status") != "done":
+        return make_response(
+            "<p class='text-danger py-3'><i class='bi bi-exclamation-triangle-fill me-2'></i>"
+            "Result not ready or not found.</p>", 200
+        )
+    d = job.get("result") or {}
+    log_file = job.get("log_file", "")
+    return render_template("_market_result.html", d=d, log_file=log_file)
+
+
+@app.route("/htmx/qm/analyze/result")
+def htmx_qm_analyze_result():
+    """Return server-rendered HTML partial for QM star-rating analysis results.
+    Called by qm_analyze.html via htmx.ajax() after the synchronous API call completes.
+    The result is retrieved from _qm_analyze_cache[ticker] populated by api_qm_analyze().
+    Swapped into <div id='resultArea'> using innerHTML swap.
+    """
+    ticker = request.args.get("ticker", "").upper().strip()
+    d = _qm_analyze_cache.get(ticker)
+    if not d:
+        return make_response(
+            "<p class='text-danger py-3'><i class='bi bi-exclamation-triangle-fill me-2'></i>"
+            f"Result for {ticker} not found in cache. Please re-run analysis.</p>", 200
+        )
+    return render_template("_qm_analyze_result.html", d=d, ticker=ticker)
+
+
+@app.route("/htmx/ml/analyze/result")
+def htmx_ml_analyze_result():
+    """Return server-rendered HTML partial for ML star-rating analysis results.
+    Called by ml_analyze.html via htmx.ajax() after the synchronous API call completes.
+    The result is retrieved from _ml_analyze_cache[ticker] populated by api_ml_analyze().
+    Swapped into <div id='resultArea'> using innerHTML swap.
+    """
+    ticker = request.args.get("ticker", "").upper().strip()
+    d = _ml_analyze_cache.get(ticker)
+    if not d:
+        return make_response(
+            "<p class='text-danger py-3'><i class='bi bi-exclamation-triangle-fill me-2'></i>"
+            f"Result for {ticker} not found in cache. Please re-run analysis.</p>", 200
+        )
+    return render_template("_ml_analyze_result.html", d=d, ticker=ticker)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

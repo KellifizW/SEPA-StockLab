@@ -1,0 +1,579 @@
+{# _qm_analyze_result.html — HTMX partial for /htmx/qm/analyze/result?ticker=X  #}
+{# Variables: d (analyze_qm result dict), ticker (str)                           #}
+{# Injected into <div id="resultArea"> via htmx.ajax() innerHTML swap            #}
+
+{# ── Star rating helpers ───────────────────────────────────────────────────── #}
+{% set star = (d.get('capped_stars') or d.get('stars') or 0) | float %}
+{% if star >= 5 %}{% set star_class = 'star-5p' %}
+{% elif star >= 4 %}{% set star_class = 'star-4' %}
+{% elif star >= 3 %}{% set star_class = 'star-3' %}
+{% else %}{% set star_class = 'star-low' %}{% endif %}
+
+{% set full_stars = star | int %}
+{% set has_half = (star - (star | int)) >= 0.5 %}
+
+{# ── Recommendation helpers ────────────────────────────────────────────────── #}
+{% set rec = d.get('recommendation', '') %}
+{% if rec.startswith('BUY') %}
+  {% set rec_bg = '#0d3016' %}  {% set rec_color = '#3fb950' %}
+{% elif rec.startswith('WATCH') %}
+  {% set rec_bg = '#2e2500' %}  {% set rec_color = '#e3b341' %}
+{% else %}
+  {% set rec_bg = '#1c2128' %}  {% set rec_color = '#8b949e' %}
+{% endif %}
+
+{# ── Key data ──────────────────────────────────────────────────────────────── #}
+{% set veto  = d.get('veto') %}
+{% set dims  = d.get('dim_scores') or {} %}
+{% set setup = d.get('setup_type') or {} %}
+{% set plan  = d.get('trade_plan') or {} %}
+{% set close = (d.get('close') or d.get('close_price') or d.get('price') or 0) | float %}
+
+{# ── Setup badge ───────────────────────────────────────────────────────────── #}
+{% set setup_code = (setup.get('type_code') or setup.get('primary_type') or '') | upper %}
+{% if setup_code == 'HTF' %}{% set badge_class = 'badge-htf' %}{% set badge_label = 'HTF 高緊旗形' %}
+{% elif setup_code == 'EP' %}{% set badge_class = 'badge-ep' %}{% set badge_label = 'EP 事件驅動' %}
+{% elif setup_code == 'LADDER' %}{% set badge_class = 'badge-lad' %}{% set badge_label = 'LADDER 階梯' %}
+{% elif setup_code == 'SURF_50' %}{% set badge_class = 'badge-surf' %}{% set badge_label = 'SURF_50 衝浪' %}
+{% elif setup_code == 'RPL' %}{% set badge_class = 'badge-rpl' %}{% set badge_label = 'RPL 拋物修正' %}
+{% elif setup_code == 'FLAG' %}{% set badge_class = 'badge-flag' %}{% set badge_label = 'FLAG 旗形整固' %}
+{% else %}{% set badge_class = 'badge-uk' %}{% set badge_label = setup_code or '未分類' %}{% endif %}
+
+{# ── Veto reason ───────────────────────────────────────────────────────────── #}
+{% if veto == 'ADR' %}{% set veto_reason = 'ADR < 5%：平均日波動幅不足，Qullamaggie 會直接跳過此股票' %}
+{% elif veto == 'BEAR' %}{% set veto_reason = '熊市環境：市場狀況不適合做多，暫停入場' %}
+{% else %}{% set veto_reason = veto or '' %}{% endif %}
+
+{# ── Dimension bar helpers ─────────────────────────────────────────────────── #}
+{% set dim_defs = [
+  ('A', 'bi-rocket',         'A · 動力質素 Momentum Quality'),
+  ('B', 'bi-arrows-expand',  'B · ADR 平均日波動幅'),
+  ('C', 'bi-geo',            'C · 整固質量 Consolidation Quality'),
+  ('D', 'bi-bar-chart',      'D · 均線關係 MA Alignment'),
+  ('E', 'bi-building',       'E · 股票類型 Stock Type'),
+  ('F', 'bi-globe',          'F · 市場環境 Market Timing'),
+] %}
+
+{# ── Position sizing helpers ───────────────────────────────────────────────── #}
+{% set min_pct   = d.get('position_pct_min') or plan.get('position_lo_pct') %}
+{% set max_pct   = d.get('position_pct_max') or plan.get('position_hi_pct') %}
+{% set shares    = plan.get('suggested_shares') %}
+{% set pos_value = plan.get('suggested_value_usd') %}
+{% set day1_stop = plan.get('day1_stop') %}
+{% if shares is not none and close and day1_stop is not none %}
+  {% set risk_dlr = ((close | float) - (day1_stop | float)) * (shares | float) %}
+{% else %}
+  {% set risk_dlr = none %}
+{% endif %}
+
+{# ════════════════════════════════════════════════════════════════════════════ #}
+
+<!-- Mode toggle -->
+<div id="modeToggleRow" class="d-flex align-items-center gap-2 mb-3">
+  <button class="mode-btn active" id="btnReview" onclick="switchQmMode('review')">
+    <i class="bi bi-search me-1"></i>複盤模式 Review
+  </button>
+  <button class="mode-btn" id="btnWatch" onclick="switchQmMode('watch')">
+    <i class="bi bi-broadcast me-1"></i>盯盤模式 Watch
+  </button>
+  <span id="qmWatchCountdown" class="watch-countdown ms-2"></span>
+</div>
+
+<!-- Review Panel -->
+<div id="reviewPanel">
+
+<!-- Row 1: Star + Radar + Setup type -->
+<div class="row g-3 mb-3">
+
+  <!-- Star card -->
+  <div class="col-12 col-md-3 col-lg-2">
+    <div class="card h-100 text-center">
+      <div class="card-header"><i class="bi bi-star-fill me-1 text-warning"></i>QM 星級評分</div>
+      <div class="card-body d-flex flex-column align-items-center justify-content-center py-4">
+        <div class="star-val {{ star_class }}" id="starDisplay">{{ '%.1f' | format(star) }}★</div>
+        <div id="starStars" style="font-size:1.4rem;margin:8px 0">
+          {% for _ in range(full_stars) %}⭐{% endfor %}{% if has_half %}½{% endif %}
+        </div>
+        {% if veto %}
+        <div class="veto-alert w-100 text-center mt-2" id="vetoDisplay">
+          <i class="bi bi-x-octagon-fill me-1"></i>VETO 否決
+          <div id="vetoReason" style="font-size:11px;margin-top:4px">{{ veto_reason }}</div>
+        </div>
+        {% else %}
+        <div class="d-none" id="vetoDisplay">
+          <div id="vetoReason"></div>
+        </div>
+        {% endif %}
+        <div class="mt-3 badge fs-6" id="recDisplay"
+             style="background:{{ rec_bg }};color:{{ rec_color }}">{{ rec }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6-dim radar -->
+  <div class="col-12 col-md-5 col-lg-6">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-diagram-3 me-1"></i>六維評分 6-Dimension Scores
+        <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
+           title="A=動力質素 Momentum · B=ADR波動幅 · C=整固質量 Consolidation · D=均線關係 MA · E=股票類型 Type · F=市場環境 Market"></i>
+      </div>
+      <div class="card-body d-flex align-items-center justify-content-center">
+        <div class="radar-wrap w-100">
+          <canvas id="radarChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Setup type + quick metrics -->
+  <div class="col-12 col-md-4 col-lg-4">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-tag me-1"></i>形態類型 Setup Type</div>
+      <div class="card-body">
+        <div class="text-center mb-3">
+          <span class="badge setup-badge-lg {{ badge_class }}" id="setupBadge">{{ badge_label }}</span>
+        </div>
+        <p class="text-secondary" style="font-size:13px" id="setupDescription">
+          {{ setup.get('description_zh') or setup.get('description') or '—' }}
+        </p>
+        <hr style="border-color:#30363d">
+        <div class="row g-2 text-center" id="quickMetrics">
+          {% set metrics = [
+            ('ADR%',  d.get('adr'),    '#f85149' if d.get('adr') and d.get('adr') < 5 else '#3fb950'),
+            ('1M%',   d.get('mom_1m'), none),
+            ('3M%',   d.get('mom_3m'), none),
+            ('6M%',   d.get('mom_6m'), none),
+          ] %}
+          {% for lbl, val, clr in metrics %}
+          <div class="col-6">
+            <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;text-align:center">
+              <div style="font-size:15px;font-weight:700;color:{{ clr or ('#3fb950' if val is not none and val >= 0 else '#f85149') }}">
+                {% if val is not none %}
+                  {% if val >= 0 %}+{% endif %}{{ '%.1f' | format(val | float) }}%
+                {% else %}—{% endif %}
+              </div>
+              <div style="font-size:10px;color:#8b949e;text-transform:uppercase">{{ lbl }}</div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /Row 1 -->
+
+<!-- Row 2: Dimension breakdown -->
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-bar-chart-steps me-1"></i>維度評分明細 Dimension Breakdown</div>
+      <div class="card-body">
+        <div class="row g-3" id="dimBreakdown">
+          {% for key, icon, label in dim_defs %}
+            {% set dim_d  = dims.get(key) or {} %}
+            {% set adj    = (dim_d.get('score') or 0) | float %}
+            {% set p_raw  = ((adj + 2) / 4 * 100) %}
+            {% set pct    = p_raw if p_raw >= 0 else 0 %}
+            {% set pct    = pct if pct <= 100 else 100 %}
+            {% if adj >= 1 %}{% set bar_color = '#3fb950' %}
+            {% elif adj >= 0 %}{% set bar_color = '#58a6ff' %}
+            {% elif adj >= -1 %}{% set bar_color = '#e3b341' %}
+            {% else %}{% set bar_color = '#f85149' %}{% endif %}
+            {% set detail  = dim_d.get('detail') or {} %}
+            {% set is_veto = detail.get('is_veto', false) %}
+          <div class="col-12 col-md-6">
+            <div style="padding:12px;background:#0d1117;border:1px solid #21262d;border-radius:6px">
+              <div class="d-flex justify-content-between mb-1">
+                <span style="font-size:12px"><i class="bi {{ icon }} me-1"></i>{{ label }}</span>
+                <span style="font-size:13px;font-weight:700;color:{{ bar_color }}">
+                  {{ '+' if adj >= 0 else '' }}{{ '%.1f' | format(adj) }}
+                </span>
+              </div>
+              <div class="dim-bar-wrap mb-2">
+                <div class="dim-bar" style="width:{{ '%.0f' | format(pct) }}%;background:{{ bar_color }}"></div>
+              </div>
+              <div style="font-size:11px;color:#8b949e;line-height:1.4;margin-bottom:6px">
+                {% if detail.get('note') %}<div>{{ detail.get('note') }}</div>{% endif %}
+                {% if detail.get('tooltip') %}
+                  <div style="opacity:0.7;margin-top:4px">
+                    {{ detail.get('tooltip').split('\n')[0] }}
+                  </div>
+                {% endif %}
+              </div>
+              {% if is_veto %}
+              <div style="color:#f85149;font-size:11px">
+                <i class="bi bi-x-octagon me-1"></i>否決觸發 VETO triggered
+              </div>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 2 -->
+
+<!-- Row 3: Trade plan + Price chart -->
+<div class="row g-3 mb-3">
+  <!-- Trade plan -->
+  <div class="col-12 col-lg-5">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-journal-check me-1"></i>交易方案 Trade Plan
+        <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
+           title="Qullamaggie 3階段停損系統：第1天用日低位作停損，第2天移至成本，第3天起改用10日均線追蹤停損。"></i>
+      </div>
+      <div class="card-body" id="tradePlan">
+        {% if plan %}
+        <div class="stop-phase stop-phase-1">
+          <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+            <i class="bi bi-1-circle me-1"></i>第1天停損 Day 1 Stop
+          </div>
+          <div class="fw-bold" style="color:#f85149;font-size:15px">
+            {% if plan.get('day1_stop') is not none %}${{ '%.2f' | format(plan.get('day1_stop') | float) }}{% else %}—{% endif %}
+          </div>
+          <div style="font-size:11px;color:#8b949e">日低位下方 Below LOD</div>
+        </div>
+        <div class="stop-phase stop-phase-2">
+          <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+            <i class="bi bi-2-circle me-1"></i>第2天停損 Day 2 Stop
+          </div>
+          <div class="fw-bold" style="color:#e3b341;font-size:15px">
+            {% if plan.get('day2_stop') is not none %}${{ '%.2f' | format(plan.get('day2_stop') | float) }}{% else %}—{% endif %}
+          </div>
+          <div style="font-size:11px;color:#8b949e">成本位 Break-even</div>
+        </div>
+        <div class="stop-phase stop-phase-3">
+          <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+            <i class="bi bi-3-circle me-1"></i>第3天起 Day 3+ Trail
+          </div>
+          <div class="fw-bold" style="color:#3fb950;font-size:15px">
+            {% if plan.get('day3plus_stop') is not none %}${{ '%.2f' | format(plan.get('day3plus_stop') | float) }}
+            {% else %}10MA 追蹤{% endif %}
+          </div>
+          <div style="font-size:11px;color:#8b949e">{{ plan.get('day3plus_stop_label') or '10MA 追蹤' }}</div>
+        </div>
+        <hr style="border-color:#30363d">
+        <div class="profit-step">
+          <div style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px">
+            <i class="bi bi-cash-stack me-1"></i>利潤目標 Profit Targets
+          </div>
+          <div style="font-size:12px">
+            <span class="text-info">Step 1 (25%)：</span>
+            <span class="fw-bold">
+              {% if plan.get('profit_step1') is not none %}${{ '%.2f' | format(plan.get('profit_step1') | float) }}{% else %}—{% endif %}
+            </span>
+            → 賣出 1/3
+          </div>
+          <div style="font-size:12px;margin-top:4px">
+            <span class="text-info">Step 2 (50%)：</span>
+            <span class="fw-bold">
+              {% if plan.get('profit_step2') is not none %}${{ '%.2f' | format(plan.get('profit_step2') | float) }}{% else %}—{% endif %}
+            </span>
+            → 再賣 1/3
+          </div>
+        </div>
+        {% else %}
+        <div class="text-secondary text-center py-3">暫無交易方案資料</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Price chart placeholder (populated by loadChart() in inline script) -->
+  <div class="col-12 col-lg-7">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-graph-up me-1"></i>價格走勢 Price Chart</div>
+      <div class="card-body p-2">
+        <div id="chart-container">
+          <div class="text-center py-4 text-muted">
+            <div class="spinner-border spinner-border-sm text-info"></div>
+            <div class="small mt-2">載入圖表 Loading chart…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 3 -->
+
+<!-- Row 4: Position sizing -->
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-calculator me-1"></i>倉位計算 Position Sizing
+        <i class="bi bi-info-circle text-secondary ms-2" data-bs-toggle="tooltip"
+           title="根據 Qullamaggie 的星級評分所對應的建議倉位比例。此計算基於 trader_config.py 中設定的帳戶規模。"></i>
+      </div>
+      <div class="card-body" id="positionSizing">
+        <div class="row g-3">
+          <div class="col-6 col-md-3 text-center">
+            <div class="metric-card">
+              <div class="metric-val" style="font-size:22px">
+                {% if min_pct is not none and max_pct is not none %}
+                  {{ min_pct | int }}–{{ max_pct | int }}%
+                {% else %}—{% endif %}
+              </div>
+              <div class="metric-lbl">建議倉位 Suggested Alloc.</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3 text-center">
+            <div class="metric-card">
+              <div class="metric-val" style="font-size:22px">
+                {{ '{:,}'.format(shares | int) if shares is not none else '—' }}
+              </div>
+              <div class="metric-lbl">建議股數 Suggested Shares</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3 text-center">
+            <div class="metric-card">
+              <div class="metric-val" style="font-size:22px;color:#f85149">
+                {% if risk_dlr is not none %}${{ '{:,}'.format(risk_dlr | int) }}{% else %}—{% endif %}
+              </div>
+              <div class="metric-lbl">風險金額 Risk ($)</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3 text-center">
+            <div class="metric-card">
+              <div class="metric-val" style="font-size:18px;color:{{ rec_color }}">{{ rec or '—' }}</div>
+              <div class="metric-lbl">建議動作 Action</div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-2" style="font-size:12px;color:#8b949e">
+          <i class="bi bi-info-circle me-1"></i>
+          Qullamaggie 倉位指引：5★+=15–25%，5★=15–25%，4★=10–15%，3★=5–10%，&lt;3★=不入場。
+          建議倉位金額 ${{ '{:,}'.format(pos_value | int) if pos_value is not none else '—' }}。
+          風險金額 = 每股損失 × 股數，不應超過賬戶規模的 1–1.5%。
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 4 -->
+
+</div><!-- /reviewPanel -->
+
+<!-- Watch Panel — all elements populated by JS refreshQmWatchMode() -->
+<div id="watchPanel" class="d-none">
+
+  <!-- 1. Status row -->
+  <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+    <div>
+      <span class="text-secondary" style="font-size:12px">TICKER</span>
+      <span id="watchTicker" class="ms-1 fw-bold" style="font-size:16px;color:#58a6ff"></span>
+    </div>
+    <div>
+      <span class="watch-price-big" id="watchPrice" style="color:#c9d1d9">—</span>
+      <span class="live-pulse ms-2" id="livePulse" style="display:none"></span>
+    </div>
+    <div>
+      <span class="market-status-badge ms-closed" id="qmMarketStatusBadge">市场閉市</span>
+    </div>
+    <div class="ms-auto text-end">
+      <div style="font-size:11px;color:#8b949e">HOD / LOD</div>
+      <div style="font-size:13px">
+        <span class="text-success" id="watchHod">—</span>
+        <span class="text-secondary mx-1">/</span>
+        <span class="text-danger" id="watchLod">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Gate alerts -->
+  <div id="qmGateAlerts" class="mb-3"></div>
+
+  <!-- 2b-4 Top panel: Score | ORH | ATR -->
+  <div class="card mb-3">
+    <div class="d-flex align-items-stretch qm-top-panel-inner">
+      <div id="qmScoreCardWrap" class="qm-score-col" style="display:none">
+        <div class="qm-section-hdr">
+          <span><i class="bi bi-speedometer me-1"></i>動態評分</span>
+          <span id="qmScoreDelta" class="score-delta flat"></span>
+        </div>
+        <div id="qmScoreCard" style="font-size:12px"><!-- Populated by renderQmWatchScore() --></div>
+      </div>
+      <div class="qm-orh-col">
+        <div class="qm-section-hdr">
+          <span>
+            <i class="bi bi-alarm me-1"></i>開市區間 ORH
+            <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip" style="font-size:10px"
+               title="Qullamaggie：突破開市區間高點是重要買入信號。1分鐘 (最進取) / 5分鐘 (標準) / 30分鐘 (6x5min)。"></i>
+          </span>
+        </div>
+        <div class="qm-orh-inner">
+          <div class="row g-2" id="qmOrhCascade" style="flex-wrap:wrap;margin:0">
+            <!-- Populated by renderOrhCascade() -->
+          </div>
+        </div>
+      </div>
+      <div class="qm-atr-col">
+        <div class="qm-section-hdr">
+          <span>
+            <i class="bi bi-speedometer2 me-1"></i>ATR 入場評估
+            <i class="bi bi-info-circle text-secondary ms-1" data-bs-toggle="tooltip" style="font-size:10px"
+               title="理想入場在 LOD + 0~0.67×ATR。超過 1×ATR 為追價。"></i>
+          </span>
+        </div>
+        <div id="qmAtrGauge" style="font-size:12px"><!-- Populated by renderAtrGauge() --></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. Chart slots A + B -->
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-graph-up-arrow me-1"></i>直播圖表 A</span>
+          <div class="slot-selector">
+            <select id="slotASelect" onchange="setQmWatchChartSlot('A', this.value)">
+              <option value="5m">5分鐘 K線</option>
+              <option value="15m">15分鐘 K線</option>
+              <option value="1h">60分鐘 K線</option>
+              <option value="daily">Daily K線</option>
+              <option value="weekly">週線</option>
+            </select>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div id="qmSlotALegend" class="intraday-legend" style="border-bottom:1px solid #21262d;min-height:28px"></div>
+          <div class="slot-chart-container" id="qmSlotAChart"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-graph-up me-1"></i>直播圖表 B</span>
+          <div class="slot-selector">
+            <select id="slotBSelect" onchange="setQmWatchChartSlot('B', this.value)">
+              <option value="1h">60分鐘 K線</option>
+              <option value="5m">5分鐘 K線</option>
+              <option value="15m">15分鐘 K線</option>
+              <option value="daily">Daily K線</option>
+              <option value="weekly">週線</option>
+            </select>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div id="qmSlotBLegend" class="intraday-legend" style="border-bottom:1px solid #21262d;min-height:28px"></div>
+          <div class="slot-chart-container" id="qmSlotBChart"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6-7. Pre-market plan & Intraday commentary -->
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-journal-bookmark me-1"></i>開市前計劃 Pre-Market Plan</div>
+        <div class="card-body" id="qmPremktPlan" style="font-size:12px;padding:12px">
+          <div class="text-secondary text-center py-2">請先執行分析</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-chat-dots me-1"></i>盤中訊號 Intraday Commentary</div>
+        <div class="card-body" id="qmIntradayCommentary" style="font-size:12px;padding:10px;max-height:320px;overflow-y:auto">
+          <div class="text-secondary text-center py-2">等待盤中資料…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. Signal history log -->
+  <div class="card mb-3">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span><i class="bi bi-clock-history me-1"></i>訊號日誌 Signal Log</span>
+      <button class="btn btn-outline-secondary btn-sm" style="font-size:10px;padding:2px 8px"
+              onclick="clearQmWatchLog()">清空 Clear</button>
+    </div>
+    <div id="qmSignalLog" style="max-height:200px;overflow-y:auto">
+      <!-- Rows appended by appendQmWatchLog() -->
+    </div>
+  </div>
+
+</div><!-- /watchPanel -->
+
+<script>
+(function() {
+  // ── Restore JS state so watch mode and other features work ──────────────
+  window._qmLastTicker = {{ ticker | tojson }};
+  window._qmLastResult = {{ d | tojson }};
+
+  // ── Show result area and mode toggle ────────────────────────────────────
+  const resultArea = document.getElementById('resultArea');
+  if (resultArea) resultArea.classList.remove('d-none');
+  const modeRow = document.getElementById('modeToggleRow');
+  if (modeRow) modeRow.classList.add('visible');
+
+  // ── Update browser URL without reload ────────────────────────────────────
+  history.replaceState({}, '', '/qm/analyze?ticker=' + encodeURIComponent(window._qmLastTicker));
+
+  // ── Rebuild radar chart (Chart.js) ───────────────────────────────────────
+  const _dims    = window._qmLastResult.dim_scores || {};
+  const _dimVals = ['A','B','C','D','E','F'].map(k => {
+    const d = _dims[k] || {};
+    const raw = parseFloat(d.score ?? 0);
+    return Math.max(0, Math.min(100, (raw + 2) * 20));
+  });
+  const _dimLabels = ['A · 動力', 'B · ADR', 'C · 整固', 'D · 均線', 'E · 類型', 'F · 市場'];
+  if (window._radarChart) { try { window._radarChart.destroy(); } catch(e) {} window._radarChart = null; }
+  const _rcCtx = document.getElementById('radarChart');
+  if (_rcCtx) {
+    window._radarChart = new Chart(_rcCtx.getContext('2d'), {
+      type: 'radar',
+      data: {
+        labels: _dimLabels,
+        datasets: [{
+          label: window._qmLastTicker,
+          data: _dimVals,
+          backgroundColor: 'rgba(0,212,255,0.1)',
+          borderColor: '#00d4ff',
+          pointBackgroundColor: '#00d4ff',
+          pointRadius: 4,
+        }]
+      },
+      options: {
+        scales: {
+          r: { min: 0, max: 100, ticks: { display: false },
+               grid: { color: '#30363d' },
+               pointLabels: { color: '#c9d1d9', font: { size: 11 } },
+               angleLines: { color: '#30363d' } }
+        },
+        plugins: { legend: { display: false } },
+        animation: { duration: 600 },
+        maintainAspectRatio: false,
+      }
+    });
+  }
+
+  // ── Set body data attrs for price chart ──────────────────────────────────
+  const _plan = window._qmLastResult.trade_plan || {};
+  const _close = parseFloat(window._qmLastResult.close || window._qmLastResult.close_price || 0);
+  document.body.setAttribute('data-qm-close',        String(_close));
+  document.body.setAttribute('data-qm-day1-stop',    String(_plan.day1_stop     || ''));
+  document.body.setAttribute('data-qm-day3-stop',    String(_plan.day3plus_stop || ''));
+  document.body.setAttribute('data-qm-profit-target',String(_plan.profit_target_px || ''));
+
+  // ── Load daily price chart ────────────────────────────────────────────────
+  if (typeof loadChart === 'function') {
+    loadChart(window._qmLastTicker);
+  }
+
+  // ── Pre-populate pre-market plan (watch mode) ─────────────────────────────
+  if (typeof renderQmPremktPlan === 'function') {
+    renderQmPremktPlan(window._qmLastTicker, window._qmLastResult);
+  }
+
+  // ── Reinit Bootstrap tooltips for injected content ───────────────────────
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+    new bootstrap.Tooltip(el, { placement: 'top' });
+  });
+})();
+</script>

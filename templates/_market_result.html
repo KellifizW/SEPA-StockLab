@@ -1,0 +1,315 @@
+{# _market_result.html — HTMX partial for /htmx/market/result/<jid>      #}
+{# Variables: d (market result dict), log_file (str, may be empty)          #}
+{% set regime = d.get('regime', 'UNKNOWN') %}
+
+{# Regime presentation helpers #}
+{% if regime in ('BULL_CONFIRMED', 'BULL_UNCONFIRMED') %}
+  {% set regime_class  = 'regime-bull' %}
+  {% set regime_emoji  = '🟢' %}
+  {% set regime_colour = '#3fb950' %}
+{% elif regime == 'TRANSITION' or regime == 'BEAR_RALLY' %}
+  {% set regime_class  = 'regime-trans' %}
+  {% set regime_emoji  = '🟡' %}
+  {% set regime_colour = '#e3b341' %}
+{% elif regime == 'BOTTOM_FORMING' %}
+  {% set regime_class  = 'regime-bottom' %}
+  {% set regime_emoji  = '🔵' %}
+  {% set regime_colour = '#58a6ff' %}
+{% elif regime == 'BEAR_CONFIRMED' %}
+  {% set regime_class  = 'regime-bear' %}
+  {% set regime_emoji  = '🔴' %}
+  {% set regime_colour = '#f85149' %}
+{% else %}
+  {% set regime_class  = '' %}
+  {% set regime_emoji  = '⚪' %}
+  {% set regime_colour = '#8b949e' %}
+{% endif %}
+
+{% set am = d.get('action_matrix') or {} %}
+
+{# ── Regime banner ──────────────────────────────────────────────────────── #}
+<div id="regimeBanner" class="card mb-3 p-3 {{ regime_class }}">
+  <div class="d-flex align-items-center gap-3 flex-wrap">
+    <div style="font-size:2.5rem">{{ regime_emoji }}</div>
+    <div>
+      <div class="fw-bold" style="font-size:1.4rem; color:{{ regime_colour }}">
+        {{ regime.replace('_', ' ') }}
+      </div>
+      <div class="text-muted small">Assessed: {{ d.get('assessed_at', '') }}</div>
+    </div>
+    <div class="ms-auto text-end" style="max-width:350px; font-size:0.85rem">
+      {{ am.get('note', '') }}
+    </div>
+  </div>
+</div>
+
+{# ── Index cards ────────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-3" id="indexCards">
+{% set index_list = [
+  ('SPY', 'S&amp;P 500',    d.get('spy_trend') or {}),
+  ('QQQ', 'NASDAQ 100',    d.get('qqq_trend') or {}),
+  ('IWM', 'Russell 2000',  d.get('iwm_trend') or {}),
+  ('DIA', 'Dow Jones',     d.get('dia_trend') or {}),
+] %}
+{% for sym, name, t in index_list %}
+  {% if t and t.get('status') != 'NO DATA' %}
+    {% set status = t.get('status', '') %}
+    {% if status == 'UPTREND' %}
+      {% set idx_clr = '#3fb950' %}
+    {% elif status == 'WEAKENING' %}
+      {% set idx_clr = '#e3b341' %}
+    {% else %}
+      {% set idx_clr = '#f85149' %}
+    {% endif %}
+  <div class="col-6 col-md-3">
+    <div class="card">
+      <div class="card-body text-center py-2">
+        <div class="text-muted small">{{ sym }} — {{ name }}</div>
+        <div class="fw-bold mt-1" style="color:{{ idx_clr }}">{{ status }}</div>
+        <div class="mt-1 small">
+          Score {{ t.get('trend_score', 0) }}/4 &nbsp;|&nbsp;
+          YTD {% if t.get('ytd_pct', 0) > 0 %}+{% endif %}{{ '%.1f' | format(t.get('ytd_pct', 0) | float) }}%
+        </div>
+        <div class="mt-1">
+          {% for k, v in (t.get('above_smas') or {}).items() %}
+            <span class="badge {{ 'bg-success' if v else 'bg-danger' }} me-1">
+              {{ k.replace('sma', 'SMA') }}
+            </span>
+          {% endfor %}
+        </div>
+        <div class="mt-1 text-muted small">
+          From 52wH: {{ '%.1f' | format(t.get('pct_from_52w_high', 0) | float) }}%
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+{% endfor %}
+</div>
+
+{# ── Distribution Days / Breadth / NH-NL ────────────────────────────────── #}
+{% set dd = d.get('distribution_days') %}
+{% if dd is not none and dd >= 6 %}{% set dd_clr = '#f85149' %}
+{% elif dd is not none and dd >= 4 %}{% set dd_clr = '#e3b341' %}
+{% else %}{% set dd_clr = '#3fb950' %}{% endif %}
+
+{% set br = d.get('breadth_pct') %}
+{% if br is not none and br >= 60 %}{% set br_clr = '#3fb950' %}
+{% elif br is not none and br >= 40 %}{% set br_clr = '#e3b341' %}
+{% else %}{% set br_clr = '#f85149' %}{% endif %}
+
+{% set nh = d.get('nh_nl_ratio') %}
+{% if nh is not none and nh >= 60 %}{% set nh_clr = '#3fb950' %}
+{% elif nh is not none and nh >= 40 %}{% set nh_clr = '#e3b341' %}
+{% else %}{% set nh_clr = '#f85149' %}{% endif %}
+
+<div class="row g-3 mb-3">
+  <div class="col-12 col-md-4">
+    <div class="card">
+      <div class="card-header">Distribution Days</div>
+      <div class="card-body text-center">
+        <div class="display-4 fw-bold" style="color:{{ dd_clr }}">
+          {{ dd if dd is not none else '—' }}
+        </div>
+        <div class="text-muted small mt-1">SPY last 25 sessions &nbsp;(≥5 = warning)</div>
+        <div class="mt-2 text-muted small">QQQ: {{ d.get('qqq_dist_days', '—') }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-4">
+    <div class="card">
+      <div class="card-header">Market Breadth</div>
+      <div class="card-body text-center">
+        <div class="display-4 fw-bold" style="color:{{ br_clr }}">
+          {{ (br | string + '%') if br is not none else '—' }}
+        </div>
+        <div class="text-muted small mt-1">% US stocks above SMA200</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-4">
+    <div class="card">
+      <div class="card-header">New High / (NH+NL)</div>
+      <div class="card-body text-center">
+        <div class="display-4 fw-bold" style="color:{{ nh_clr }}">
+          {{ (nh | string + '%') if nh is not none else '—' }}
+        </div>
+        <div class="text-muted small mt-1">52-week new highs ratio</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Action matrix + Sector leaders ─────────────────────────────────────── #}
+{% set leading = d.get('leading_sectors') or [] %}
+{% set lagging = d.get('lagging_sectors') or [] %}
+<div class="row g-3">
+  <div class="col-12 col-md-6">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-sliders me-2"></i>Action Matrix
+        <i class="bi bi-question-circle ms-2" style="cursor:help; color:#8b949e;"
+           data-bs-toggle="tooltip" data-bs-placement="top"
+           title="Action Matrix 根據 Minervini 的市場環境分類，自動建議你的持倉上限、資金部署比例和止損策略。當市場處於牛市確認時，可全力進攻；當市場走弱或進入熊市，系統會限制你的部位數和資金比，並收緊止損，以保護資本。"></i>
+      </div>
+      <div class="card-body" id="actionMatrix">
+        <div class="row g-2 text-center mb-3">
+          <div class="col-6">
+            <div class="metric-card p-2">
+              <div class="fw-bold fs-4">{{ am.get('max_open_positions', '—') }}</div>
+              <div class="metric-lbl">Max Positions</div>
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="metric-card p-2">
+              <div class="fw-bold fs-4">
+                {% if am.get('max_portfolio_pct') is not none %}
+                  {{ am.get('max_portfolio_pct') }}%
+                {% else %}—{% endif %}
+              </div>
+              <div class="metric-lbl">Max Deployment</div>
+            </div>
+          </div>
+        </div>
+        <div><strong>Stop Mode:</strong>
+          <span class="badge bg-secondary">{{ am.get('stop_mode', '—') }}</span>
+        </div>
+        <div class="mt-2 text-muted small">{{ am.get('note', '') }}</div>
+      </div>
+      <div class="card-footer bg-transparent border-top-0 pt-0">
+        <details class="small text-muted">
+          <summary style="cursor:pointer;">什麼是 Action Matrix？</summary>
+          <div class="mt-2" style="line-height:1.6;">
+            Action Matrix 根據 <strong>Mark Minervini</strong> 的市場環境理論（《Trade Like a Stock Market Wizard》第 12-13 章），<br>
+            依據當前 Regime（市場階段）自動輸出三項交易參數：
+            <ul class="mt-1 mb-1">
+              <li><strong>Max Positions</strong> — 同時持有的最大部位數</li>
+              <li><strong>Max Deployment</strong> — 總資金可投入的最大比例</li>
+              <li><strong>Stop Mode</strong> — 止損寬鬆度（NORMAL → TIGHT → VERY_TIGHT → EXITS）</li>
+            </ul>
+            <span style="color:#58a6ff;">BULL_CONFIRMED</span>：全力進攻，最多 8 個部位、100% 資金<br>
+            <span style="color:#e3b341;">TRANSITION</span>：僅選最優 A 級標的，50% 資金、收緊止損<br>
+            <span style="color:#f85149;">BEAR_CONFIRMED</span>：不開新倉，保護資本
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-6">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-building me-2"></i>Sector Performance</div>
+      <div class="card-body" id="sectorBox">
+        {% if leading %}
+          <div class="mb-2">
+            <strong class="text-success">Leading:</strong><br/>
+            {% for s in leading %}
+              <span class="badge me-1 mb-1" style="background:#1b6e2e;color:#3fb950">{{ s }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if lagging %}
+          <div>
+            <strong class="text-danger">Lagging:</strong><br/>
+            {% for s in lagging %}
+              <span class="badge me-1 mb-1" style="background:#3e0a0a;color:#f85149">{{ s }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if not leading and not lagging %}
+          <span class="text-muted">Sector data unavailable.</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Index K-line charts placeholder (filled by loadIndexCharts() in JS) ── #}
+<div class="row g-3 mt-3" id="indexChartsRow" style="display:none">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-bar-chart-line me-2"></i>指數 K 線 Index Charts (90D)</span>
+        <div class="d-flex gap-3 small" style="color:#8b949e">
+          <span><span style="display:inline-block;width:12px;height:2px;background:#58a6ff;vertical-align:middle"></span> SMA50</span>
+          <span><span style="display:inline-block;width:12px;height:2px;background:#f85149;vertical-align:middle"></span> SMA200</span>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="row g-0">
+          <div class="col-12 col-md-6" style="border-bottom:1px solid #21262d">
+            <div class="px-3 pt-2 text-muted small">SPY &mdash; S&amp;P 500</div>
+            <div id="lwcSpyChart" style="height:200px;width:100%"></div>
+          </div>
+          <div class="col-12 col-md-6" style="border-left:1px solid #21262d;border-bottom:1px solid #21262d">
+            <div class="px-3 pt-2 text-muted small">QQQ &mdash; NASDAQ 100</div>
+            <div id="lwcQqqChart" style="height:200px;width:100%"></div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div class="px-3 pt-2 text-muted small">IWM &mdash; Russell 2000</div>
+            <div id="lwcIwmChart" style="height:200px;width:100%"></div>
+          </div>
+          <div class="col-12 col-md-6" style="border-left:1px solid #21262d">
+            <div class="px-3 pt-2 text-muted small">DIA &mdash; Dow Jones</div>
+            <div id="lwcDiaChart" style="height:200px;width:100%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Market Regime History (populated by loadMarketHistory() in JS) ─────── #}
+<div class="row g-3 mt-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-clock-history me-2"></i>Market Regime History (Last 30 days)</div>
+      <div class="card-body p-0">
+        <div id="historyLoading" class="p-4 text-center text-muted">
+          <div class="spinner-border spinner-border-sm text-info"></div>
+          <div class="small mt-2">Loading regime history…</div>
+        </div>
+        <div id="breadthChartWrap" style="display:none;border-bottom:1px solid #21262d;background:#0d1117;padding:12px 14px 4px">
+          <div class="small text-muted mb-1">市場廣度與新高/新低趨勢 Breadth &amp; NH/NL Trend (Last 30 days)</div>
+          <div style="position:relative;height:130px"><canvas id="breadthChart"></canvas></div>
+        </div>
+        <div id="historyTable" style="display:none">
+          <div class="table-responsive">
+            <table class="table table-hover mb-0">
+              <thead><tr>
+                <th>Date</th><th>Regime</th><th>Distribution Days</th><th>Breadth %</th><th>NH/NL %</th><th>Action</th>
+              </tr></thead>
+              <tbody id="historyBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="historyEmpty" style="display:none" class="p-4 text-center text-muted">
+          <i class="bi bi-inbox fs-2 d-block mb-2"></i>
+          No market history yet. Run market assessment to start tracking.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Log file bar ────────────────────────────────────────────────────────── #}
+{% if log_file %}
+<div id="marketLogBar" class="mt-3">
+  <div class="card" style="background:#0d1520; border-color:#1e2d3d;">
+    <div class="card-body py-2 d-flex align-items-center gap-2 small">
+      <i class="bi bi-journal-text" style="color:var(--accent)"></i>
+      <span class="text-muted">Log file:</span>
+      <code style="color:#58a6ff; font-size:0.8rem;">{{ log_file }}</code>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script>
+  // Re-initialise Bootstrap tooltips for newly-injected content
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+    new bootstrap.Tooltip(el);
+  });
+  // Load history chart and index mini charts
+  if (typeof loadMarketHistory === 'function') loadMarketHistory();
+  if (typeof loadIndexCharts   === 'function') loadIndexCharts();
+</script>

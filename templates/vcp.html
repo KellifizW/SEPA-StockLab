@@ -39,133 +39,8 @@
 
 <div id="errBox" class="alert alert-danger d-none"></div>
 
-<div id="result" class="d-none">
-  <!-- Banner -->
-  <div class="card mb-3" id="vcpBanner">
-    <div class="card-body d-flex align-items-center gap-4 flex-wrap">
-      <div>
-        <div class="text-muted small mb-1">VCP Grade</div>
-        <div id="vcpGrade" class="fw-bold" style="font-size:2.5rem"></div>
-      </div>
-      <div>
-        <div class="text-muted small mb-1">Score</div>
-        <div id="vcpScore" class="fw-bold fs-2" style="color:var(--accent)"></div>
-      </div>
-      <div>
-        <div class="text-muted small mb-1">Valid VCP</div>
-        <div id="vcpValid" class="fw-bold fs-4"></div>
-      </div>
-      <div>
-        <div class="text-muted small mb-1">
-          Pivot Price
-          <i class="bi bi-question-circle ms-1" style="cursor:help;color:#8b949e;font-size:0.8rem"
-            data-bs-toggle="tooltip" data-bs-placement="top"
-            title="Pivot 突破點：VCP 形態的理想入場價位。即最後一次收縮結束後，形態頂部的阻力位。當股價放量突破此水平，即為 Minervini SEPA 標準進場信號。股價進入突破點上方 5% 内屬於合格追購區間（Buy Zone）。圖表中以青色虛線標示。"></i>
-        </div>
-        <div id="vcpPivot" class="fw-bold fs-4" style="color:#64ffda"></div>
-      </div>
-      <div>
-        <div class="text-muted small mb-1">Current Price</div>
-        <div id="vcpCurrent" class="fw-bold fs-4"></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="row g-3">
-    <!-- Base Metrics -->
-    <div class="col-12 col-md-6">
-      <div class="card">
-        <div class="card-header">Base Metrics</div>
-        <div class="card-body">
-          <div class="row g-2" id="baseMetrics"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Signal Checks -->
-    <div class="col-12 col-md-3">
-      <div class="card h-100">
-        <div class="card-header">Signal Checklist</div>
-        <ul class="list-group list-group-flush" id="signals"></ul>
-      </div>
-    </div>
-
-    <!-- Contractions -->
-    <div class="col-12 col-md-3">
-      <div class="card h-100">
-        <div class="card-header">Contraction Sequence</div>
-        <div class="card-body" id="contractions"></div>
-      </div>
-    </div>
-
-    <!-- Notes + Action -->
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header">Analysis Notes</div>
-        <div class="card-body" id="vcpNotes">
-          <div class="mb-3" id="notesList"></div>
-          <button id="btnAddWatchlist" class="btn btn-outline-success me-2" onclick="addToWatchlist()">
-            <i class="bi bi-bookmark-plus me-1"></i>Add to Watchlist
-          </button>
-          <a id="btnAnalyze" href="#" class="btn btn-outline-info">
-            <i class="bi bi-search me-1"></i>Full SEPA Analysis
-          </a>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- VCP K線技術分析圖 Technical Chart -->
-  <div class="row g-3 mt-3">
-    <div class="col-12" id="vcpChartSection" style="display:none">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-          <span><i class="bi bi-bar-chart-line me-2"></i>VCP K 線圖 Technical Chart</span>
-          <div class="d-flex align-items-center gap-3 flex-wrap">
-            <div class="d-flex gap-2 small" style="color:#8b949e">
-              <span><span style="display:inline-block;width:12px;height:2px;background:#58a6ff;vertical-align:middle"></span> SMA50</span>
-              <span><span style="display:inline-block;width:12px;height:2px;background:#f85149;vertical-align:middle"></span> SMA200</span>
-              <span><span style="display:inline-block;width:12px;height:1px;background:rgba(136,136,136,0.7);vertical-align:middle"></span> BB</span>
-              <span style="color:#64ffda"><span style="display:inline-block;width:12px;height:2px;background:#64ffda;vertical-align:middle"></span> Pivot</span>
-            </div>
-            <div class="btn-group btn-group-sm" id="vcpRangeBtns">
-              <button class="btn btn-outline-secondary" data-days="90"  onclick="setVcpRange(90,this)">3M</button>
-              <button class="btn btn-outline-secondary" data-days="180" onclick="setVcpRange(180,this)">6M</button>
-              <button class="btn btn-outline-secondary active" data-days="365" onclick="setVcpRange(365,this)">1Y</button>
-            </div>
-            <div class="btn-group btn-group-sm" id="vcpSubModeBtns">
-              <button class="btn btn-outline-info active" onclick="setVcpSubMode('atr',this)">ATR</button>
-              <button class="btn btn-outline-info" onclick="setVcpSubMode('bbw',this)">BB Width</button>
-              <button class="btn btn-outline-info" onclick="setVcpSubMode('vr',this)">Vol Ratio</button>
-            </div>
-          </div>
-        </div>
-        <div class="card-body p-0" style="width:100%;overflow:hidden">
-          <div id="vcpChartLoading" class="text-center py-3">
-            <div class="spinner-border spinner-border-sm text-info"></div>
-            <div class="text-muted small mt-2">載入 K 線資料… Loading chart data…</div>
-          </div>
-          <div id="vcpChartWrap" style="display:none;width:100%;overflow:hidden">
-            <!-- Main chart: Candlestick + BB + SMA + Volume -->
-            <div id="lwcVcpChart" style="height:350px;width:100%;overflow:hidden"></div>
-            <!-- Volume label row -->
-            <div style="background:#0d1117;padding:2px 14px;display:flex;align-items:center;gap:10px">
-              <span class="small" style="color:#8b949e">Volume</span>
-            </div>
-            <div id="vcpSubHeader" style="background:#0d1117;padding:3px 14px;border-top:1px solid #21262d;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:10px">
-              <span class="small" style="color:#8b949e">ATR (14)</span>
-              <span class="small fw-bold" id="vcpSubCurrentVal" style="color:#c9d1d9">—</span>
-            </div>
-            <div id="lwcVcpSubChart" style="height:110px;width:100%;overflow:hidden"></div>
-          </div>
-          <div id="vcpChartEmpty" style="display:none" class="text-center py-4 text-muted">
-            <i class="bi bi-inbox fs-2 d-block mb-2"></i>No chart data available.
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
+<!-- Result — content injected by /htmx/vcp/result/<jid> via htmx.ajax() -->
+<div id="result" class="d-none"></div>
 {% endblock %}
 
 {% block extra_js %}
@@ -188,10 +63,15 @@ async function runVcp() {
   }).then(x=>x.json());
 
   pollJob(`/api/vcp/status/${r.job_id}`,
-    data => {
+    () => {
       document.getElementById('loading').classList.add('d-none');
       document.getElementById('btnVcp').disabled = false;
-      renderVcp(ticker, data);
+      document.getElementById('result').classList.remove('d-none');
+      // _vcp_result.html partial injects banner + cards + chart divs.
+      // Its inline <script> sets _currentTicker/_currentVcpResult and calls loadVcpChart().
+      htmx.ajax('GET',
+        `/htmx/vcp/result/${r.job_id}?ticker=${encodeURIComponent(ticker)}`,
+        {target: '#result', swap: 'innerHTML'});
     },
     err => {
       document.getElementById('loading').classList.add('d-none');
@@ -200,75 +80,6 @@ async function runVcp() {
       document.getElementById('errBox').classList.remove('d-none');
     }
   );
-}
-
-function renderVcp(ticker, d) {
-  _currentVcpResult = d || null;
-  const grade  = d.grade || 'D';
-  const score  = d.vcp_score || 0;
-  const valid  = d.is_valid_vcp;
-  const pivot  = d.pivot_price;
-  const curr   = d.current_price;
-  const gradeClr = {A:'#3fb950',B:'#69f0ae',C:'#e3b341',D:'#f85149'}[grade]||'#f85149';
-
-  document.getElementById('vcpGrade').textContent  = grade;
-  document.getElementById('vcpGrade').style.color  = gradeClr;
-  document.getElementById('vcpScore').textContent  = score + '/100';
-  document.getElementById('vcpValid').innerHTML    = valid
-    ? '<span class="text-success">✓ YES</span>' : '<span class="text-danger">✗ NO</span>';
-  document.getElementById('vcpPivot').textContent  = pivot ? `$${Number(pivot).toFixed(2)}` : '—';
-  document.getElementById('vcpCurrent').textContent= curr  ? `$${Number(curr).toFixed(2)}`  : '—';
-
-  // Highlight pivot zone if close to current
-  if (pivot && curr && Math.abs((curr-pivot)/pivot)*100 < 3) {
-    document.getElementById('vcpPivot').textContent += ' 🔥 In buy zone!';
-  }
-
-  // Base metrics
-  document.getElementById('baseMetrics').innerHTML = [
-    ['T-count (contractions)', d.t_count||0],
-    ['Base width', `${d.base_weeks||0} weeks`],
-    ['Base depth', fmtPct(d.base_depth_pct)],
-    ['Vol ratio (recent/avg)', fmtPct(d.vol_ratio)],
-  ].map(([lbl,val])=>`
-    <div class="col-6"><div class="metric-card p-2">
-      <div class="fw-bold fs-5">${val}</div>
-      <div class="metric-lbl">${lbl}</div>
-    </div></div>`).join('');
-
-  // Signals
-  document.getElementById('signals').innerHTML = [
-    ['ATR Contracting',  d.atr_contracting],
-    ['BB Contracting',   d.bb_contracting],
-    ['Volume Dry-up',    d.vol_dry],
-  ].map(([lbl,v])=>`
-    <li class="list-group-item d-flex justify-content-between py-2" style="background:transparent;border-color:#21262d">
-      <span class="small">${lbl}</span>
-      ${v ? '<i class="bi bi-check-circle-fill text-success fs-5"></i>' : '<i class="bi bi-x-circle text-danger fs-5"></i>'}
-    </li>`).join('');
-
-  // Contractions
-  const cs = d.contractions || [];
-  document.getElementById('contractions').innerHTML = cs.length
-    ? cs.map((c,i)=>`
-      <div class="mb-2 small">
-        <strong>Pivot ${i+1}:</strong> Range ${fmtPct(c.range_pct)}<br>
-        <span class="text-muted">Vol ratio: ${fmtPct(c.vol_ratio)}</span>
-        <div class="progress mt-1" style="height:4px">
-          <div class="progress-bar bg-info" style="width:${Math.min(100,(c.range_pct||0)*2)}%"></div>
-        </div>
-      </div>`).join('')
-    : '<span class="text-muted small">No contraction data.</span>';
-
-  // Notes
-  document.getElementById('notesList').innerHTML = (d.notes||[]).length
-    ? (d.notes||[]).map(n=>`<div class="text-muted small">• ${n}</div>`).join('')
-    : '<div class="text-muted small">No additional notes.</div>';
-
-  document.getElementById('btnAnalyze').href = `/analyze?ticker=${ticker}`;
-  document.getElementById('result').classList.remove('d-none');
-  // Load VCP technical chart after result is rendered
-  loadVcpChart(ticker, pivot ? Number(pivot) : null, d);
 }
 
 // ── VCP Chart state ───────────────────────────────────────────────────────────
