@@ -4264,6 +4264,16 @@ if __name__ == "__main__":
     print(" * Serving Flask app 'app'")
     print(" * Debug mode: off")
     
+    # ── Start Telegram Bot Polling (if enabled) ──────────────────────────────
+    if C.TG_ENABLED:
+        try:
+            from modules.telegram_bot import start_polling
+            tg_thread = threading.Thread(target=start_polling, daemon=True)
+            tg_thread.start()
+            print(" * Telegram Bot Polling: ON")
+        except Exception as e:
+            print(f" ⚠️  Telegram Bot 啟動失敗: {e}")
+    
     # Main thread: wait for signals
     # Keep the main thread alive to receive signals
     try:

@@ -3,6 +3,15 @@ trader_config.py  ─  Minervini SEPA System Configuration
 All Minervini parameters live here. Edit this file to tune the system.
 """
 
+# ── Load environment variables from .env file ────────────────────────────────
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+_env_file = Path(__file__).resolve().parent / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ACCOUNT & RISK PARAMETERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -900,6 +909,14 @@ ML_CHOPPY_MAX_TRADES         = 2       # Maximum new trades per day in choppy ma
 ML_LEADER_HISTORY_DAYS       = 90      # Days of leader scanner history to retain in DB
 ML_THEME_HISTORY_DAYS        = 60      # Days of theme tracking history to retain
 ML_SCORECARD_HISTORY_DAYS    = 365     # Days of trade quality scorecard history
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TELEGRAM BOT  (Polling 方式通訊)
+# ─────────────────────────────────────────────────────────────────────────────
+TG_ENABLED        = True                                    # 主開關 — 改為 True 才啟用
+TG_BOT_TOKEN      = os.getenv("TG_BOT_TOKEN", "")           # 從 .env 讀取，不要 hardcode
+TG_CHAT_ID        = os.getenv("TG_CHAT_ID", "")             # 從 .env 讀取，不要 hardcode
+TG_POLL_INTERVAL  = 2                                       # Polling 間隔（秒）
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNTIME SETTINGS (persisted to data/settings.json)

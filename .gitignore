@@ -1,5 +1,9 @@
 # API Keys & Credentials — NEVER commit
 credentials/
+.env
+.env.local
+.env.*.local
+.secrets
 
 # Python
 __pycache__/
