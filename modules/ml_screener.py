@@ -387,10 +387,100 @@ def _check_ml_stage2(ticker: str, df: pd.DataFrame) -> dict | None:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — Lightweight event-channel filter (GAP / GAINER)
+# ─────────────────────────────────────────────────────────────────────────────
+# MartinLukCore Ch2-3: Gap & Gainer stocks are watchlisted BEFORE trend
+# confirmation. Martin's Step-1 watchlist has two entry criteria:
+#   A型 = 均線支撐/收復型 → full EMA/momentum/weekly filters (Leader path)
+#   B型 = 盤前最強動能型  → event-driven, only ADR + dollar volume needed
+# This lightweight Stage 2 ensures event-channel stocks survive to Stage 3
+# where they receive quality scoring (star rating naturally reflects quality).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _check_ml_stage2_event(ticker: str, df: pd.DataFrame,
+                           channel: str) -> dict | None:
+    """
+    Lightweight Stage 2 for event-driven stocks (GAP/GAINER channels).
+
+    Only checks:
+      1. ADR gate (relaxed: ML_EVENT_MIN_ADR_PCT, default 3%)
+      2. Dollar volume gate (relaxed: ML_EVENT_MIN_DOLLAR_VOLUME, default $3M)
+      3. Basic data quality (≥20 bars)
+
+    Skips: EMA structure, momentum 3M/6M, weekly veto — these are
+    inappropriate for stocks showing FIRST signs of breakout or character
+    change (Martin's B型 watchlist candidates).
+
+    Returns dict compatible with _check_ml_stage2() output for Stage 3.
+    """
+    from modules.data_pipeline import (
+        get_adr, get_dollar_volume, get_momentum_returns, get_ema_alignment
+    )
+
+    if df.empty or len(df) < 20:
+        return None
+
+    # ── 1. ADR gate (relaxed) ─────────────────────────────────────────────
+    adr = get_adr(df)
+    min_adr = getattr(C, "ML_EVENT_MIN_ADR_PCT", 3.0)
+    if adr < min_adr:
+        logger.debug("[ML S2-EVENT VETO] %s ADR=%.1f%% < %.1f%%",
+                     ticker, adr, min_adr)
+        return None
+
+    # ── 2. Dollar volume gate (relaxed) ───────────────────────────────────
+    dv = get_dollar_volume(df)
+    min_dv = getattr(C, "ML_EVENT_MIN_DOLLAR_VOLUME", 3_000_000)
+    if dv < min_dv:
+        logger.debug("[ML S2-EVENT VETO] %s $Vol=%.0f < %.0f",
+                     ticker, dv, min_dv)
+        return None
+
+    close = float(df["Close"].iloc[-1])
+
+    # ── Compute momentum & EMA (informational, NOT as veto) ───────────────
+    mom = get_momentum_returns(df)
+    m3 = mom.get("3m")
+    m6 = mom.get("6m")
+    min3 = getattr(C, "ML_MOMENTUM_3M_MIN_PCT", 30.0)
+    min6 = getattr(C, "ML_MOMENTUM_6M_MIN_PCT", 80.0)
+    passes_3m = m3 is not None and m3 >= min3
+    passes_6m = m6 is not None and m6 >= min6
+
+    ema_align = get_ema_alignment(df)
+
+    logger.info("[ML S2-EVENT PASS] %s (%s) ADR=%.1f%% $Vol=$%.1fM",
+                ticker, channel, adr, dv / 1_000_000)
+
+    return {
+        "ticker":           ticker,
+        "close":            round(close, 2),
+        "adr":              round(adr, 2),
+        "dollar_volume_m":  round(dv / 1_000_000, 2),
+        "mom_3m":           round(m3, 1) if m3 is not None else None,
+        "mom_6m":           round(m6, 1) if m6 is not None else None,
+        "passes_3m":        passes_3m,
+        "passes_6m":        passes_6m,
+        "ema_stacked":      ema_align.get("all_stacked", False),
+        "ema_all_rising":   ema_align.get("all_rising", False),
+        "channel":          channel,
+    }
+
+
 def run_ml_stage2(tickers: list[str], verbose: bool = True,
-                  enriched_map: dict = None) -> list[dict]:
+                  enriched_map: dict = None,
+                  channel_map: dict = None) -> list[dict]:
     """
     Stage 2 — Download OHLCV and apply ML gate to each candidate.
+
+    Parameters
+    ----------
+    channel_map : dict[str, str] | None
+        Mapping of ticker → channel label (e.g. "GAP", "GAINER", "LEADER", "").
+        Stocks with channel "GAP" or "GAINER" use the relaxed event-channel
+        filter (_check_ml_stage2_event). All others use the standard filter.
+
     Returns list of passing ticker dicts for Stage 3.
     """
     from modules.data_pipeline import batch_download_and_enrich
@@ -423,11 +513,21 @@ def run_ml_stage2(tickers: list[str], verbose: bool = True,
     _progress("Stage 2", 48, "應用 ML EMA/ADR/動量過濾… Applying ML filters…")
     passed = []
 
+    # MartinLukCore Ch2-3: Event-channel stocks (GAP/GAINER) use relaxed
+    # filters — they're watchlisted before trend confirmation (B型).
+    # Only LEADER and generic stocks use the full EMA/momentum/weekly pipeline.
+    _event_channels = {"GAP", "GAINER"}
+    _event_enabled = getattr(C, "ML_EVENT_CHANNEL_ENABLED", True)
+    _cmap = channel_map or {}
+
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(_check_ml_stage2, tkr, df_data): tkr
-            for tkr, df_data in enriched.items()
-        }
+        futures = {}
+        for tkr, df_data in enriched.items():
+            ch = _cmap.get(tkr, "")
+            if _event_enabled and ch in _event_channels:
+                futures[pool.submit(_check_ml_stage2_event, tkr, df_data, ch)] = tkr
+            else:
+                futures[pool.submit(_check_ml_stage2, tkr, df_data)] = tkr
         done = 0
         for fut in as_completed(futures):
             if _is_cancelled():
@@ -439,8 +539,9 @@ def run_ml_stage2(tickers: list[str], verbose: bool = True,
                 result = fut.result()
                 if result is not None:
                     passed.append(result)
-                    logger.info("[ML S2 PASS] %s ADR=%.1f%% $Vol=$%.1fM",
-                                tkr, result["adr"], result["dollar_volume_m"])
+                    ch_tag = f" [{_cmap.get(tkr, '')}]" if _cmap.get(tkr) else ""
+                    logger.info("[ML S2 PASS] %s%s ADR=%.1f%% $Vol=$%.1fM",
+                                tkr, ch_tag, result["adr"], result["dollar_volume_m"])
             except Exception as exc:
                 logger.warning("[ML S2 ERROR] %s: %s", tkr, exc)
 
@@ -612,6 +713,19 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         elif _mkt_env in ("MARKET_IN_CORRECTION", "DOWNTREND"):
             _dim_g_score = -2.0
             _dim_g_veto = True
+
+        # ── Event-channel override: disable hard vetoes for GAP/GAINER ───
+        # MartinLukCore Ch2-3: Event stocks (EP/Gainer) are watchlisted
+        # before trend confirmation. Hard vetoes would prematurely kill them.
+        # Scores are still computed for quality differentiation — only the
+        # is_veto flags are cleared so they survive to the result list.
+        _is_event = row.get("channel", "") in ("GAP", "GAINER")
+        if _is_event and getattr(C, "ML_EVENT_DISABLE_HARD_VETO", True):
+            _dim_a_veto = False
+            _dim_e_veto = False
+            _dim_g_veto = False
+            logger.debug("[ML S3] %s event-channel [%s]: hard vetoes disabled",
+                         ticker, row.get("channel"))
 
         _dim_scores = {
             "A": {"score": _dim_a_score, "is_veto": _dim_a_veto},
@@ -848,7 +962,11 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
 
     # ── Stage 2 ───────────────────────────────────────────────────────────
     s2_input = len(candidates)
-    s2_rows = run_ml_stage2([r["ticker"] for r in candidates], verbose=verbose)
+    # Build channel_map so Stage 2 can route GAP/GAINER to the relaxed
+    # event-channel filter (_check_ml_stage2_event) per MartinLukCore Ch2-3.
+    channel_map = {r["ticker"]: r.get("channel", "") for r in candidates}
+    s2_rows = run_ml_stage2([r["ticker"] for r in candidates], verbose=verbose,
+                            channel_map=channel_map)
     if _is_cancelled():
         return pd.DataFrame(), pd.DataFrame()
     if not s2_rows:

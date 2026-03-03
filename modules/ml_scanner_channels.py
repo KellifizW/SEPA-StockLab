@@ -249,7 +249,7 @@ def run_biggest_gainers(
         tickers:    Ticker universe (default: all Stage 1 candidates)
         top_n:      Top N gainers to return (default: ML_GAINER_SCANNER_TOP_N)
         min_price:  Minimum price filter (default: ML_MIN_PRICE)
-        min_vol:    Minimum avg daily dollar volume (default: ML_MIN_DOLLAR_VOL)
+        min_vol:    Minimum avg daily dollar volume (default: ML_MIN_DOLLAR_VOLUME)
 
     Returns:
         list[dict] with: ticker, gain_pct_prior, last_close, vol_mult, channel
@@ -259,7 +259,7 @@ def run_biggest_gainers(
 
     _top_n       = top_n     if top_n     is not None else getattr(C, "ML_GAINER_SCANNER_TOP_N", 50)
     _min_price   = min_price if min_price is not None else getattr(C, "ML_MIN_PRICE", 5.0)
-    _min_vol     = min_vol   if min_vol   is not None else getattr(C, "ML_MIN_DOLLAR_VOL", 1_000_000)
+    _min_vol     = min_vol   if min_vol   is not None else getattr(C, "ML_MIN_DOLLAR_VOLUME", 5_000_000)
     _min_gain    = getattr(C, "ML_GAINER_MIN_GAIN_PCT", 3.0)
     _tickers     = tickers or []
 

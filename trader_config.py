@@ -847,6 +847,22 @@ ML_GAINER_THEME_MIN_COUNT    = 2       # Min stocks in same sector to flag as th
 ML_LEADER_MOMENTUM_PERIOD    = "1mo"   # Leader scanner: rank by 1-month performance
 ML_LEADER_MIN_WEEKS_ABOVE    = 3       # Min weeks W-EMA10 > W-EMA40 (leader quality)
 
+# ── Event-Channel Relaxed Filters (MartinLukCore Ch2-3) ──────────────────
+# GAP and GAINER stocks serve a different purpose than LEADER stocks.
+# Martin's workflow: Gap/Gainer stocks are watchlisted BEFORE trend
+# confirmation. They only need ADR + dollar volume to qualify for the
+# watchlist. Full EMA/momentum/weekly checks apply to LEADER channel only.
+# Reference: MartinLukCore "步驟一：從掃描結果中精選可執行標的"
+#   A型 = 均線支撐/收復型 (full leader filters)
+#   B型 = 盤前最強動能型  (event filters — relaxed)
+ML_EVENT_CHANNEL_ENABLED     = True    # Enable relaxed Stage 2 for GAP/GAINER
+ML_EVENT_MIN_ADR_PCT         = 3.0     # Lower ADR threshold for event stocks
+ML_EVENT_MIN_DOLLAR_VOLUME   = 3_000_000  # Lower $vol threshold for event stocks
+ML_EVENT_SKIP_MOMENTUM       = True    # Skip 3M/6M momentum gate for event stocks
+ML_EVENT_SKIP_WEEKLY_VETO    = True    # Skip weekly EMA veto for event stocks
+ML_EVENT_SKIP_EMA_ABOVE      = True    # Skip "price > EMA50" gate for event stocks
+ML_EVENT_DISABLE_HARD_VETO   = True    # Disable hard vetoes in Stage 3 for event stocks
+
 # ── Situational Awareness 3-Layer System (Chapter 17) ─────────────────────
 ML_SA_LAYER1_LOOKBACK        = 5       # Number of recent trades for Layer 1 P&L feedback
 ML_SA_IWM_LAG_THRESHOLD      = -5.0    # IWM vs QQQ 20-day relative performance to flag short risk
