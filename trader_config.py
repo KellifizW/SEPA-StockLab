@@ -969,6 +969,31 @@ TG_POLL_INTERVAL      = 2                                       # Polling 間隔
 TG_APPROVAL_ENABLED   = True                                    # 啟用新用戶審批系統
 
 # ─────────────────────────────────────────────────────────────────────────────
+# INTERACTIVE BROKERS (IBKR) — LIVE TRADING & POSITION MANAGEMENT
+# ─────────────────────────────────────────────────────────────────────────────
+IBKR_ENABLED          = True                                    # 主開關 — 改為 True 才啟用 IBKR 功能
+IBKR_CONNECTION_MODE  = os.getenv("IBKR_CONNECTION_MODE", "TWS")  # "TWS" 或 "GATEWAY"
+
+# 根據連線模式自動選擇正確的 host 和 port
+if IBKR_CONNECTION_MODE == "GATEWAY":
+    IBKR_HOST         = os.getenv("IBKR_GATEWAY_HOST", "127.0.0.1")
+    IBKR_PORT_PAPER   = int(os.getenv("IBKR_GATEWAY_PORT_PAPER", "4002"))
+    IBKR_PORT_LIVE    = int(os.getenv("IBKR_GATEWAY_PORT_LIVE", "4001"))
+else:  # TWS (default)
+    IBKR_HOST         = os.getenv("IBKR_TWS_HOST", "127.0.0.1")
+    IBKR_PORT_PAPER   = int(os.getenv("IBKR_TWS_PORT_PAPER", "7497"))
+    IBKR_PORT_LIVE    = int(os.getenv("IBKR_TWS_PORT_LIVE", "7496"))
+
+IBKR_CLIENT_ID        = int(os.getenv("IBKR_CLIENT_ID", "1"))   # 應用程式識別碼
+IBKR_ACCOUNT          = os.getenv("IBKR_ACCOUNT", "")           # 留空使用預設帳號
+IBKR_READONLY         = os.getenv("IBKR_READONLY", "false").lower() == "true"  # 唯讀模式
+
+# IBKR 連線參數
+IBKR_TIMEOUT_SEC      = 10                                      # 連線逾時（秒）
+IBKR_SYNC_INTERVAL    = 300                                     # 同期倉位的間隔（秒），300 = 5 分鐘
+IBKR_QUOTE_CACHE_SEC  = 15                                      # 報價快取期限（秒）
+
+# ─────────────────────────────────────────────────────────────────────────────
 # RUNTIME SETTINGS (persisted to data/settings.json)
 # ─────────────────────────────────────────────────────────────────────────────
 SETTINGS_FILE = "data/settings.json"   # Runtime-overridable settings (account size, etc.)

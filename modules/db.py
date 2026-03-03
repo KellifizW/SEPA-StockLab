@@ -258,6 +258,31 @@ def _ensure_schema(conn):
             note            VARCHAR
         )
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ibkr_orders (
+            order_id        INTEGER PRIMARY KEY,
+            order_time      TIMESTAMP NOT NULL,
+            ticker          VARCHAR NOT NULL,
+            action          VARCHAR,              -- BUY or SELL
+            order_type      VARCHAR,              -- MKT, LMT, STP, TRAIL
+            qty             INTEGER,
+            limit_price     DOUBLE,
+            aux_price       DOUBLE,
+            trail_pct       DOUBLE,
+            fill_price      DOUBLE,
+            status          VARCHAR,              -- Submitted, Filled, Cancelled, Error
+            commission      DOUBLE,
+            pnl             DOUBLE,
+            note            VARCHAR
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ibkr_orders_ticker
+        ON ibkr_orders (ticker, order_time)
+    """)
+
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_ml_scan_ticker
         ON ml_scan_history (ticker, scan_date)
@@ -1399,3 +1424,108 @@ def _to_int(v) -> Optional[int]:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IBKR Orders — Persistence Layer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def append_ibkr_order(order_dict: dict) -> bool:
+    """
+    Record an IBKR order (submit, update, or fill).
+    
+    Args:
+        order_dict: {
+            "order_id": int,
+            "order_time": str (ISO datetime),
+            "ticker": str,
+            "action": str,             -- BUY or SELL
+            "order_type": str,         -- MKT, LMT, STP, TRAIL
+            "qty": int,
+            "limit_price": float or None,
+            "aux_price": float or None,
+            "trail_pct": float or None,
+            "fill_price": float or None,
+            "status": str,             -- Submitted, Filled, Cancelled, Error
+            "commission": float or None,
+            "pnl": float or None,
+            "note": str or None,
+        }
+    
+    Returns: bool (success)
+    """
+    _init_schema_once()
+    
+    with _lock:
+        try:
+            conn = _get_conn()
+            conn.execute("""
+                INSERT OR REPLACE INTO ibkr_orders
+                (order_id, order_time, ticker, action, order_type, qty, 
+                 limit_price, aux_price, trail_pct, fill_price, status, 
+                 commission, pnl, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                order_dict.get("order_id"),
+                order_dict.get("order_time"),
+                order_dict.get("ticker", "").upper(),
+                order_dict.get("action", ""),
+                order_dict.get("order_type", ""),
+                order_dict.get("qty", 0),
+                order_dict.get("limit_price"),
+                order_dict.get("aux_price"),
+                order_dict.get("trail_pct"),
+                order_dict.get("fill_price"),
+                order_dict.get("status", ""),
+                order_dict.get("commission"),
+                order_dict.get("pnl"),
+                order_dict.get("note", ""),
+            ])
+            conn.close()
+            return True
+        except Exception as exc:
+            logger.error("[DB] append_ibkr_order failed: %s", exc)
+            return False
+
+
+def query_ibkr_orders(days: int = 30) -> list:
+    """
+    Query IBKR orders within the last N days.
+    
+    Returns: list of dicts (sorted by order_time descending)
+    """
+    _init_schema_once()
+    
+    with _lock:
+        try:
+            conn = _get_conn()
+            cutoff = f"CURRENT_DATE - INTERVAL {days} DAY"
+            rows = conn.execute(f"""
+                SELECT * FROM ibkr_orders
+                WHERE DATE(order_time) >= DATE({cutoff})
+                ORDER BY order_time DESC
+            """).fetchall()
+            conn.close()
+            
+            # Convert to list of dicts
+            return [
+                {
+                    "order_id": row[0],
+                    "order_time": str(row[1]),
+                    "ticker": row[2],
+                    "action": row[3],
+                    "order_type": row[4],
+                    "qty": row[5],
+                    "limit_price": row[6],
+                    "aux_price": row[7],
+                    "trail_pct": row[8],
+                    "fill_price": row[9],
+                    "status": row[10],
+                    "commission": row[11],
+                    "pnl": row[12],
+                    "note": row[13],
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            logger.error("[DB] query_ibkr_orders failed: %s", exc)
+            return []

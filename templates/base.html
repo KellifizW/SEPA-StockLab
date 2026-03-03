@@ -198,10 +198,17 @@
                     style="white-space:nowrap; font-size:11px;" title="Cancel scan">Cancel</button>
           </div>
         </li>
-        <!-- ── Navbar clocks & yfinance status ─────────────────────────── -->
+        <!-- ── Navbar clocks, IBKR trade button & yfinance status ─────────────────────────── -->
         <li class="nav-item d-flex align-items-center gap-1">
           <span id="navClockHK" class="badge bg-dark border border-secondary nav-clock">HK --:--:--</span>
           <span id="navClockET" class="badge bg-dark border border-secondary nav-clock">ET --:--:--</span>
+          <!-- ── IBKR Trade Drawer Trigger ────────────────────────────── -->
+          <button id="ibkrTradeBtn" class="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
+                  data-bs-toggle="offcanvas" data-bs-target="#ibkrDrawer" title="開啟 IBKR 交易面板 / Open IBKR Trading Panel"
+                  style="font-size:11px; padding:4px 8px;">
+            <span id="ibkrConnectDot" class="badge bg-danger" style="width:6px; height:6px; border-radius:50%; display:inline-block;"></span>
+            <span>交易 / Trade</span>
+          </button>
           <span id="navYfStatus" class="badge bg-secondary" title="yfinance 檢查器 (Click to check)">
             <i class="bi bi-cloud-check me-1"></i>yF —
           </span>
@@ -291,6 +298,31 @@ function scoreClass(v) {
 // ── Format number helpers ─────────────────────────────────────────────────────
 function fmt2(v) { return (v == null) ? '—' : Number(v).toFixed(2); }
 function fmtPct(v) { return (v == null) ? '—' : Number(v).toFixed(1) + '%'; }
+
+// ── Restart Server ────────────────────────────────────────────────────────────
+async function restartServer() {
+  try {
+    const confirmed = confirm('確認重啟 Flask 伺服器？\n\nConfirm restart Flask server?');
+    if (!confirmed) return;
+    
+    const btn = event.target;
+    if (btn) btn.disabled = true;
+    
+    const r = await fetch('/api/admin/restart', {method: 'POST'});
+    if (r.ok) {
+      toast('✅ 伺服器重啟中... / Server restarting...', true);
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+    } else {
+      toast('❌ 無法重啟伺服器 / Failed to restart', false);
+      if (btn) btn.disabled = false;
+    }
+  } catch(e) {
+    toast(`❌ 錯誤: ${e.message}`, false);
+    if (event.target) event.target.disabled = false;
+  }
+}
 function fmtInt(v) { return (v == null) ? '—' : Math.round(Number(v)); }
 
 // ── htmx: HX-Trigger event bridge → unified toast ─────────────────────────────
@@ -410,7 +442,10 @@ window.addEventListener('storage', (e) => {
 });
 
 // Initialize on page load
-window.addEventListener('DOMContentLoaded', initGlobalScanMonitor);
+window.addEventListener('DOMContentLoaded', function() {
+  initGlobalScanMonitor();
+  initIbkrDrawer();
+});
 
 /* ── Navbar clocks (HK + ET, time only, no date) ────────────────────────── */
 function _updateNavClocks() {
@@ -608,7 +643,430 @@ async function submitQuickPosition() {
     toast(`❌ 網路錯誤: ${e}`, false);
   }
 }
-</script>
+
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* ═ IBKR Trading Drawer — JavaScript ═══════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+
+// Open IBKR drawer with optional pre-filled ticker
+// NOTE: Bootstrap Offcanvas handles toggle via data-bs-toggle attribute on button
+// This function can pre-fill form fields and switch tabs
+function openIBKRDrawer(ticker = '', action = 'BUY', qty = null) {
+  try {
+    // Pre-fill ticker if provided
+    if (ticker) {
+      const tickerInput = document.getElementById('ibkrTickerInput');
+      if (tickerInput) tickerInput.value = ticker.toUpperCase();
+    }
+    
+    // Pre-fill action if provided
+    if (action) {
+      const actionRadio = document.querySelector(`input[name="ibkrOrderAction"][value="${action}"]`);
+      if (actionRadio) actionRadio.checked = true;
+    }
+    
+    // Pre-fill qty if provided
+    if (qty !== null && qty > 0) {
+      const qtyInput = document.getElementById('ibkrOrderQty');
+      if (qtyInput) qtyInput.value = qty;
+    }
+    
+    // Switch to Trade tab if drawer exists
+    const drawerEl = document.getElementById('ibkrDrawer');
+    if (drawerEl) {
+      const tradeTab = document.getElementById('ibkrTabTrade');
+      if (tradeTab) {
+        try {
+          const tab = new bootstrap.Tab(tradeTab);
+          tab.show();
+        } catch(e) {
+          console.warn('Could not switch to Trade tab:', e);
+        }
+      }
+      // Trigger the offcanvas to show
+      // Note: This relies on the button's data-bs-toggle attribute to actually show it
+      // We just help with form population here
+    }
+  } catch(e) {
+    console.error('Error in openIBKRDrawer:', e);
+  }
+}
+
+// Initialize IBKR drawer when DOMContentLoaded
+function initIbkrDrawer() {
+  try {
+    const reconnectBtn = document.getElementById('ibkrConnectBtnSmall');
+    const disconnectBtn = document.getElementById('ibkrDisconnectBtnSmall');
+    const quoteSearchBtn = document.getElementById('ibkrQuoteSearchBtn');
+    const tickerInput = document.getElementById('ibkrTickerInput');
+    const orderTypeSelect = document.getElementById('ibkrOrderType');
+    const orderSubmitBtn = document.getElementById('ibkrOrderSubmitBtn');
+    const syncPosBtn = document.getElementById('ibkrSyncPositionsBtn');
+    
+    if (reconnectBtn) reconnectBtn.addEventListener('click', ibkrConnect);
+    if (disconnectBtn) disconnectBtn.addEventListener('click', ibkrDisconnect);
+    if (quoteSearchBtn) quoteSearchBtn.addEventListener('click', ibkrSearchQuote);
+    if (tickerInput) tickerInput.addEventListener('keyup', e => {
+      if (e.key === 'Enter') ibkrSearchQuote();
+    });
+    
+    // Order type change → show/hide conditional inputs
+    if (orderTypeSelect) {
+      orderTypeSelect.addEventListener('change', function() {
+        const showLmt = this.value === 'LMT';
+        const showStp = this.value === 'STP';
+        const showTrail = this.value === 'TRAIL';
+        const lmtDiv = document.getElementById('ibkrLimitPriceDiv');
+        const stpDiv = document.getElementById('ibkrAuxPriceDiv');
+        const trailDiv = document.getElementById('ibkrTrailPctDiv');
+        if (lmtDiv) lmtDiv.classList.toggle('d-none', !showLmt);
+        if (stpDiv) stpDiv.classList.toggle('d-none', !showStp);
+        if (trailDiv) trailDiv.classList.toggle('d-none', !showTrail);
+      });
+    }
+    
+    if (orderSubmitBtn) orderSubmitBtn.addEventListener('click', ibkrPlaceOrder);
+    if (syncPosBtn) syncPosBtn.addEventListener('click', ibkrSyncPositions);
+  } catch(e) {
+    console.error('Error initializing IBKR drawer:', e);
+  }
+  
+  // Status polling disabled until IBKR API connection is implemented
+  // Uncomment below when /api/ibkr/* endpoints are ready
+  /*
+  window.setInterval(updateIbkrStatus, 30000);
+  updateIbkrStatus(); // Initial check
+  */
+}
+
+// GET /api/ibkr/status
+async function updateIbkrStatus() {
+  try {
+    const response = await fetch('/api/ibkr/status');
+    if (!response.ok) {
+      // API endpoint not available yet
+      console.warn('IBKR API not yet implemented');
+      return;
+    }
+    
+    const r = await response.json();
+    const data = r.data || {};
+    const connected = data.connected || false;
+    
+    // Update Navbar button color/state
+    const navBtn = document.getElementById('ibkrTradeBtn');
+    const dot = document.getElementById('ibkrConnectDot');
+    if (navBtn && dot) {
+      if (connected) {
+        dot.className = 'badge bg-success';
+        navBtn.className = 'btn btn-sm btn-outline-success d-flex align-items-center gap-1';
+      } else {
+        dot.className = 'badge bg-danger';
+        navBtn.className = 'btn btn-sm btn-outline-secondary d-flex align-items-center gap-1';
+      }
+    }
+    
+    // Update drawer header and buttons
+    const subtitle = document.getElementById('ibkrDrawerSubtitle');
+    const connBtn = document.getElementById('ibkrConnectBtnSmall');
+    const disconnBtn = document.getElementById('ibkrDisconnectBtnSmall');
+    
+    if (connected) {
+      if (subtitle) {
+        const nav = data.nav ? ` NAV: $${parseFloat(data.nav).toLocaleString('en-US', {maximumFractionDigits: 2})}` : '';
+        subtitle.textContent = `✓ 連接: ${data.account}${nav}`;
+      }
+      if (connBtn) connBtn.classList.add('d-none');
+      if (disconnBtn) disconnBtn.classList.remove('d-none');
+    } else {
+      if (subtitle) subtitle.textContent = '✗ 離線 / Disconnected';
+      if (connBtn) connBtn.classList.remove('d-none');
+      if (disconnBtn) disconnBtn.classList.add('d-none');
+    }
+  } catch(e) {
+    console.error('updateIbkrStatus error:', e);
+  }
+}
+
+// POST /api/ibkr/connect
+async function ibkrConnect() {
+  try {
+    const btn = document.getElementById('ibkrConnectBtnSmall');
+    if (btn) btn.disabled = true;
+    
+    const response = await fetch('/api/ibkr/connect', {method: 'POST'});
+    if (!response.ok) {
+      toast('❌ IBKR API 未實施 / IBKR API not yet implemented', false);
+      return;
+    }
+    const r = await response.json();
+    const success = r.ok && r.data?.success;
+    
+    if (success) {
+      toast(`✅ IBKR 已連接 / Connected: ${r.data?.account}`, true);
+      await updateIbkrStatus();
+    } else {
+      const msg = r.data?.message || r.error || 'Unknown error';
+      toast(`❌ 連接失敗 / Connection failed: ${msg}`, false);
+    }
+  } catch(e) {
+    toast(`❌ 錯誤: ${e.message}`, false);
+  } finally {
+    const btn = document.getElementById('ibkrConnectBtnSmall');
+    if (btn) btn.disabled = false;
+  }
+}
+
+// POST /api/ibkr/disconnect
+async function ibkrDisconnect() {
+  try {
+    const btn = document.getElementById('ibkrDisconnectBtnSmall');
+    if (btn) btn.disabled = true;
+    
+    const response = await fetch('/api/ibkr/disconnect', {method: 'POST'});
+    if (!response.ok) {
+      toast('❌ IBKR API 未實施 / IBKR API not yet implemented', false);
+      return;
+    }
+    const r = await response.json();
+    const success = r.ok && r.data?.success;
+    
+    if (success) {
+      toast('✅ IBKR 已斷開 / Disconnected', true);
+      await updateIbkrStatus();
+    } else {
+      const msg = r.data?.message || r.error || 'Unknown error';
+      toast(`❌ 斷開失敗: ${msg}`, false);
+    }
+  } catch(e) {
+    toast(`❌ 錯誤: ${e.message}`, false);
+  } finally {
+    const btn = document.getElementById('ibkrDisconnectBtnSmall');
+    if (btn) btn.disabled = false;
+  }
+}
+
+// GET /api/ibkr/quote/<ticker>
+async function ibkrSearchQuote() {
+  try {
+    const ticker = document.getElementById('ibkrTickerInput').value.trim().toUpperCase();
+    if (!ticker) {
+      toast('❌ 請輸入股票代碼', false);
+      return;
+    }
+    
+    const btn = document.getElementById('ibkrQuoteSearchBtn');
+    if (btn) btn.disabled = true;
+    
+    const response = await fetch(`/api/ibkr/quote/${ticker}`);
+    if (!response.ok) {
+      toast('❌ IBKR API 未實施 / IBKR API not yet implemented', false);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    const r = await response.json();
+    const quote = r.data;
+    
+    if (!quote || quote.error) {
+      toast(`❌ 無法取得 ${ticker} 報價`, false);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    
+    // Update quote display card
+    const bidEl = document.getElementById('ibkrQuoteBid');
+    const askEl = document.getElementById('ibkrQuoteAsk');
+    const lastEl = document.getElementById('ibkrQuoteLast');
+    if (bidEl) bidEl.textContent = quote.bid > 0 ? quote.bid.toFixed(2) : '--';
+    if (askEl) askEl.textContent = quote.ask > 0 ? quote.ask.toFixed(2) : '--';
+    if (lastEl) lastEl.textContent = quote.last > 0 ? quote.last.toFixed(2) : '--';
+    
+    const quoteCard = document.getElementById('ibkrQuoteCard');
+    if (quoteCard) quoteCard.classList.remove('d-none');
+    
+    // Auto-fill order form
+    const ticketEl = document.getElementById('ibkrOrderTicket');
+    if (ticketEl) ticketEl.value = ticker;
+    
+    if (btn) btn.disabled = false;
+  } catch(e) {
+    toast(`❌ 錯誤: ${e.message}`, false);
+  }
+}
+
+// POST /api/ibkr/order
+async function ibkrPlaceOrder() {
+  try {
+    const actionEl = document.querySelector('input[name="ibkrOrderAction"]:checked');
+    const action = actionEl ? actionEl.value : 'BUY';
+    const tickerEl = document.getElementById('ibkrOrderTicket');
+    const qtyEl = document.getElementById('ibkrOrderQty');
+    const orderTypeEl = document.getElementById('ibkrOrderType');
+    const noteEl = document.getElementById('ibkrOrderNote');
+    
+    const ticker = tickerEl ? tickerEl.value.trim().toUpperCase() : '';
+    const qty = qtyEl ? parseInt(qtyEl.value) : 0;
+    const orderType = orderTypeEl ? orderTypeEl.value : 'MKT';
+    const note = noteEl ? noteEl.value.trim() : '';
+    
+    if (!ticker || qty <= 0) {
+      toast('❌ 請輸入股票代碼和股數', false);
+      return;
+    }
+    
+    const body = {ticker, action, qty, order_type: orderType, note};
+    
+    if (orderType === 'LMT') {
+      const lpEl = document.getElementById('ibkrLimitPrice');
+      const lp = lpEl ? parseFloat(lpEl.value) : 0;
+      if (lp <= 0) {
+        toast('❌ 請輸入限價', false);
+        return;
+      }
+      body.limit_price = lp;
+    } else if (orderType === 'STP') {
+      const apEl = document.getElementById('ibkrAuxPrice');
+      const ap = apEl ? parseFloat(apEl.value) : 0;
+      if (ap <= 0) {
+        toast('❌ 請輸入止損觸發價', false);
+        return;
+      }
+      body.aux_price = ap;
+    } else if (orderType === 'TRAIL') {
+      const tpEl = document.getElementById('ibkrTrailPct');
+      const tp = tpEl ? parseFloat(tpEl.value) : 0;
+      if (tp <= 0) {
+        toast('❌ 請輸入移動止損 %', false);
+        return;
+      }
+      body.trail_pct = tp;
+    }
+    
+    // Confirmation dialog
+    const confirmTxt = `確認下單 / Confirm order:\n🔹 方向: ${action}\n🔹 股票: ${ticker}\n🔹 股數: ${qty}\n🔹 類型: ${orderType}`;
+    
+    if (!confirm(confirmTxt)) {
+      return;
+    }
+    
+    const btn = document.getElementById('ibkrOrderSubmitBtn');
+    if (btn) btn.disabled = true;
+    
+    const response = await fetch('/api/ibkr/order', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      toast('❌ IBKR API 未實施 / IBKR API not yet implemented', false);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    const r = await response.json();
+    
+    if (r.ok) {
+      const orderId = r.data?.order_id || 'N/A';
+      toast(`✅ 訂單已提交 / Order #${orderId}`, true);
+      // Reset form
+      if (tickerEl) ticketEl.value = '';
+      if (qtyEl) qtyEl.value = '';
+      if (noteEl) noteEl.value = '';
+    } else {
+      const msg = r.data?.message || r.error || 'Unknown error';
+      toast(`❌ 下單失敗 / Order failed: ${msg}`, false);
+    }
+    
+    if (btn) btn.disabled = false;
+  } catch(e) {
+    toast(`❌ 錯誤: ${e.message}`, false);
+  }
+}
+
+// GET /api/ibkr/positions
+async function ibkrSyncPositions() {
+  try {
+    const btn = document.getElementById('ibkrSyncPositionsBtn');
+    if (btn) btn.disabled = true;
+    
+    const response = await fetch('/api/ibkr/positions');
+    if (!response.ok) {
+      toast('❌ IBKR API 未實施 / IBKR API not yet implemented', false);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    const r = await response.json();
+    const positions = r.data?.positions || [];
+    
+    const listDiv = document.getElementById('ibkrPositionsList');
+    if (!positions || positions.length === 0) {
+      if (listDiv) listDiv.innerHTML = '<div style="text-align:center; color:#8b949e; padding:20px 8px; font-size:12px;">-- 無持倉 / No positions --</div>';
+      toast('✓ 已同期，但無持倉', true);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    
+    let html = '';
+    for (const pos of positions) {
+      const pnlClass = pos.unrealized_pnl >= 0 ? 'score-high' : 'score-low';
+      const pnlSign = pos.unrealized_pnl >= 0 ? '+' : '';
+      html += `
+        <div style="background:#1c2128; border:1px solid #30363d; border-radius:6px; padding:10px; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+            <div>
+              <strong style="color:#c9d1d9; font-size:13px;">${pos.ticker}</strong>
+              <div style="color:#8b949e; font-size:11px; margin-top:2px;">
+                數量: ${pos.qty} | 均價: $${pos.avg_cost.toFixed(2)}
+              </div>
+            </div>
+            <button class="btn btn-sm btn-outline-warning" onclick="ibkrQuickClosePos('${pos.ticker}', ${pos.qty})" style="font-size:10px; padding:2px 6px;">
+              平倉
+            </button>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:10px;">
+            <div>
+              <span style="color:#8b949e;">市值:</span>
+              <div style="color:#c9d1d9; font-weight:600;">$${pos.market_value.toLocaleString('en', {maximumFractionDigits: 2})}</div>
+            </div>
+            <div style="text-align:right;">
+              <span style="color:#8b949e;">未實現:</span>
+              <div class="${pnlClass}" style="font-weight:600;">${pnlSign}${pos.unrealized_pnl.toFixed(2)} (${pnlSign}${pos.unrealized_pnl_pct.toFixed(2)}%)</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    if (listDiv) listDiv.innerHTML = html;
+    toast(`✅ 已同期 ${positions.length} 個持倉`, true);
+    
+    if (btn) btn.disabled = false;
+  } catch(e) {
+    toast(`❌ 同期失敗: ${e.message}`, false);
+  }
+}
+
+// Quick close position helper → pre-fill Sell order
+function ibkrQuickClosePos(ticker, qty) {
+  const sellEl = document.getElementById('ibkrActionSell');
+  if (sellEl) sellEl.checked = true;
+  
+  const ticketEl = document.getElementById('ibkrOrderTicket');
+  if (ticketEl) ticketEl.value = ticker;
+  
+  const qtyEl = document.getElementById('ibkrOrderQty');
+  if (qtyEl) qtyEl.value = qty;
+  
+  const typeEl = document.getElementById('ibkrOrderType');
+  if (typeEl) {
+    typeEl.value = 'MKT';
+    typeEl.dispatchEvent(new Event('change'));
+  }
+  
+  const tradeTabBtn = document.getElementById('ibkrTabTrade');
+  if (tradeTabBtn) tradeTabBtn.click();
+  
+  toast(`已預填: 賣出 ${qty} 股 ${ticker} (市價)`, true);
+}
+
 
 <!-- Quick-Add Watchlist Modal -->
 <div class="modal fade" id="quickAddModal" tabindex="-1">
@@ -691,6 +1149,208 @@ async function submitQuickPosition() {
         <button type="button" class="btn btn-accent" onclick="submitQuickPosition()">
           <i class="bi bi-check-circle me-1"></i>新增
         </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+<!-- ═ IBKR Trading Drawer (Offcanvas) ═══════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+<div class="offcanvas offcanvas-end" style="width:420px; background:#161b22; border-left:1px solid #30363d;" 
+     id="ibkrDrawer" tabindex="-1" data-bs-scroll="true" data-bs-backdrop="static">
+  <!-- ── Offcanvas Header ──────────────────────────────────────────────── -->
+  <div class="offcanvas-header" style="border-bottom:1px solid #30363d; padding:16px;">
+    <div style="flex:1;">
+      <h5 class="offcanvas-title mb-1">
+        <i class="bi bi-lightning-charge-fill me-2" style="color:#00d4ff;"></i>IBKR 交易面板
+      </h5>
+      <small id="ibkrDrawerSubtitle" style="color:#8b949e; font-size:11px;">連接狀態: 離線</small>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <!-- ── Connect/Disconnect buttons ──────────────────────────── -->
+      <button id="ibkrConnectBtnSmall" class="btn btn-sm btn-outline-success" style="padding:4px 10px; font-size:11px;" title="連接 IBKR">
+        <i class="bi bi-plug me-1"></i>連接
+      </button>
+      <button id="ibkrDisconnectBtnSmall" class="btn btn-sm btn-outline-warning d-none" style="padding:4px 10px; font-size:11px;" title="斷開 IBKR">
+        <i class="bi bi-plug-fill me-1"></i>斷開
+      </button>
+      <button class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+  </div>
+
+  <!-- ── Offcanvas Body ──────────────────────────────────────────────── -->
+  <div class="offcanvas-body p-0" style="overflow-y:auto; background:#0d1117;">
+    <!-- ── Nav Tabs ──────────────────────────────────────────────────────── -->
+    <ul class="nav nav-tabs" style="border-bottom:1px solid #30363d; background:#161b22; padding:12px; gap:1px;" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="ibkrTabTrade" data-bs-toggle="tab" data-bs-target="#ibkrTabTradePane"
+                role="tab" aria-controls="ibkrTabTradePane" aria-selected="true"
+                style="font-size:12px; padding:8px 12px; border:none; border-bottom:2px solid #00d4ff; background:transparent; color:#c9d1d9;">
+          <i class="bi bi-plus-square me-1"></i>交易
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="ibkrTabPositions" data-bs-toggle="tab" data-bs-target="#ibkrTabPositionsPane"
+                role="tab" aria-controls="ibkrTabPositionsPane" aria-selected="false"
+                style="font-size:12px; padding:8px 12px; border:none; border-bottom:2px solid transparent; background:transparent; color:#8b949e;">
+          <i class="bi bi-briefcase me-1"></i>持倉
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="ibkrTabHistory" data-bs-toggle="tab" data-bs-target="#ibkrTabHistoryPane"
+                role="tab" aria-controls="ibkrTabHistoryPane" aria-selected="false"
+                style="font-size:12px; padding:8px 12px; border:none; border-bottom:2px solid transparent; background:transparent; color:#8b949e;">
+          <i class="bi bi-clock-history me-1"></i>歷史
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content" style="padding:16px;">
+      <!-- ────────────────── Tab 1: Trade ──────────────────────────────────── -->
+      <div class="tab-pane fade show active" id="ibkrTabTradePane" role="tabpanel">
+        <!-- Quote Search -->
+        <div class="mb-4">
+          <label class="form-label" style="font-size:12px; font-weight:500; color:#c9d1d9;">
+            <i class="bi bi-search me-1"></i>股票搜尋
+          </label>
+          <div style="display:flex; gap:6px;">
+            <input type="text" id="ibkrTickerInput" placeholder="AAPL, MSFT..." class="form-control form-control-sm"
+                   style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d; font-size:12px;">
+            <button class="btn btn-sm btn-outline-primary" id="ibkrQuoteSearchBtn" title="搜尋報價">
+              <i class="bi bi-search"></i>
+            </button>
+          </div>
+          <!-- Quote Display Card -->
+          <div id="ibkrQuoteCard" class="d-none mt-3" style="background:#1c2128; border:1px solid #30363d; border-radius:6px; padding:12px;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px; margin-bottom:8px;">
+              <div style="text-align:center; border-right:1px solid #30363d; padding-right:8px;">
+                <div style="color:#8b949e; text-transform:uppercase; font-weight:500; margin-bottom:4px;">Bid</div>
+                <div id="ibkrQuoteBid" style="color:#58a6ff; font-weight:700; font-size:14px;">--</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="color:#8b949e; text-transform:uppercase; font-weight:500; margin-bottom:4px;">Ask</div>
+                <div id="ibkrQuoteAsk" style="color:#00d4ff; font-weight:700; font-size:14px;">--</div>
+              </div>
+            </div>
+            <div style="text-align:center; padding-top:8px; border-top:1px solid #30363d;">
+              <small style="color:#8b949e;">Last: <span id="ibkrQuoteLast" style="color:#c9d1d9; font-weight:600;">--</span></small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Order Form -->
+        <div style="background:#1c2128; border:1px solid #30363d; border-radius:6px; padding:12px;">
+          <h6 style="margin-bottom:12px; color:#c9d1d9; font-size:13px; font-weight:600;">
+            <i class="bi bi-cart-plus me-1"></i>新增訂單
+          </h6>
+
+          <!-- Action Toggle: BUY / SELL -->
+          <div class="mb-3">
+            <label class="form-label" style="font-size:11px; font-weight:500; color:#8b949e;">方向</label>
+            <div role="group" style="display:flex; gap:2px;">
+              <input type="radio" name="ibkrOrderAction" id="ibkrActionBuy" value="BUY" checked class="visually-hidden">
+              <label for="ibkrActionBuy" class="btn btn-sm btn-outline-info active" style="flex:1; font-size:12px; padding:6px;">
+                <i class="bi bi-arrow-up-right me-1"></i>買入 BUY
+              </label>
+              <input type="radio" name="ibkrOrderAction" id="ibkrActionSell" value="SELL" class="visually-hidden">
+              <label for="ibkrActionSell" class="btn btn-sm btn-outline-warning" style="flex:1; font-size:12px; padding:6px;">
+                <i class="bi bi-arrow-down-left me-1"></i>賣出 SELL
+              </label>
+            </div>
+          </div>
+
+          <!-- Ticker -->
+          <div class="mb-3">
+            <label class="form-label" style="font-size:11px; font-weight:500;">股票代碼</label>
+            <input type="text" id="ibkrOrderTicket" class="form-control form-control-sm" placeholder="AAPL"
+                   style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d; text-transform:uppercase;">
+          </div>
+
+          <!-- Quantity -->
+          <div class="mb-3">
+            <label class="form-label" style="font-size:11px; font-weight:500;">股數</label>
+            <input type="number" id="ibkrOrderQty" class="form-control form-control-sm" placeholder="100" min="1"
+                   style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+          </div>
+
+          <!-- Order Type -->
+          <div class="mb-3">
+            <label class="form-label" style="font-size:11px; font-weight:500;">訂單類型</label>
+            <select id="ibkrOrderType" class="form-select form-select-sm"
+                    style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+              <option value="MKT">市價 (Market)</option>
+              <option value="LMT">限價 (Limit)</option>
+              <option value="STP">止損市價 (Stop)</option>
+              <option value="TRAIL">移動止損 (Trailing Stop)</option>
+            </select>
+          </div>
+
+          <!-- Limit Price (shown only for LMT) -->
+          <div class="mb-3 d-none" id="ibkrLimitPriceDiv">
+            <label class="form-label" style="font-size:11px; font-weight:500;">限價</label>
+            <input type="number" id="ibkrLimitPrice" class="form-control form-control-sm" placeholder="150.50" step="0.01"
+                   style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+          </div>
+
+          <!-- Aux Price / Stop Price (shown only for STP) -->
+          <div class="mb-3 d-none" id="ibkrAuxPriceDiv">
+            <label class="form-label" style="font-size:11px; font-weight:500;">止損觸發價</label>
+            <input type="number" id="ibkrAuxPrice" class="form-control form-control-sm" placeholder="145.00" step="0.01"
+                   style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+          </div>
+
+          <!-- Trail Percent (shown only for TRAIL) -->
+          <div class="mb-3 d-none" id="ibkrTrailPctDiv">
+            <label class="form-label" style="font-size:11px; font-weight:500;">移動止損 (%)</label>
+            <input type="number" id="ibkrTrailPct" class="form-control form-control-sm" placeholder="2.5" step="0.1" min="0.1"
+                   style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+          </div>
+
+          <!-- Note -->
+          <div class="mb-3">
+            <label class="form-label" style="font-size:11px; font-weight:500;">備註</label>
+            <input type="text" id="ibkrOrderNote" class="form-control form-control-sm" placeholder="VCP breakout..."
+                   style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d;">
+          </div>
+
+          <!-- Submit Button -->
+          <button id="ibkrOrderSubmitBtn" class="btn btn-accent w-100" style="font-size:12px; font-weight:600;">
+            <i class="bi bi-lightning-charge me-1"></i>下單 / Place Order
+          </button>
+        </div>
+      </div>
+
+      <!-- ────────────────── Tab 2: Positions ────────────────────────────────── -->
+      <div class="tab-pane fade" id="ibkrTabPositionsPane" role="tabpanel">
+        <div class="mb-3">
+          <button id="ibkrSyncPositionsBtn" class="btn btn-sm btn-outline-info w-100" style="font-size:11px;">
+            <i class="bi bi-arrow-clockwise me-1"></i>同步倉位 / Sync Positions
+          </button>
+        </div>
+        <div id="ibkrPositionsList" style="max-height:400px; overflow-y:auto;">
+          <div style="text-align:center; color:#8b949e; padding:20px 8px; font-size:12px;">
+            -- 未連接 / Not connected --
+          </div>
+        </div>
+      </div>
+
+      <!-- ────────────────── Tab 3: History ────────────────────────────────────  -->
+      <div class="tab-pane fade" id="ibkrTabHistoryPane" role="tabpanel">
+        <div class="mb-3">
+          <label class="form-label" style="font-size:11px; font-weight:500;">查詢天數</label>
+          <select id="ibkrHistoryDays" class="form-select form-select-sm"
+                  style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d; font-size:11px;">
+            <option value="7">過去 7 天</option>
+            <option value="30">過去 30 天</option>
+            <option value="90">過去 90 天</option>
+          </select>
+        </div>
+        <div id="ibkrHistoryList" style="max-height:400px; overflow-y:auto;">
+          <div style="text-align:center; color:#8b949e; padding:20px 8px; font-size:12px;">
+            -- 無交易記錄 / No trades --
+          </div>
+        </div>
       </div>
     </div>
   </div>

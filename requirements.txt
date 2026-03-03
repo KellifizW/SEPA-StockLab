@@ -12,6 +12,7 @@ requests>=2.28.0
 lxml>=4.9.0
 flask>=3.0
 flask-cors>=4.0
+ib_insync>=0.9.86
 duckdb>=0.10.0
 python-telegram-bot>=21.0
 python-dotenv>=1.0.0

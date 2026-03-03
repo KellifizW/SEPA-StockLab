@@ -4773,11 +4773,285 @@ def api_qm_backtest_log(jid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# IBKR (INTERACTIVE BROKERS) API ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/ibkr/status", methods=["GET"])
+def api_ibkr_status():
+    """Get IBKR connection status and account summary."""
+    if not C.IBKR_ENABLED:
+        return jsonify({
+            "ok": False,
+            "error": "IBKR integration is disabled (IBKR_ENABLED=False)",
+        }), 403
+    
+    try:
+        from modules import ibkr_client
+        status = ibkr_client.get_status()
+        return jsonify({"ok": True, "data": status})
+    except Exception as e:
+        logger.error(f"api_ibkr_status error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/connect", methods=["POST"])
+def api_ibkr_connect():
+    """Initiate IBKR connection."""
+    if not C.IBKR_ENABLED:
+        return jsonify({
+            "ok": False,
+            "error": "IBKR integration is disabled",
+        }), 403
+    
+    try:
+        from modules import ibkr_client
+        result = ibkr_client.connect()
+        return jsonify({"ok": result.get("success"), "data": result})
+    except Exception as e:
+        logger.error(f"api_ibkr_connect error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/disconnect", methods=["POST"])
+def api_ibkr_disconnect():
+    """Disconnect from IBKR."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import ibkr_client
+        result = ibkr_client.disconnect()
+        return jsonify({"ok": result.get("success"), "data": result})
+    except Exception as e:
+        logger.error(f"api_ibkr_disconnect error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/positions", methods=["GET"])
+def api_ibkr_positions():
+    """
+    Fetch IBKR positions and sync with local positions.json.
+    """
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import ibkr_client
+        from modules import position_monitor
+        from modules import db
+        
+        # Get positions from IBKR
+        ibkr_positions = ibkr_client.get_positions()
+        
+        if not ibkr_positions:
+            return jsonify({
+                "ok": True,
+                "data": {"positions": [], "message": "No positions found"},
+            })
+        
+        # Load local positions (using private _load function)
+        local_positions = position_monitor._load()
+        
+        # Sync: update local positions with IBKR data
+        for ibkr_pos in ibkr_positions:
+            ticker = ibkr_pos["ticker"]
+            if ticker in local_positions.get("positions", {}):
+                # Update existing position with IBKR market data
+                local_positions["positions"][ticker].update({
+                    "market_price": ibkr_pos["market_price"],
+                    "unrealized_pnl": ibkr_pos["unrealized_pnl"],
+                    "unrealized_pnl_pct": ibkr_pos["unrealized_pnl_pct"],
+                })
+        
+        # Save synced positions (using private _save function)
+        position_monitor._save(local_positions)
+        
+        # Log to DuckDB
+        for pos in ibkr_positions:
+            db.log_position_action(
+                ticker=pos["ticker"],
+                action="SYNC",
+                price=pos["market_price"],
+                shares=pos["qty"],
+                stop_price=None,
+                pnl_pct=pos["unrealized_pnl_pct"],
+                note=f"IBKR sync: {pos['unrealized_pnl_pct']:.2f}% unrealized PnL"
+            )
+        
+        return jsonify({
+            "ok": True,
+            "data": {
+                "positions": ibkr_positions,
+                "synced_count": len(ibkr_positions),
+            }
+        })
+    except Exception as e:
+        logger.error(f"api_ibkr_positions error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+
+@app.route("/api/ibkr/orders", methods=["GET"])
+def api_ibkr_orders():
+    """Fetch pending (open) orders from IBKR."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import ibkr_client
+        orders = ibkr_client.get_open_orders()
+        return jsonify({"ok": True, "data": {"orders": orders}})
+    except Exception as e:
+        logger.error(f"api_ibkr_orders error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/trades", methods=["GET"])
+def api_ibkr_trades():
+    """Fetch recent execution history from IBKR."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import ibkr_client
+        from modules import db
+        
+        days = request.args.get("days", default=7, type=int)
+        executions = ibkr_client.get_executions(days=days)
+        
+        # Also fetch from DuckDB for comparison
+        db_orders = db.query_ibkr_orders(days=days)
+        
+        return jsonify({
+            "ok": True,
+            "data": {
+                "executions": executions,
+                "db_orders": db_orders,
+                "count": len(executions),
+            }
+        })
+    except Exception as e:
+        logger.error(f"api_ibkr_trades error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/order", methods=["POST"])
+def api_ibkr_place_order():
+    """Place an IBKR order (MKT, LMT, STP, TRAIL)."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import ibkr_client
+        from modules import db
+        
+        data = request.get_json() or {}
+        
+        ticker = data.get("ticker", "").strip().upper()
+        action = data.get("action", "").upper()  # BUY or SELL
+        qty = int(data.get("qty", 0))
+        order_type = data.get("order_type", "MKT").upper()
+        
+        if not ticker or not action or qty <= 0:
+            return jsonify({
+                "ok": False,
+                "error": "Missing or invalid ticker, action, or qty",
+            }), 400
+        
+        # Extract order-type-specific parameters
+        limit_price = None
+        aux_price = None
+        trail_pct = None
+        
+        if order_type == "LMT":
+            limit_price = float(data.get("limit_price", 0))
+            if limit_price <= 0:
+                return jsonify({"ok": False, "error": "limit_price required for LMT"}), 400
+        
+        elif order_type == "STP":
+            aux_price = float(data.get("aux_price", 0))
+            if aux_price <= 0:
+                return jsonify({"ok": False, "error": "aux_price required for STP"}), 400
+        
+        elif order_type == "TRAIL":
+            trail_pct = float(data.get("trail_pct", 0))
+            if trail_pct <= 0:
+                return jsonify({"ok": False, "error": "trail_pct required for TRAIL"}), 400
+        
+        # Place order via IBKR client
+        result = ibkr_client.place_order(
+            ticker=ticker,
+            action=action,
+            qty=qty,
+            order_type=order_type,
+            limit_price=limit_price,
+            aux_price=aux_price,
+            trail_pct=trail_pct,
+        )
+        
+        if result.get("success"):
+            order_id = result.get("order_id")
+            # Log to DuckDB
+            db.append_ibkr_order({
+                "order_id": order_id,
+                "order_time": datetime.now().isoformat(),
+                "ticker": ticker,
+                "action": action,
+                "order_type": order_type,
+                "qty": qty,
+                "limit_price": limit_price,
+                "aux_price": aux_price,
+                "trail_pct": trail_pct,
+                "fill_price": None,
+                "status": "Submitted",
+                "commission": None,
+                "pnl": None,
+                "note": data.get("note", ""),
+            })
+        
+        return jsonify({"ok": result.get("success"), "data": result})
+    
+    except Exception as e:
+        logger.error(f"api_ibkr_place_order error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/order/<int:order_id>", methods=["DELETE"])
+def api_ibkr_cancel_order(order_id: int):
+    """Cancel an IBKR order by ID."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import ibkr_client
+        result = ibkr_client.cancel_order(order_id)
+        return jsonify({"ok": result.get("success"), "data": result})
+    except Exception as e:
+        logger.error(f"api_ibkr_cancel_order error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/quote/<ticker>", methods=["GET"])
+def api_ibkr_quote(ticker: str):
+    """Get real-time quote snapshot for a ticker."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import ibkr_client
+        quote = ibkr_client.get_quote(ticker)
+        return jsonify({"ok": "error" not in quote, "data": quote})
+    except Exception as e:
+        logger.error(f"api_ibkr_quote error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+
     # Ensure data directories exist
     (ROOT / C.DATA_DIR / "price_cache").mkdir(parents=True, exist_ok=True)
     (ROOT / C.REPORTS_DIR).mkdir(parents=True, exist_ok=True)
