@@ -13,6 +13,20 @@
       "price": 44.34,
       "sector": "Technology",
       "note": ""
+    },
+    "FORM": {
+      "added_date": "2026-03-03",
+      "last_updated": "2026-03-03",
+      "rs_rank": 97.1,
+      "tt_score": 10,
+      "tt_passes": true,
+      "vcp_grade": "C",
+      "vcp_score": 45,
+      "t_count": 2,
+      "pivot": 107.04,
+      "price": 99.7,
+      "sector": "Technology",
+      "note": ""
     }
   },
   "B": {},

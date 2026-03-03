@@ -15,6 +15,7 @@ import subprocess
 import webbrowser
 import signal
 import atexit
+import time
 
 # Force UTF-8 stdout/stderr on Windows (avoids cp950 encode errors for ✓ ✗ → etc.)
 if hasattr(sys.stdout, "reconfigure"):
@@ -4208,33 +4209,77 @@ if __name__ == "__main__":
     print("  └──────────────────────────────────────────┘\n")
     sys.stdout.flush()
     
+    # Global state for clean shutdown
+    _shutdown_event = threading.Event()
+    _flask_thread = None
+    _tg_thread = None
+    
     # Cleanup function
     def _cleanup_and_exit(code=0):
         """Cleanup resources and exit immediately."""
+        print("\n\n  ⏹  關閉伺服器... Shutting down server...", flush=True)
+        
+        # Stop Telegram polling if running
+        try:
+            if _tg_thread and _tg_thread.is_alive():
+                from modules.telegram_bot import stop_polling
+                stop_polling()
+                _tg_thread.join(timeout=1)
+        except:
+            pass
+        
+        # Signal all jobs to cancel
         try:
             with _jobs_lock:
                 for jid in list(_cancel_events.keys()):
                     _cancel_events[jid].set()
         except:
             pass
-        print("\n\n  ⏹  關閉伺服器... Shutting down server...\n")
+        
+        # Signal shutdown
+        _shutdown_event.set()
+        
+        # Give threads a moment to clean up
+        time.sleep(0.1)
+        
+        # Force exit - this will kill daemon threads
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(code)
     
-    # Signal handler - will be called on Ctrl+C
+    # Signal handler - will be called on Ctrl+C (SIGINT) or termination (SIGTERM)
     def _signal_handler(signum, frame):
+        signal_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
+        print(f"\n  📡 收到信號 Received {signal_name}", flush=True)
         _cleanup_and_exit(0)
     
+    # Disable buffering for immediate output
+    import io
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True
+    )
+    sys.stderr = io.TextIOWrapper(
+        sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True
+    )
+    
     # Register signal handlers BEFORE starting the server
+    # This can be called multiple times - last registration wins
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
     
+    # Try to set wakeup FD to ensure signals are processed
+    try:
+        import io
+        if hasattr(signal, 'set_wakeup_fd'):
+            signal.set_wakeup_fd(sys.stderr.fileno())
+    except (AttributeError, ValueError):
+        # Not available or already set
+        pass
+    
     # Auto-open browser
     def _open_browser():
-        import time
-        time.sleep(2)
         try:
+            time.sleep(2)
             webbrowser.open("http://localhost:5000")
         except:
             pass
@@ -4254,12 +4299,11 @@ if __name__ == "__main__":
                 use_debugger=False
             )
         except Exception as e:
-            print(f"Flask server error: {e}")
-            sys.stdout.flush()
+            print(f"❌ Flask server error: {e}", flush=True)
     
     # Start Flask in a daemon thread
-    flask_thread = threading.Thread(target=_run_flask, daemon=True)
-    flask_thread.start()
+    _flask_thread = threading.Thread(target=_run_flask, daemon=True)
+    _flask_thread.start()
     
     print(" * Serving Flask app 'app'")
     print(" * Debug mode: off")
@@ -4268,8 +4312,8 @@ if __name__ == "__main__":
     if C.TG_ENABLED:
         try:
             from modules.telegram_bot import start_polling
-            tg_thread = threading.Thread(target=start_polling, daemon=True)
-            tg_thread.start()
+            _tg_thread = threading.Thread(target=start_polling, daemon=True)
+            _tg_thread.start()
             print(" * Telegram Bot Polling: ON")
         except Exception as e:
             print(f" ⚠️  Telegram Bot 啟動失敗: {e}")
@@ -4278,11 +4322,9 @@ if __name__ == "__main__":
     # Keep the main thread alive to receive signals
     try:
         while True:
-            import time
             time.sleep(1)
     except KeyboardInterrupt:
         _cleanup_and_exit(0)
     except Exception as e:
-        print(f"\n\n  ❌ 錯誤 Error: {e}\n")
-        sys.stdout.flush()
+        print(f"\n\n  ❌ 錯誤 Error: {e}\n", flush=True)
         _cleanup_and_exit(1)
