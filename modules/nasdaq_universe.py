@@ -242,7 +242,7 @@ def _fetch_price_volume_rows(
                     period="5d",
                     interval="1d",
                     auto_adjust=True,
-                    threads=True,
+                    threads=False,   # threads=True causes 'dict changed size during iteration' race condition
                     progress=False,
                 )
             if data.empty:

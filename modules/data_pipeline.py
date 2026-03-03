@@ -29,6 +29,11 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore")
 
+# Suppress yfinance ERROR logs (401 errors are expected during concurrent access)
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+logging.getLogger("yfinance.data").setLevel(logging.CRITICAL)
+logging.getLogger("yfinance.utils").setLevel(logging.CRITICAL)
+
 # pandas_ta integration
 try:
     import pandas_ta as ta
@@ -86,7 +91,7 @@ def _is_crumb_error(exc: Exception) -> bool:
 
 _crumb_reset_lock  = threading.Lock()
 _last_crumb_reset  = [0.0]   # mutable float so closures can update it
-_CRUMB_RESET_COOLDOWN = 3.0  # seconds: min interval between resets
+_CRUMB_RESET_COOLDOWN = None  # Will be loaded from trader_config
 
 # ─── yfinance call counter & rate-limit tracker ───────────────────────────────
 _yf_stats_lock = threading.Lock()
@@ -142,6 +147,10 @@ def _reset_yf_crumb() -> bool:
 
     Returns True on success or if a recent reset already covered this thread.
     """
+    global _CRUMB_RESET_COOLDOWN
+    if _CRUMB_RESET_COOLDOWN is None:
+        _CRUMB_RESET_COOLDOWN = getattr(C, "CRUMB_RESET_COOLDOWN", 3.0)
+    
     with _crumb_reset_lock:
         now = time.time()
         if now - _last_crumb_reset[0] < _CRUMB_RESET_COOLDOWN:
@@ -493,8 +502,11 @@ def get_historical(ticker: str, period: str = "2y",
         except Exception:
             pass
 
-    # Download from yfinance (retry once on 401/crumb error)
-    for _attempt in range(2):
+    # Download from yfinance (retry with exponential backoff on 401/crumb error)
+    max_retries = getattr(C, "YFINANCE_MAX_RETRIES", 1)
+    retry_backoff = getattr(C, "YFINANCE_RETRY_BACKOFF", 0.5)
+    
+    for _attempt in range(max_retries + 1):
         try:
             _yf_track_call()
             tkr = yf.Ticker(ticker)
@@ -519,13 +531,26 @@ def get_historical(ticker: str, period: str = "2y",
         except Exception as exc:
             _yf_track_error(exc)
             if _attempt == 0 and _is_crumb_error(exc):
-                logger.warning(
-                    f"get_historical({ticker}) crumb/401 error — resetting session and retrying"
+                logger.debug(
+                    f"get_historical({ticker}) crumb/401 error on attempt 1 — resetting session"
                 )
                 _reset_yf_crumb()
-                continue
-            logger.warning(f"get_historical({ticker}) error: {exc}")
-            return pd.DataFrame()
+                # Exponential backoff before retry
+                if _attempt < max_retries:
+                    delay = retry_backoff * (2 ** _attempt)
+                    time.sleep(delay)
+                    continue
+            elif _attempt == 0:
+                logger.debug(f"get_historical({ticker}) error on attempt 1: {type(exc).__name__}")
+                # On first error, reset crumb even for non-401 (might be transient)
+                _reset_yf_crumb()
+                if _attempt < max_retries:
+                    delay = retry_backoff * (2 ** _attempt)
+                    time.sleep(delay)
+                    continue
+            else:
+                logger.debug(f"get_historical({ticker}) error on attempt {_attempt + 1}: {type(exc).__name__}")
+
     return pd.DataFrame()
 
 
@@ -551,7 +576,7 @@ def get_bulk_historical(tickers: list, period: str = "1y",
                 period=period,
                 interval="1d",
                 auto_adjust=True,
-                threads=True,
+                threads=False,   # threads=True causes 'dict changed size during iteration' race condition
                 progress=False,
             )
             if raw is None or raw.empty:
@@ -638,8 +663,13 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
         except Exception:
             pass
 
-    # ── Fetch from yfinance ── (retry once on 401/crumb error) ─────────────
-    for _attempt in range(2):
+    # ── Fetch from yfinance ── (retry with exponential backoff on 401/crumb error) ─────────────
+    max_retries = getattr(C, "YFINANCE_MAX_RETRIES", 1)
+    retry_backoff = getattr(C, "YFINANCE_RETRY_BACKOFF", 0.5)
+    timeout_sec = getattr(C, "FUNDAMENTALS_TIMEOUT_SEC", 5.0)
+    skip_on_timeout = getattr(C, "FUNDAMENTALS_SKIP_ON_TIMEOUT", True)
+    
+    for _attempt in range(max_retries + 1):
         result = {
             "ticker": ticker.upper(),
             "info": {},
@@ -664,25 +694,31 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
             except Exception as _inf_exc:
                 _yf_track_error(_inf_exc)
                 if _attempt == 0 and _is_crumb_error(_inf_exc):
-                    logger.warning(
-                        f"get_fundamentals({ticker}) crumb/401 on .info — resetting session"
+                    logger.debug(
+                        f"get_fundamentals({ticker}) crumb/401 on .info (attempt {_attempt + 1}) — resetting session"
                     )
                     _reset_yf_crumb()
                     _retry = True
                 pass
 
             # yfinance 1.2.0 silently returns {} on 401 without raising.
-            # If info is empty on the first attempt, reset crumb and retry.
+            # If info is empty on the first attempt, try once more (not necessarily a crumb error).
             if not _retry and not result["info"] and _attempt == 0:
-                logger.warning(
-                    f"get_fundamentals({ticker}) .info is empty on attempt 1 — "
-                    "resetting yfinance session and retrying"
+                logger.debug(
+                    f"get_fundamentals({ticker}) .info is empty on attempt {_attempt + 1} — "
+                    "this is normal for some tickers (e.g. delisted, micro-cap)"
                 )
                 _reset_yf_crumb()
                 _retry = True
 
             if _retry:
-                continue
+                # Exponential backoff before retry
+                if _attempt < max_retries:
+                    delay = retry_backoff * (2 ** _attempt)
+                    time.sleep(delay)
+                    continue
+                else:
+                    break
 
             # Quarterly income statement (for EPS acceleration detection)
             try:
@@ -752,20 +788,35 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
             break  # fetched successfully — exit retry loop
 
         except Exception as exc:
-            if _attempt == 0 and _is_crumb_error(exc):
-                logger.warning(
-                    f"get_fundamentals({ticker}) crumb/401 error — resetting session and retrying"
+            _yf_track_error(exc)
+            if _is_crumb_error(exc):
+                logger.debug(
+                    f"get_fundamentals({ticker}) crumb/401 error on attempt {_attempt + 1} — resetting session"
                 )
                 _reset_yf_crumb()
-                continue
-            logger.warning(f"get_fundamentals({ticker}) error: {exc}")
-            break
+                if _attempt < max_retries:
+                    delay = retry_backoff * (2 ** _attempt)
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Max retries exhausted; return empty fundamentals
+                    logger.debug(f"get_fundamentals({ticker}) auth failures after {_attempt + 1} attempts (max={max_retries + 1}); skipping")
+                    break
+            else:
+                logger.debug(f"get_fundamentals({ticker}) error on attempt {_attempt + 1}: {type(exc).__name__}")
+                if _attempt == 0 and _attempt < max_retries:
+                    # First transient error; retry once
+                    _reset_yf_crumb()
+                    delay = retry_backoff * (2 ** _attempt)
+                    time.sleep(delay)
+                    continue
+                break
 
     # ── Save to cache ────────────────────────────────────────────────────
     # Do NOT cache if info is empty — likely an auth failure.
     # Caching bad data would cause repeated auth warnings on every subsequent request.
     if not result.get("info"):
-        logger.warning(
+        logger.debug(
             f"get_fundamentals({ticker}) — skipping cache write (empty info, possible auth failure)"
         )
     else:
@@ -1207,7 +1258,7 @@ def batch_download_and_enrich(tickers: list, period: str = "2y",
                 period=period,
                 interval="1d",
                 auto_adjust=True,
-                threads=True,
+                threads=False,   # threads=True causes 'dict changed size during iteration' race condition
                 progress=False,
             )
             logger.debug(f"[Batch {bi+1}] Download returned type {type(raw).__name__}")

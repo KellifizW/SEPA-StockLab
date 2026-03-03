@@ -184,21 +184,35 @@ def compute_rs_rankings(universe: list = None,
                     period="1y",
                     interval="1d",
                     auto_adjust=True,
-                    threads=True,
+                    threads=False,   # threads=True causes 'dict changed size during iteration' race condition
                     progress=False,
                 )
             except Exception as exc:
                 err = str(exc).lower()
+                # Classify error type
                 if any(k in err for k in ("429", "rate limit", "too many requests",
                                           "connection reset", "remote end closed")):
                     wait = 5.0 * (2 ** attempt)   # 5s, 10s, 20s
                     logger.warning("[RS] Rate-limit/connection error on attempt %d/%d, "
                                    "waiting %.0fs: %s", attempt + 1, max_retries, wait, exc)
                     time.sleep(wait)
-                else:
-                    logger.debug("[RS] Batch download exception (batch %d): %s", attempt, exc)
+                    continue  # Retry after backoff
+                elif "nonetype" in err or "cannot subscript" in err:
+                    # yfinance internal error (edge case, likely malformed ticker or delisted stock)
+                    # These are not retryable; skip this batch and continue
+                    logger.debug("[RS] yfinance internal type error on batch (likely malformed/delisted ticker): %s", 
+                                 type(exc).__name__)
                     return None
-        logger.warning("[RS] Batch failed after %d retries", max_retries)
+                else:
+                    # Other errors (API, timeout, etc.) — log at debug and skip
+                    logger.debug("[RS] Batch download exception on attempt %d: %s", attempt + 1, type(exc).__name__)
+                    if attempt < max_retries - 1:
+                        # Try one more time with a short delay
+                        time.sleep(2.0)
+                        continue
+                    else:
+                        return None
+        logger.debug("[RS] Batch failed after %d retries", max_retries)
         return None
 
     def _process_batch(batch_info):

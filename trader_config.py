@@ -118,6 +118,17 @@ STAGE3_MAX_WORKERS    = 32         # Parallel threads for Stage 3 SEPA scoring
 FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamentals
 FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
 FINVIZ_TIMEOUT_SEC    = 600.0      # 10 minutes max (finvizfinance needs ~2 sec per page × 464 pages = 15 min for full scan)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YFINANCE RETRY & RESILIENCE PARAMETERS
+# ─────────────────────────────────────────────────────────────────────────────
+YFINANCE_MAX_RETRIES     = 1        # Reduced from 2: 401/crumb errors often not recoverable by retry
+                                    # Better to skip + continue than block waiting for auth reset
+YFINANCE_RETRY_BACKOFF   = 0.5      # Base delay (sec) between retry attempts (exponential: 0.5s, 1s, 2s...)
+FUNDAMENTALS_TIMEOUT_SEC = 5.0      # Per-ticker fundamental fetch timeout (crisp fail instead of hanging)
+FUNDAMENTALS_SKIP_ON_TIMEOUT = True # Skip ticker on timeout instead of retrying endlessly
+CRUMB_RESET_COOLDOWN     = 3.0      # Min interval between session resets (prevent auth cascade)
+OHLCV_TIMEOUT_SEC        = 10.0     # Per-ticker OHLCV fetch timeout
 FINVIZ_MAX_PAGES      = 60         # If using pagination limiting (currently unused; finvizfinance loads all pages)
 FINVIZ_MIN_TARGET_ROWS = 800       # Minimum rows before accepting results
 

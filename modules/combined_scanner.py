@@ -79,10 +79,29 @@ def _progress(stage: str, pct: int, msg: str = "", ticker: str = ""):
             "log_lines": list(_combined_log_lines[-50:])  # Last 50 lines for UI
         })
 
+def _log_detail(stage: str, detail: str, ticker: str = "", indent: bool = True):
+    """Add detailed log line (for detailed progress within a stage)."""
+    import datetime
+    with _combined_lock:
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        # Use indent for sub-messages
+        indent_str = "  " if indent else ""
+        if ticker:
+            log_line = f"[{ts}] [{stage}] {indent_str}• {ticker}: {detail}"
+        else:
+            log_line = f"[{ts}] [{stage}] {indent_str}• {detail}"
+        
+        _combined_log_lines.append(log_line)
+        if len(_combined_log_lines) > 200:
+            _combined_log_lines.pop(0)
+        
+        # Update log lines in progress for UI
+        _combined_progress.update({
+            "log_lines": list(_combined_log_lines[-50:])
+        })
+
 def _cancelled() -> bool:
     return _combined_cancel.is_set()
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # COMBINED SCANNING ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -184,25 +203,32 @@ def run_combined_scan(custom_filters: dict | None = None,
     def _fetch_sepa_s1():
         nonlocal sepa_s1_tickers, _s1_sepa_error
         try:
+            _log_detail("Stage 1 -- Dual Coarse Filter", "SEPA Stage 1 starting")
             sepa_s1_tickers = run_stage1(custom_filters, verbose=verbose,
                                          stage1_source=stage1_source)
             logger.info("[Combined S1] SEPA: %d candidates", len(sepa_s1_tickers))
+            _log_detail("Stage 1 -- Dual Coarse Filter", f"SEPA Stage 1 completed: {len(sepa_s1_tickers)} candidates")
         except Exception as exc:
             _s1_sepa_error = str(exc)
             logger.error("[Combined S1] SEPA Stage 1 failed: %s", exc)
+            _log_detail("Stage 1 -- Dual Coarse Filter", f"SEPA Stage 1 error: {type(exc).__name__}")
 
     def _fetch_qm_s1():
         nonlocal qm_s1_tickers, _s1_qm_error
         if qm_blocked:
             logger.info("[Combined S1] QM Stage 1 skipped (bear market blocked)")
+            _log_detail("Stage 1 -- Dual Coarse Filter", "QM Stage 1 skipped (bear market)")
             return
         try:
+            _log_detail("Stage 1 -- Dual Coarse Filter", "QM Stage 1 starting")
             qm_s1_tickers = run_qm_stage1(verbose=verbose,
                                            stage1_source=stage1_source)
             logger.info("[Combined S1] QM: %d candidates", len(qm_s1_tickers))
+            _log_detail("Stage 1 -- Dual Coarse Filter", f"QM Stage 1 completed: {len(qm_s1_tickers)} candidates")
         except Exception as exc:
             _s1_qm_error = str(exc)
             logger.error("[Combined S1] QM Stage 1 failed: %s", exc)
+            _log_detail("Stage 1 -- Dual Coarse Filter", f"QM Stage 1 error: {type(exc).__name__}")
 
     with ThreadPoolExecutor(max_workers=2) as _s1_pool:
         _sf = _s1_pool.submit(_fetch_sepa_s1)
@@ -224,6 +250,7 @@ def run_combined_scan(custom_filters: dict | None = None,
         print(f"[Stage 1] SEPA={len(sepa_s1_tickers)} | QM={len(qm_s1_tickers)} "
               f"| Union={len(s1_tickers)} unique tickers")
 
+    _log_detail("Stage 1 -- Dual Coarse Filter", f"Union: {len(sepa_s1_tickers)} SEPA + {len(qm_s1_tickers)} QM = {len(s1_tickers)} total")
     _progress("Stage 1 -- Dual Coarse Filter", 20, f"{len(s1_tickers)} union candidates")
 
     if _cancelled():
@@ -234,6 +261,7 @@ def run_combined_scan(custom_filters: dict | None = None,
     
     # ── STAGE 2: Batch download (once for both methods) ──────────────────
     _progress("Stage 2 -- Batch Download", 25, "Downloading price history…")
+    _log_detail("Stage 2 -- Batch Download", f"Loading {len(s1_tickers)} tickers from cache")
     _t2_dl = _time.perf_counter()
     
     try:
@@ -242,6 +270,11 @@ def run_combined_scan(custom_filters: dict | None = None,
         _dl_max_pct = [25]
         def _combined_batch_cb(bi: int, bt: int, msg: str = "") -> None:
             pct = max(_dl_max_pct[0], min(45, 25 + int(bi / max(bt, 1) * 20)))
+            _dl_max_pct[0] = pct
+            # Add detailed log for every 5 batches
+            if bi % 5 == 0 or bi == bt:
+                _log_detail("Stage 2 -- Batch Download", f"Progress: {bi}/{bt} batches", indent=False)
+            _progress("Stage 2 -- Batch Download", pct, msg)
             _dl_max_pct[0] = pct
             _progress("Stage 2 -- Batch Download", pct, msg)
         enriched_map = batch_download_and_enrich(
@@ -263,6 +296,7 @@ def run_combined_scan(custom_filters: dict | None = None,
     
     # ── STAGE 2-3: Run SEPA and QM in parallel threads ────────────────────
     _progress("Stage 2-3 -- Parallel Analysis", 50, "Running SEPA and QM analyses…")
+    _log_detail("Stage 2-3 -- Parallel Analysis", f"Starting parallel analysis of {len(s1_tickers)} tickers")
     _t_parallel = _time.perf_counter()
     
     sepa_result = None
@@ -276,6 +310,7 @@ def run_combined_scan(custom_filters: dict | None = None,
             from modules.screener import run_stage2, run_stage3, _get_sector_leaders
 
             # Load sector info for SEPA
+            _log_detail("Stage 2-3 -- Parallel Analysis", "SEPA: Loading sector info")
             sector_df = get_sector_rankings("Sector")
             sector_leaders = _get_sector_leaders(sector_df)
 
@@ -283,9 +318,11 @@ def run_combined_scan(custom_filters: dict | None = None,
             # TT1-TT10 will naturally filter out QM-only tickers lacking
             # Minervini fundamentals — no pre-filtering needed here
             logger.info("[Combined SEPA] Starting Stage 2 with %d tickers", len(s1_tickers))
+            _log_detail("Stage 2-3 -- Parallel Analysis", "SEPA: Stage 2 (Trend Template) starting", indent=False)
             s2_results = run_stage2(s1_tickers, sector_leaders, verbose=verbose,
                                     enriched_map=enriched_map, shared=True)
             logger.info("[Combined SEPA] Stage 2 completed: %d passing TT1-TT10", len(s2_results))
+            _log_detail("Stage 2-3 -- Parallel Analysis", f"SEPA: Stage 2 done: {len(s2_results)} passed TT1-TT10")
 
             # Check if s2_results is empty (list or DataFrame)
             if _cancelled():
@@ -295,13 +332,16 @@ def run_combined_scan(custom_filters: dict | None = None,
                        (isinstance(s2_results, pd.DataFrame) and s2_results.empty)
             if is_empty:
                 logger.warning("[Combined SEPA] Stage 2 returned no results")
+                _log_detail("Stage 2-3 -- Parallel Analysis", "SEPA: Stage 2 returned no results")
                 sepa_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
                 return
 
             # Stage 3 scoring
             logger.info("[Combined SEPA] Starting Stage 3 scoring")
+            _log_detail("Stage 2-3 -- Parallel Analysis", "SEPA: Stage 3 (5-Pillar Scoring) starting", indent=False)
             sepa_df_passed = run_stage3(s2_results, verbose=verbose, shared=True)
             logger.info("[Combined SEPA] Stage 3 completed: %d passing final score", len(sepa_df_passed))
+            _log_detail("Stage 2-3 -- Parallel Analysis", f"SEPA: Stage 3 done: {len(sepa_df_passed)} passed scoring")
             
             # Strip "df" (the OHLCV DataFrame stored by run_stage2 for scoring).
             # Keeping it would embed DataFrames inside a column and cause
@@ -320,6 +360,7 @@ def run_combined_scan(custom_filters: dict | None = None,
         except Exception as e:
             logger.error("[Combined] SEPA process failed: %s", e, exc_info=True)
             sepa_error = str(e)
+            _log_detail("Stage 2-3 -- Parallel Analysis", f"SEPA error: {type(e).__name__}")
             sepa_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
     
     def _run_qm():
@@ -335,11 +376,13 @@ def run_combined_scan(custom_filters: dict | None = None,
             from modules.qm_screener import run_qm_stage2, run_qm_stage3
 
             logger.info("[Combined QM] Starting Stage 2 with %d tickers", len(s1_tickers))
+            _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 2 (ADR + Momentum) starting", indent=False)
             # Stage 2 — QM uses the FULL union universe so QM-only tickers
             # (filtered out by SEPA's ROE/EPS requirements) are still evaluated
             s2_passed = run_qm_stage2(s1_tickers, verbose=verbose,
                                       enriched_map=enriched_map, shared=True)
             logger.info("[Combined QM] Stage 2 completed: %d passing gate", len(s2_passed))
+            _log_detail("Stage 2-3 -- Parallel Analysis", f"QM: Stage 2 done: {len(s2_passed)} passed gate")
 
             # Check if s2_passed is empty (list or DataFrame)
             if _cancelled():
@@ -349,19 +392,24 @@ def run_combined_scan(custom_filters: dict | None = None,
                        (isinstance(s2_passed, pd.DataFrame) and s2_passed.empty)
             if is_empty:
                 logger.warning("[Combined QM] Stage 2 returned no results")
+                _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 2 returned no results")
                 qm_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
                 return
 
             # Stage 3 quality scoring (returns all scored rows, capped at QM_SCAN_TOP_N)
             logger.info("[Combined QM] Starting Stage 3 scoring with %d candidates", len(s2_passed))
+            _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 3 (6-Dimension Star Rating) starting", indent=False)
             qm_df_all_scored = run_qm_stage3(s2_passed, enriched_cache=enriched_map)
             if qm_df_all_scored is None:
                 logger.warning("[Combined QM] Stage 3 returned None")
+                _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 3 returned None")
                 qm_df_all_scored = pd.DataFrame()
             elif qm_df_all_scored.empty:
                 logger.warning("[Combined QM] Stage 3 returned empty DataFrame")
+                _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 3 returned empty")
             else:
                 logger.info("[Combined QM] Stage 3 completed: shape %s", qm_df_all_scored.shape)
+                _log_detail("Stage 2-3 -- Parallel Analysis", f"QM: Stage 3 done: {len(qm_df_all_scored)} scored")
 
             # Apply the same post-filters as run_qm_scan() ────────────────
             qm_df_passed = qm_df_all_scored.copy() if not qm_df_all_scored.empty else pd.DataFrame()
@@ -372,7 +420,9 @@ def run_combined_scan(custom_filters: dict | None = None,
             # filtering without re-running the scan.
             _min_star = min_star if min_star is not None else getattr(C, "QM_SCAN_MIN_STAR", 3.0)
             if not qm_df_passed.empty and "qm_star" in qm_df_passed.columns:
+                before = len(qm_df_passed)
                 qm_df_passed = qm_df_passed[qm_df_passed["qm_star"] >= _min_star]
+                _log_detail("Stage 2-3 -- Parallel Analysis", f"QM: min_star≥{_min_star}: {before}→{len(qm_df_passed)}")
 
             # strict_rs filter (Supplement 35: only top RS stocks)
             if strict_rs and not qm_df_passed.empty and "rs_rank" in qm_df_passed.columns:
@@ -380,10 +430,13 @@ def run_combined_scan(custom_filters: dict | None = None,
                 before = len(qm_df_passed)
                 qm_df_passed = qm_df_passed[qm_df_passed["rs_rank"] >= rs_min]
                 logger.info("[Combined QM] strict_rs RS≥%.0f: %d→%d", rs_min, before, len(qm_df_passed))
+                _log_detail("Stage 2-3 -- Parallel Analysis", f"QM: strict_rs RS≥{rs_min}: {before}→{len(qm_df_passed)}")
 
             # top_n cap
             _top_n = top_n if top_n is not None else getattr(C, "QM_SCAN_TOP_N", 50)
-            qm_df_passed = qm_df_passed.head(_top_n)
+            if len(qm_df_passed) > _top_n:
+                qm_df_passed = qm_df_passed.head(_top_n)
+                _log_detail("Stage 2-3 -- Parallel Analysis", f"QM: capped to top {_top_n} results")
 
             qm_df_all = pd.DataFrame(s2_passed) if s2_passed else pd.DataFrame()
 
