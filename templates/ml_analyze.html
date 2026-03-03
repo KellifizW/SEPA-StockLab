@@ -503,9 +503,10 @@ async function analyzeStock() {
       return;
     }
 
-    renderAnalysis(data.result);
-    document.getElementById('loadingArea').classList.add('d-none');
-    document.getElementById('resultArea').classList.remove('d-none');
+    // Server-render result partial via HTMX (handles state, URL, charts, watch mode init)
+    // _ml_analyze_result.html inline script hides loading and shows resultArea
+    htmx.ajax('GET', '/htmx/ml/analyze/result?ticker=' + encodeURIComponent(ticker),
+              {target: '#resultArea', swap: 'innerHTML'});
   } catch(e) {
     toast('分析失敗：' + e, false);
     document.getElementById('loadingArea').classList.add('d-none');

@@ -47,20 +47,7 @@
   <span class="badge bg-secondary ms-auto">盤後更新 After Market Close</span>
 </div>
 
-<div class="d-flex gap-2 mb-3">
-  <span class="scanner-mode-tab active" id="tab-standard" onclick="setScannerMode('standard')">
-    <i class="bi bi-funnel me-1"></i>現時 Standard
-  </span>
-  <span class="scanner-mode-tab" id="tab-triple" onclick="setScannerMode('triple')">
-    <i class="bi bi-collection me-1"></i>頻道掃描 Triple Scanner
-  </span>
-  <span class="scanner-mode-tab" id="tab-combined" onclick="setScannerMode('combined')">
-    <i class="bi bi-layers me-1"></i>合併 Combined
-  </span>
-  <span class="ms-auto text-secondary" style="font-size:12px;align-self:center">
-    <i class="bi bi-info-circle me-1"></i>頻道 = 頂部缺口箭選 + 最強漲幅股 + 趨勢領頭羊
-  </span>
-</div>
+
 
 <div class="row g-3 mb-4">
   <div class="col-12">
@@ -204,7 +191,7 @@
   </div>
 </div>
 
-<div id="tripleChannelPanel" class="mb-3" style="display:none">
+<div id="tripleChannelPanel" class="mb-3">
   <div class="row g-2">
     <div class="col-md-4">
       <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;font-size:12px">
@@ -261,8 +248,8 @@
         <tbody id="resultBody">
           <tr><td colspan="13" class="text-center text-secondary py-5">
             <i class="bi bi-graph-up-arrow" style="font-size:2rem;opacity:0.3;color:#3fb950"></i>
-            <div class="mt-2">點擊「開始掃描」以現時／頻道／合併模式搜尋設置</div>
-            <div style="font-size:12px;margin-top:4px">標準 / 頻道掃描 / 合併</div>
+            <div class="mt-2">點擊「開始掃描」以 Martin Luk 三頻道模式搜尋設置</div>
+            <div style="font-size:12px;margin-top:4px">缺口 GAP · 漲幅 GAINERS · 領頭羊 LEADERS</div>
           </td></tr>
         </tbody>
       </table>
@@ -286,8 +273,6 @@ let _jobId = null;
 let _pollInterval = null;
 let _scanStartTime = null;
 let _lastRows = [];
-let _scannerMode = "standard";
-
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("[data-bs-toggle=\"tooltip\"]").forEach(el =>
     new bootstrap.Tooltip(el, { placement: "top" })
@@ -325,14 +310,6 @@ async function loadCacheInfo() {
   } catch(e) {
     el.innerHTML = '<i class="bi bi-exclamation-triangle text-warning me-1"></i>無法取得快取資訊';
   }
-}
-
-function setScannerMode(mode) {
-  _scannerMode = mode;
-  ["standard","triple","combined"].forEach(m => {
-    document.getElementById("tab-" + m).classList.toggle("active", m === mode);
-  });
-  document.getElementById("tripleChannelPanel").style.display = (mode !== "standard") ? "" : "none";
 }
 
 async function loadSituationalAwareness() {
@@ -402,7 +379,7 @@ async function startScan() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         min_star: minStar, top_n: topN,
-        scanner_mode: _scannerMode, stage1_source: source,
+        stage1_source: source,
         use_universe_cache: useCache
       })
     });
@@ -446,11 +423,10 @@ function pollProgress() {
         document.getElementById("progressStage").textContent =
           "掃描完成 (" + elapsed + "s) — 找到 " + rows.length + " 隻符合條件股票";
         // ── Completion popup notification (mirrors combined_scan pattern) ──
-        const modeLabel = { standard: "標準", triple: "頻道掃描", combined: "合併" }[_scannerMode] || _scannerMode;
         const stars4 = rows.filter(r => (r.ml_star || 0) >= 4).length;
         const logHint = r.log_path ? '<br><small class="text-muted">日誌: ' + r.log_path + '</small>' : '';
         toastCompletion(
-          '✅ ML ' + modeLabel + ' 掃描完成！<br>' +
+          '✅ ML 頻道掃描完成！<br>' +
           '找到 <strong>' + rows.length + '</strong> 隻股票' +
           (stars4 ? '（其中 <strong>' + stars4 + '</strong> 隻 ≥4★）' : '') +
           ' — ' + elapsed + 's' + logHint,

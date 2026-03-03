@@ -743,7 +743,7 @@ def _save_scan_results_csv(df_passed: pd.DataFrame, df_all: pd.DataFrame,
 
 def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
                 top_n: Optional[int] = None, stage1_source: Optional[str] = None,
-                scanner_mode: str = "standard",
+                scanner_mode: str = "triple",  # kept for API compat; always runs triple
                 use_universe_cache: bool = False,
                 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -755,13 +755,10 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     min_star       : minimum star rating to include (default from config)
     top_n          : limit results to top N (default from config)
     stage1_source  : "nasdaq_ftp" or "finviz"
-    scanner_mode   : "standard" (existing 3-stage pipeline),
-                     "triple"   (Martin Luk 3-channel pre-scan builds universe),
-                     "combined" (triple + standard merged)
+    scanner_mode   : kept for API backward-compat. Triple scanner always runs.
     use_universe_cache : if True, Stage 1 loads tickers from the last saved
                      cache file (data/ml_universe_cache.json) instead of
-                     hitting finviz / NASDAQ FTP. All three ML scan modes
-                     share the same cache file.
+                     hitting finviz / NASDAQ FTP.
 
     Returns:
         (df_passed, df_all) where:
@@ -771,8 +768,8 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
     scan_start = datetime.now()
     _progress("Initialising", 0, "Starting Martin Luk Pullback Scan…")
     logger.info("═" * 65)
-    logger.info("  MARTIN LUK PULLBACK SCAN [%s] — %s",
-                scanner_mode.upper(), scan_start.strftime("%Y-%m-%d %H:%M"))
+    logger.info("  MARTIN LUK PULLBACK SCAN [TRIPLE] — %s",
+                scan_start.strftime("%Y-%m-%d %H:%M"))
     logger.info("═" * 65)
 
     # ── Market environment gate ───────────────────────────────────────────
@@ -803,44 +800,9 @@ def run_ml_scan(verbose: bool = True, min_star: Optional[float] = None,
         candidates = [{"ticker": t, "channel": ""} for t in candidates]
     logger.info("[ML Scan] Stage1: %d candidates", len(candidates))
 
-    # ── Optional: Triple-scanner channel pre-scan ─────────────────────────
-    # Injects additional high-priority tickers from ML 3-channel system
-    if scanner_mode in ("triple", "combined") and getattr(C, "ML_TRIPLE_SCANNER_ENABLED", True):
-        # ── Pre-warm enriched cache BEFORE Triple Scan ────────────────────
-        # Leader Scanner calls get_enriched() × 2603 tickers.
-        # Without pre-warm, every ticker calls get_technicals() (~100s first scan).
-        # Pre-warm builds _1y_enriched.parquet for all Stage-1 tickers with 32
-        # parallel workers — subsequent Leader Scanner calls read fast-path parquet
-        # (pure PyArrow read, <1 ms/ticker) instead of recomputing indicators.
-        # On same-day rescans the pre-warm itself hits the fast path — essentially free.
-        try:
-            from modules.data_pipeline import batch_download_and_enrich as _prewarm_bde
-            _s1_tickers_pre = [r["ticker"] for r in candidates]
-            _progress("Cache Warm", 10,
-                      f"預熱快取: {len(_s1_tickers_pre)} 檔 (首次需計算指標，後續即時)…")
-            logger.info("[ML Scan] Pre-warming 1y enriched cache for %d tickers…",
-                        len(_s1_tickers_pre))
-
-            # Track max progress to ensure monotonic increase (never go backward)
-            _cache_warm_max_pct = [10]
-
-            def _prewarm_progress_cb(b: int, t: int, msg: str) -> None:
-                # Map batch_download_and_enrich progress into 10-35% band.
-                # Different call patterns from batch_download_and_enrich (coarse vs fine scales)
-                # require clamping to previous max to prevent progress regression.
-                pct = 10 + int(b / max(t, 1) * 25)
-                pct = min(35, pct)  # Cap at end of band
-                pct = max(pct, _cache_warm_max_pct[0])  # Never decrease
-                _cache_warm_max_pct[0] = pct
-                _progress("Cache Warm", pct, f"預熱快取: {msg}")
-
-            _prewarm_bde(_s1_tickers_pre, period="1y",
-                         progress_cb=_prewarm_progress_cb)
-            logger.info("[ML Scan] Cache pre-warm complete — Leader Scanner will use fast path")
-        except Exception as _prewarm_exc:
-            logger.warning("[ML Scan] Cache pre-warm failed (continuing without): %s",
-                           _prewarm_exc)
-
+    # ── Triple-scanner channel pre-scan ──────────────────────────────────
+    # Always runs: identifies GAP/GAINER/LEADER channels and annotates candidates.
+    if getattr(C, "ML_TRIPLE_SCANNER_ENABLED", True):
         try:
             from modules.ml_scanner_channels import run_triple_scan
             _progress("Triple Scan", 37, "Running Martin Luk 3-channel scanner…")

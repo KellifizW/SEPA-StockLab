@@ -1,0 +1,583 @@
+{# _ml_analyze_result.html — HTMX partial for /htmx/ml/analyze/result?ticker=X  #}
+{# Variables: d (analyze_ml result dict), ticker (str)                           #}
+{# Injected into <div id="resultArea"> via htmx.ajax() innerHTML swap            #}
+
+{# ── Star rating helpers ────────────────────────────────────────────────────── #}
+{% set stars = (d.get('capped_stars') or 0) | float %}
+{% if stars >= 4.5 %}{% set star_class = 'star-5' %}
+{% elif stars >= 4 %}{% set star_class = 'star-4' %}
+{% elif stars >= 3 %}{% set star_class = 'star-3' %}
+{% else %}{% set star_class = 'star-low' %}{% endif %}
+{% set full_stars = stars | int %}
+{% set has_half = (stars - (stars | int)) >= 0.5 %}
+
+{# ── Recommendation helpers ─────────────────────────────────────────────────── #}
+{% set rec    = d.get('recommendation', '') %}
+{% set rec_zh = d.get('recommendation_zh', '') %}
+{% if rec in ('STRONG BUY', 'BUY') %}
+  {% set rec_bg  = '#3fb950' %}{% set rec_txt = '#0d1117' %}
+{% elif rec == 'WATCH' %}
+  {% set rec_bg  = '#e3b341' %}{% set rec_txt = '#0d1117' %}
+{% elif rec == 'WEAK' %}
+  {% set rec_bg  = '#8b949e' %}{% set rec_txt = '#0d1117' %}
+{% else %}
+  {% set rec_bg  = '#1c2128' %}{% set rec_txt = '#fff' %}
+{% endif %}
+
+{# ── Key data ───────────────────────────────────────────────────────────────── #}
+{% set veto       = d.get('veto') %}
+{% set dims       = d.get('dim_scores') or {} %}
+{% set setup      = d.get('setup_type') or {} %}
+{% set tp         = d.get('trade_plan') or {} %}
+{% set setup_code = (setup.get('primary_setup') or 'UNKNOWN') | upper %}
+{% set setup_conf = ((setup.get('confidence') or 0) * 100) | int %}
+
+{# ── Setup badge map ────────────────────────────────────────────────────────── #}
+{% set badge_map = {
+  'PB_EMA':   ('badge-pb',   'EMA回調買入'),
+  'BR_RETEST':('badge-br',   '突破回測'),
+  'BREAKOUT': ('badge-bo',   '突破'),
+  'EP':       ('badge-ep',   '跳空缺口'),
+  'CHAR_CHG': ('badge-chg',  '走勢轉變'),
+  'PARABOLIC':('badge-para', '拋物線'),
+} %}
+{% set badge_cls, badge_lbl = badge_map.get(setup_code, ('badge-uk', setup_code or '未識別')) %}
+
+{# ── 7-Dimension definitions ─────────────────────────────────────────────────── #}
+{% set dim_defs = [
+  ('A', 'EMA結構'),
+  ('B', '回調品質'),
+  ('C', 'AVWAP匯合'),
+  ('D', '成交量'),
+  ('E', '風險回報'),
+  ('F', '相對強度'),
+  ('G', '市場環境'),
+] %}
+
+{# ════════════════════════════════════════════════════════════════════════════ #}
+
+<!-- Mode buttons -->
+<div class="mode-btn-group mb-4">
+  <button class="mode-btn active" onclick="switchMlMode('review')">🔍 複盤模式 Review</button>
+  <button class="mode-btn" onclick="switchMlMode('watch')">📡 盯盤模式 Watch Market</button>
+</div>
+
+<!-- ═══════════════════════ REVIEW PANEL ═══════════════════════ -->
+<div id="reviewPanel">
+
+<!-- Row 1: Star + 7-dim + Basic info -->
+<div class="row g-3 mb-3">
+
+  <!-- Star card -->
+  <div class="col-12 col-md-3">
+    <div class="card h-100 text-center">
+      <div class="card-header"><i class="bi bi-star-fill me-1" style="color:#3fb950"></i>ML 星級評分</div>
+      <div class="card-body d-flex flex-column align-items-center justify-content-center py-4">
+        <div class="star-val {{ star_class }}" id="starDisplay">{{ '%.1f' | format(stars) }} ★</div>
+        <div id="starStars" style="font-size:1.4rem;margin:8px 0">
+          {% for _ in range(full_stars) %}⭐{% endfor %}{% if has_half %}½{% endif %}
+        </div>
+        {% if veto %}
+        <div class="veto-alert w-100 text-center mt-2" id="vetoDisplay">
+          <i class="bi bi-x-octagon-fill me-1"></i>VETO 否決
+          <div id="vetoReason" style="font-size:11px;margin-top:4px">
+            {% if veto == 'RISK' %}止損距離過大 &gt; 2.5%
+            {% elif veto == 'BEAR' %}熊市否決 — 下降趨勢
+            {% else %}{{ veto }}{% endif %}
+          </div>
+        </div>
+        {% else %}
+        <div class="d-none" id="vetoDisplay"><div id="vetoReason"></div></div>
+        {% endif %}
+        <div id="recDisplay" class="mt-3 badge fs-6"
+             style="background:{{ rec_bg }};color:{{ rec_txt }}">{{ rec }}{% if rec_zh %} — {{ rec_zh }}{% endif %}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7-dim scores -->
+  <div class="col-12 col-md-5">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-bar-chart-steps me-1"></i>七維評分 7-Dimension Scores
+      </div>
+      <div class="card-body" id="dimScoresArea">
+        {% for key, label in dim_defs %}
+          {% set dim_d = dims.get(key) or {} %}
+          {% set sc  = (dim_d.get('score') or 0) | float %}
+          {% set pct = [0, [(sc + 2) / 4 * 100, 100] | min] | max %}
+          {% if sc > 0 %}{% set bar_color = '#3fb950' %}
+          {% elif sc < 0 %}{% set bar_color = '#f85149' %}
+          {% else %}{% set bar_color = '#8b949e' %}{% endif %}
+          <div class="d-flex align-items-center mb-2">
+            <span style="width:100px;font-size:12px;color:#8b949e">{{ key }}: {{ label }}</span>
+            <div class="dim-bar-wrap flex-grow-1 mx-2">
+              <div class="dim-bar" style="width:{{ '%.0f' | format(pct) }}%;background:{{ bar_color }}"></div>
+            </div>
+            <span style="width:45px;text-align:right;font-size:13px;color:{{ bar_color }}">
+              {{ '+' if sc >= 0 else '' }}{{ '%.1f' | format(sc) }}
+            </span>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Basic info -->
+  <div class="col-12 col-md-4">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-info-circle me-1"></i>基本資料</div>
+      <div class="card-body" id="infoArea">
+        {% set close_px = (d.get('close') or 0) | float %}
+        {% set mom_3m   = d.get('mom_3m') %}
+        {% set mom_6m   = d.get('mom_6m') %}
+        <table class="table table-sm mb-0" style="font-size:13px">
+          <tr><td class="text-secondary">股票</td>
+              <td class="fw-bold" style="color:#3fb950">{{ ticker }}</td></tr>
+          <tr><td class="text-secondary">收盤價</td>
+              <td>${{ '%.2f' | format(close_px) }}</td></tr>
+          <tr><td class="text-secondary">ADR (14日)</td>
+              <td>{{ '%.1f' | format((d.get('adr') or 0) | float) }}%</td></tr>
+          <tr><td class="text-secondary">日成交額</td>
+              <td>${{ '%.1f' | format((d.get('dollar_volume_m') or 0) | float) }}M</td></tr>
+          <tr><td class="text-secondary">3M 動量</td>
+              <td style="color:{% if mom_3m is not none and mom_3m >= 0 %}#3fb950{% else %}#f85149{% endif %}">
+                {% if mom_3m is not none %}{{ '+' if mom_3m >= 0 else '' }}{{ '%.1f' | format(mom_3m | float) }}%{% else %}—{% endif %}
+              </td></tr>
+          <tr><td class="text-secondary">6M 動量</td>
+              <td style="color:{% if mom_6m is not none and mom_6m >= 0 %}#3fb950{% else %}#f85149{% endif %}">
+                {% if mom_6m is not none %}{{ '+' if mom_6m >= 0 else '' }}{{ '%.1f' | format(mom_6m | float) }}%{% else %}—{% endif %}
+              </td></tr>
+          <tr><td class="text-secondary">形態類型</td>
+              <td>
+                <span class="badge {{ badge_cls }}" style="font-size:11px">{{ badge_lbl }}</span>
+                <span class="text-secondary" style="font-size:11px">&nbsp;(信心 {{ setup_conf }}%)</span>
+              </td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /Row 1 -->
+
+<!-- Row 2: Trade Plan -->
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-clipboard-data me-1" style="color:#3fb950"></i>交易計劃 Trade Plan
+      </div>
+      <div class="card-body" id="tradePlanArea">
+        {% if tp.get('action') == 'BUY' %}
+        <div class="row g-3">
+          <div class="col-12 mb-2">
+            <code style="font-size:13px;color:#3fb950">{{ tp.get('formula', '') }}</code>
+          </div>
+
+          {# Metric cells #}
+          {% set stop_pct_val     = tp.get('stop_pct') %}
+          {% set pos_pct_val      = tp.get('position_pct') %}
+          {% set plan_cells = [
+            ('進場 Entry',  tp.get('entry'),           '#c9d1d9', none,         'price'),
+            ('止損 Stop',   tp.get('stop'),            '#f85149', stop_pct_val, 'price'),
+            ('股數 Shares', tp.get('shares'),          '#c9d1d9', none,         'int'),
+            ('倉位金額',    tp.get('position_value'),  '#c9d1d9', pos_pct_val,  'money'),
+            ('3R 目標',     tp.get('target_1_price'),  '#3fb950', none,         'price'),
+            ('5R 目標',     tp.get('target_2_price'),  '#3fb950', none,         'price'),
+          ] %}
+          {% for lbl, val, clr, sub, fmt in plan_cells %}
+          <div class="col-6 col-md-2">
+            <div class="trade-plan-card text-center">
+              <div style="font-size:11px;color:#8b949e">{{ lbl }}</div>
+              <div class="fw-bold" style="font-size:18px;color:{{ clr }}">
+                {% if val is not none %}
+                  {% if fmt == 'price' %}${{ '%.2f' | format(val | float) }}
+                  {% elif fmt == 'money' %}${{ '{:,}'.format(val | int) }}
+                  {% else %}{{ val | int }}{% endif %}
+                {% else %}—{% endif %}
+              </div>
+              {% if sub is not none %}
+              <div style="font-size:11px;color:#8b949e">{{ '%.1f' | format(sub | float) }}%</div>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="mt-2" style="font-size:12px;color:#8b949e">
+          <i class="bi bi-shield me-1"></i>風險金額：${{ '%.0f' | format((tp.get('risk_dollars') or 0) | float) }}
+          ({{ '%.2f' | format((tp.get('risk_pct_of_account') or 0) | float) }}%)
+          &nbsp;|&nbsp; {{ tp.get('trail_label', '') }}
+        </div>
+        {% else %}
+        <div class="text-center text-secondary py-3">
+          <i class="bi bi-x-circle me-1"></i>不符合交易條件 — {{ tp.get('action', 'PASS') }}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 2 -->
+
+<!-- Row 2b: Decision Tree + Pullback Scorecard + Short Research (JS-populated) -->
+<div class="row g-3 mb-3">
+  <div class="col-12 col-md-4">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-signpost-2 me-1" style="color:#58a6ff"></i>
+        入場決策樹 Entry Decision Tree
+        <small class="text-secondary ms-1">Chapter 9</small>
+      </div>
+      <div class="card-body" id="dtArea">
+        <div class="text-secondary text-center" style="font-size:12px">—</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-5">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-clipboard2-check me-1" style="color:#e3b341"></i>
+        回調品質清單 Pullback Scorecard
+        <small class="text-secondary ms-1">Appendix C</small>
+      </div>
+      <div class="card-body" id="scorecardArea">
+        <div class="text-secondary text-center" style="font-size:12px">—</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-3">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-arrow-down-circle me-1" style="color:#f85149"></i>
+        空倉研究 Short Research
+        <small class="text-secondary ms-1">Ch.16 研究用</small>
+      </div>
+      <div class="card-body" id="shortResearchArea">
+        <div class="text-secondary text-center" style="font-size:12px">—</div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 2b -->
+
+<!-- Row 3: Daily Chart -->
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div>
+          <i class="bi bi-graph-up me-1" style="color:#3fb950"></i>日線圖 Daily Chart
+          <span style="font-size:11px;color:#8b949e">&nbsp;— EMA 9/21/50/150 + Anchored VWAP</span>
+        </div>
+        <div id="dailyRangeBtns" class="btn-group btn-group-sm">
+          <button class="btn btn-outline-secondary chart-range-btn active" onclick="setDailyRange(63,this)">3M</button>
+          <button class="btn btn-outline-secondary chart-range-btn" onclick="setDailyRange(126,this)">6M</button>
+          <button class="btn btn-outline-secondary chart-range-btn" onclick="setDailyRange(252,this)">1Y</button>
+          <button class="btn btn-outline-secondary chart-range-btn" onclick="setDailyRange(504,this)">2Y</button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="chart-legend" style="border-bottom:1px solid #21262d"
+             title="點擊指標名稱可切換顯示 / Click indicator name to toggle">
+          <span class="ind-toggle" id="ml-lg-ema9"
+                onclick="toggleMlDailySeries('ema9',this)"><span style="display:inline-block;width:14px;height:2px;background:#00d4ff;vertical-align:middle"></span>&nbsp;EMA 9</span>
+          <span class="ind-toggle" id="ml-lg-ema21"
+                onclick="toggleMlDailySeries('ema21',this)"><span style="display:inline-block;width:14px;height:2px;background:#3fb950;vertical-align:middle"></span>&nbsp;EMA 21</span>
+          <span class="ind-toggle" id="ml-lg-ema50"
+                onclick="toggleMlDailySeries('ema50',this)"><span style="display:inline-block;width:14px;height:2px;background:#e3b341;vertical-align:middle"></span>&nbsp;EMA 50</span>
+          <span class="ind-toggle" id="ml-lg-ema150"
+                onclick="toggleMlDailySeries('ema150',this)"><span style="display:inline-block;width:14px;height:2px;background:#f85149;vertical-align:middle"></span>&nbsp;EMA 150</span>
+          <span class="ind-toggle" id="ml-lg-avwap_high"
+                onclick="toggleMlDailySeries('avwap_high',this)"><span style="display:inline-block;width:14px;height:1px;background:#d49fff;border-top:1px dashed #d49fff;vertical-align:middle"></span>&nbsp;AVWAP 供給</span>
+          <span class="ind-toggle" id="ml-lg-avwap_low"
+                onclick="toggleMlDailySeries('avwap_low',this)"><span style="display:inline-block;width:14px;height:1px;background:#58a6ff;border-top:1px dashed #58a6ff;vertical-align:middle"></span>&nbsp;AVWAP 支撐</span>
+          <span id="ml-avwap-anchor-info" style="font-size:10px;color:#6e7681;margin-left:4px"></span>
+        </div>
+        <div id="dailyChartContainer" style="height:420px">
+          <div class="text-center py-5 text-secondary">
+            <div class="spinner-border spinner-border-sm" style="color:#3fb950"></div>
+            <div class="mt-2" style="font-size:12px">載入圖表 Loading chart…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 3 -->
+
+<!-- Row 4: Weekly Chart -->
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div>
+          <i class="bi bi-calendar-week me-1" style="color:#3fb950"></i>周線圖 Weekly Chart
+          <span style="font-size:11px;color:#8b949e">&nbsp;— Martin Luk: 「Weekly 讓 Daily 的混亂變得清晰」</span>
+        </div>
+        <div id="weeklyRangeBtns" class="btn-group btn-group-sm">
+          <button class="btn btn-outline-secondary chart-range-btn" onclick="setWeeklyRange(52,this)">1Y</button>
+          <button class="btn btn-outline-secondary chart-range-btn active" onclick="setWeeklyRange(104,this)">2Y</button>
+          <button class="btn btn-outline-secondary chart-range-btn" onclick="setWeeklyRange(156,this)">3Y</button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="chart-legend" style="border-bottom:1px solid #21262d"
+             title="點擊指標名稱可切換顯示">
+          <span class="ind-toggle" id="ml-wk-lg-ema9w"
+                onclick="toggleMlWklySeries('ema9w',this)"><span style="display:inline-block;width:14px;height:2px;background:#00d4ff;vertical-align:middle"></span>&nbsp;W-EMA 9</span>
+          <span class="ind-toggle" id="ml-wk-lg-ema21w"
+                onclick="toggleMlWklySeries('ema21w',this)"><span style="display:inline-block;width:14px;height:2px;background:#3fb950;vertical-align:middle"></span>&nbsp;W-EMA 21</span>
+          <span class="ind-toggle" id="ml-wk-lg-ema50w"
+                onclick="toggleMlWklySeries('ema50w',this)"><span style="display:inline-block;width:14px;height:2px;background:#e3b341;vertical-align:middle"></span>&nbsp;W-EMA 50</span>
+        </div>
+        <div id="weeklyChartContainer" style="height:350px">
+          <div class="text-center py-5 text-secondary">
+            <div class="spinner-border spinner-border-sm" style="color:#3fb950"></div>
+            <div class="mt-2" style="font-size:12px">載入周線圖 Loading weekly chart…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 4 -->
+
+<!-- Row 5: 3-Phase Stop System (static) -->
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-shield-exclamation me-1 text-danger"></i>三階段止損系統 3-Phase Stop System</div>
+      <div class="card-body">
+        <div class="stop-phase stop-phase-1">
+          <strong>Phase 1 (Day 1)：</strong>止損 = 當日最低點 (LOD) 下方 0.3%
+          <div style="font-size:12px;color:#8b949e;margin-top:4px">Martin 用最緊的止損，因為進場在已知支撐點</div>
+        </div>
+        <div class="stop-phase stop-phase-2">
+          <strong>Phase 2 (Day 2)：</strong>止損移至成本價 (breakeven)
+          <div style="font-size:12px;color:#8b949e;margin-top:4px">快速脫離風險，讓交易變成零風險</div>
+        </div>
+        <div class="stop-phase stop-phase-3">
+          <strong>Phase 3 (Day 3+)：</strong>追蹤止損 = 9 EMA
+          <div style="font-size:12px;color:#8b949e;margin-top:4px">收盤跌穿 9 EMA → 出場所有剩餘持倉</div>
+        </div>
+        <div class="profit-step mt-3">
+          <strong>部分了結：</strong>3R 出 15% → 5R 再出 15% → 剩餘 70% 追蹤 9 EMA
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 5 -->
+
+<!-- Row 6: ML Commentary (JS-populated) -->
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-chat-quote me-1" style="color:#3fb950"></i>
+        Martin Luk 分析評語
+        <span style="font-size:11px;color:#8b949e">&nbsp;— 為什麼通過/不通過篩選，以及入場注意事項</span>
+      </div>
+      <div class="card-body" id="mlCommentaryArea">
+        <div class="text-secondary text-center">—</div>
+      </div>
+    </div>
+  </div>
+</div><!-- /Row 6 -->
+
+<!-- Row 7: Scan vs Analyze notice (static) -->
+<div class="row g-3 mb-2" id="scanNoticeRow">
+  <div class="col-12">
+    <div class="alert alert-dark mb-0" style="font-size:12px;border-color:#30363d;background:#0d1117">
+      <i class="bi bi-info-circle me-1" style="color:#58a6ff"></i>
+      <strong>掃描 vs 個股分析的差異：</strong>
+      掃描（Scan）使用簡化篩選（ADR + 成交額），速度快但不計算七維評分。
+      個股分析（Analyze）會進行完整計算，包括止損距離、EMA排列、成交量模式等，
+      因此部分通過掃描的股票，在個股分析中可能得到較低評分或 PASS 建議 — <em>這是正常行為</em>。
+    </div>
+  </div>
+</div><!-- /Row 7 -->
+
+</div><!-- /reviewPanel -->
+
+<!-- ═══════════════════════ WATCH PANEL ═══════════════════════ -->
+<div id="watchPanel" class="d-none">
+
+  <!-- Status + Countdown -->
+  <div class="watch-status-row">
+    <div>
+      <h5 class="mb-1">
+        <span id="watchTicker" style="color:#3fb950">—</span>
+        <span id="watchPrice" style="font-size:18px">—</span>
+      </h5>
+      <div class="market-status" id="marketStatusBadge">
+        <span class="live-pulse"></span>
+        <span id="marketStatusLabel">市場狀態</span>
+      </div>
+    </div>
+    <div class="watch-countdown">
+      <div>下次刷新</div>
+      <div id="watchCountdown" style="font-size:14px;color:#3fb950">5:00</div>
+    </div>
+  </div>
+
+  <!-- Pre-market warning -->
+  <div id="premktWarning" class="premarket-warning d-none">
+    <i class="bi bi-info-circle me-1"></i>
+    <strong>盤前時段</strong> — 數據包含美東 4:00 - 9:30 預市交易。盤中的圖表行為可能與盤前不同。
+  </div>
+
+  <!-- Closed notice -->
+  <div id="closedNotice" class="closed-notice d-none">
+    <i class="bi bi-x-circle me-1"></i>
+    <strong>美股現已休市</strong> — 切換至
+    <button class="btn btn-link p-0" style="color:#3fb950" onclick="switchMlMode('review')">複盤模式</button>
+    查看完整分析。
+  </div>
+
+  <!-- 2-Column Chart Slots -->
+  <div class="row g-3 mb-3">
+    <!-- Slot A -->
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
+          <span style="font-size:13px;font-weight:600">
+            <i class="bi bi-graph-up me-1" style="color:#3fb950"></i>圖表 A
+          </span>
+          <select id="watchSlotASelect" class="form-select form-select-sm"
+                  style="width:auto;background:#1c2128;color:#c9d1d9;border-color:#30363d"
+                  onchange="setWatchChartSlot('A',this.value)">
+            <option value="5m" selected>5分鐘</option>
+            <option value="15m">15分鐘</option>
+            <option value="1h">1小時</option>
+            <option value="daily">日K</option>
+            <option value="weekly">周K</option>
+            <option value="off">關閉</option>
+          </select>
+        </div>
+        <div class="card-body p-0">
+          <div id="watchSlotALegend" class="intraday-legend"
+               style="border-bottom:1px solid #21262d;min-height:32px;flex-wrap:wrap"></div>
+          <div id="watchSlotAContainer" style="height:420px;background:#0d1117;overflow:hidden">
+            <div class="text-center py-5 text-secondary">
+              <div class="spinner-border spinner-border-sm" style="color:#3fb950"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Slot B -->
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
+          <span style="font-size:13px;font-weight:600">
+            <i class="bi bi-calendar-week me-1" style="color:#3fb950"></i>圖表 B
+          </span>
+          <select id="watchSlotBSelect" class="form-select form-select-sm"
+                  style="width:auto;background:#1c2128;color:#c9d1d9;border-color:#30363d"
+                  onchange="setWatchChartSlot('B',this.value)">
+            <option value="5m">5分鐘</option>
+            <option value="15m">15分鐘</option>
+            <option value="1h">1小時</option>
+            <option value="daily" selected>日K</option>
+            <option value="weekly">周K</option>
+            <option value="off">關閉</option>
+          </select>
+        </div>
+        <div class="card-body p-0">
+          <div id="watchSlotBLegend" class="intraday-legend"
+               style="border-bottom:1px solid #21262d;min-height:32px;flex-wrap:wrap"></div>
+          <div id="watchSlotBContainer" style="height:420px;background:#0d1117;overflow:hidden">
+            <div class="text-center py-5 text-secondary">
+              <div class="spinner-border spinner-border-sm" style="color:#3fb950"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /chart slots -->
+
+  <!-- Premarket Plan -->
+  <div class="card mb-3" id="premktPlanCard">
+    <div class="card-header">
+      <i class="bi bi-clipboard-check me-1" style="color:#e3b341"></i>盤前計劃 Premarket Plan
+    </div>
+    <div class="card-body" id="premktPlanArea">
+      <div class="text-secondary text-center">—</div>
+    </div>
+  </div>
+
+  <!-- Intraday Signals + Signal Log -->
+  <div class="row g-3 mb-2">
+    <div class="col-12 col-lg-5">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-chat-dots me-1" style="color:#58a6ff"></i>最新分析建議
+          <span style="font-size:11px;color:#8b949e">&nbsp;(5分鐘自動更新)</span>
+        </div>
+        <div class="card-body" id="intradayCommentaryArea">
+          <div class="text-secondary text-center">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-7">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-clock-history me-1" style="color:#e3b341"></i>分析記錄 Signal Log</span>
+          <button class="btn btn-sm"
+                  style="font-size:11px;padding:2px 8px;background:#21262d;color:#8b949e;border:1px solid #30363d"
+                  onclick="clearWatchLog()">清除</button>
+        </div>
+        <div class="card-body p-0">
+          <div id="watchSignalLog"
+               style="max-height:300px;overflow-y:auto;padding:8px 12px;font-size:12px">
+            <div class="text-secondary text-center py-3" id="watchLogEmpty">等待首次自動更新…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /watchPanel -->
+
+<script>
+(function() {
+  // ── Store result data for watch mode and other JS functions ─────────────
+  window._mlLastTicker = {{ ticker | tojson }};
+  window._mlLastResult = {{ d | tojson }};
+
+  // ── Set module-level ticker vars (let vars in ml_analyze.html extra_js) ─
+  // These let vars are accessible across scripts in the same page context
+  try { _mlCurrentTicker = window._mlLastTicker; } catch(e) {}
+  try { _mlWatchTicker   = window._mlLastTicker; } catch(e) {}
+
+  // ── Hide loading spinner, show result area ───────────────────────────────
+  const loadingEl = document.getElementById('loadingArea');
+  if (loadingEl) loadingEl.classList.add('d-none');
+  const resultEl = document.getElementById('resultArea');
+  if (resultEl) resultEl.classList.remove('d-none');
+
+  // ── Set body data attributes for chart price lines ───────────────────────
+  const _tp = window._mlLastResult.trade_plan || {};
+  document.body.setAttribute('data-ml-entry', String(_tp.entry           || ''));
+  document.body.setAttribute('data-ml-stop',  String(_tp.stop            || ''));
+  document.body.setAttribute('data-ml-3r',    String(_tp.target_1_price  || ''));
+  document.body.setAttribute('data-ml-5r',    String(_tp.target_2_price  || ''));
+
+  // ── Update URL without page reload ──────────────────────────────────────
+  history.replaceState({}, '', '/ml/analyze?ticker=' + encodeURIComponent(window._mlLastTicker));
+
+  // ── Load daily + weekly price charts ────────────────────────────────────
+  if (typeof loadDailyChart  === 'function') loadDailyChart(window._mlLastTicker);
+  if (typeof loadWeeklyChart === 'function') loadWeeklyChart(window._mlLastTicker);
+
+  // ── Render JS-driven panels ──────────────────────────────────────────────
+  if (typeof renderMlCommentary  === 'function') renderMlCommentary(window._mlLastResult);
+  if (typeof renderDecisionTree  === 'function') renderDecisionTree(window._mlLastResult.decision_tree);
+  if (typeof renderScorecard     === 'function') renderScorecard(window._mlLastResult.pullback_scorecard);
+  if (typeof renderShortResearch === 'function') renderShortResearch(window._mlLastResult.short_research);
+
+  // ── Pre-populate premarket plan for watch mode ───────────────────────────
+  if (typeof renderPremktPlan === 'function') renderPremktPlan(window._mlLastResult);
+
+  // ── Re-initialise Bootstrap tooltips for injected content ───────────────
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el =>
+    new bootstrap.Tooltip(el, { placement: 'top' })
+  );
+})();
+</script>

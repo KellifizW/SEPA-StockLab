@@ -526,14 +526,9 @@ async function analyzeStock() {
       document.getElementById('emptyState').classList.remove('d-none');
       return;
     }
-    renderAnalysis(data.ticker, data.result);
-    document.getElementById('resultArea').classList.remove('d-none');
-    document.getElementById('modeToggleRow').classList.add('visible');
-    // Cache result for watch mode premarket plan
-    window._qmLastTicker = data.ticker;
-    window._qmLastResult = data.result;
-    // Update URL without reload
-    history.replaceState({}, '', `/qm/analyze?ticker=${ticker}`);
+    // Server-render result partial via HTMX (handles state, URL, chart, watch mode init)
+    htmx.ajax('GET', '/htmx/qm/analyze/result?ticker=' + encodeURIComponent(ticker),
+              {target: '#resultArea', swap: 'innerHTML'});
   } catch(e) {
     document.getElementById('loadingArea').classList.add('d-none');
     document.getElementById('emptyState').classList.remove('d-none');

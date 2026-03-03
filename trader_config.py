@@ -836,9 +836,13 @@ ML_DTQ_CAUTION_MIN_PASS      = 5       # Minimum passing questions for CAUTION s
 
 # ── Three-Scanner System (Chapter 18, MartinLukCore Ch2) ──────────────────
 ML_TRIPLE_SCANNER_ENABLED    = True    # Enable three-channel scanning
+ML_SCANNER_WORKERS           = 32      # ThreadPoolExecutor workers per channel (32 = good for 16-core)
+                                       # Increase for faster yfinance (but risk rate-limiting)
+                                       # Decrease if yfinance API throttles (set to 16-20)
 ML_GAP_SCANNER_MIN_GAP_PCT   = 3.0     # Pre-market gap minimum (%)
 ML_GAP_SCANNER_MIN_VOL_MULT  = 1.5     # Gap scanner minimum volume multiple
 ML_GAINER_SCANNER_TOP_N      = 50      # Biggest gainers: top N prior-day performers
+ML_GAINER_MIN_GAIN_PCT       = 3.0     # Minimum prior-day % gain to qualify as gainer
 ML_GAINER_THEME_MIN_COUNT    = 2       # Min stocks in same sector to flag as theme
 ML_LEADER_MOMENTUM_PERIOD    = "1mo"   # Leader scanner: rank by 1-month performance
 ML_LEADER_MIN_WEEKS_ABOVE    = 3       # Min weeks W-EMA10 > W-EMA40 (leader quality)

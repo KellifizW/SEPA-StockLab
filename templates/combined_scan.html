@@ -197,7 +197,13 @@
     <div class="col-auto">
       <div class="form-check mt-3">
         <input class="form-check-input" type="checkbox" id="chkRefreshRS">
-        <label class="form-check-label text-muted small" for="chkRefreshRS">Refresh RS</label>
+        <label class="form-check-label text-muted small" for="chkRefreshRS">
+          Refresh RS
+          <span
+            data-bs-toggle="tooltip" data-bs-html="true" data-bs-placement="top"
+            title="&lt;b&gt;重建 RS 相對強度排名&lt;/b&gt;&lt;br&gt;對全市場約 8,000 隻股票重新計算 IBD 風格相對強度百分位，需時約 5 分鐘。&lt;br&gt;&lt;br&gt;&lt;b&gt;何時啟用？&lt;/b&gt;&lt;br&gt;每週只需重建一次。快取有效期為一天，但排名反映的是中長線表現（3M/6M/12M），每週更新已足夠。&lt;br&gt;&lt;br&gt;&lt;b&gt;建議時機（香港時間）：&lt;/b&gt;&lt;br&gt;📅 &lt;b&gt;週一日間&lt;/b&gt;（美股開市前）— 最推薦，用最新週五收市價建立本週排名&lt;br&gt;📅 &lt;b&gt;週六或週日&lt;/b&gt; — 亦可，市場已收市，數據穩定&lt;br&gt;&lt;br&gt;⚠️ 平日掃描（週二至週五）無需重建，使用現有快取即可。"
+          ><i class="bi bi-info-circle text-secondary ms-1" style="font-size:10px; cursor:help;"></i></span>
+        </label>
       </div>
     </div>
 

@@ -57,7 +57,7 @@ _progress_state: dict = {"stage": "idle", "pct": 0, "msg": ""}
 # Parallelization settings for channel scanners
 # 32 workers on a 16-core machine: PyArrow reads + NumPy/pandas_ta ops release GIL,
 # so more threads than cores is beneficial for this mixed I/O + compute workload.
-_SCANNER_THREAD_WORKERS = 32  # Number of concurrent threads per channel
+_SCANNER_THREAD_WORKERS = getattr(C, "ML_SCANNER_WORKERS", 32)  # Configurable via trader_config
 
 
 def _prog(stage: str, pct: int, msg: str) -> None:
@@ -113,7 +113,10 @@ def run_gap_scanner(
     def _check_ticker_gap(ticker: str) -> dict | None:
         """Check a single ticker for gap-up. Returns result dict or None."""
         try:
-            df = get_enriched(ticker, period="3mo", use_cache=True)
+            # Performance optimization: only fetch EMA_9, EMA_21 (skip SMA, RSI, ATR, BBands)
+            # Gap check only needs: Open, Close, Volume, High, Low, and optional EMA context
+            df = get_enriched(ticker, period="3mo", use_cache=True,
+                            indicators=["EMA_9", "EMA_21"])
             if df is None or len(df) < 5:
                 return None
 
@@ -133,7 +136,7 @@ def run_gap_scanner(
             if vol_mult < _min_vol:
                 return None
 
-            # Gap type classification
+            # Gap type classification (same logic)
             if gap_pct >= 10.0:
                 gap_type = "EARNINGS_GAP"
             elif gap_pct >= 5.0:
@@ -146,7 +149,7 @@ def run_gap_scanner(
             orl = float(df["Low"].iloc[-1])
             close = float(df["Close"].iloc[-1])
 
-            # Basic EMA context
+            # Basic EMA context (only if present)
             ema9   = None
             ema21  = None
             if "EMA_9" in df.columns:
@@ -222,6 +225,7 @@ def run_gap_scanner(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_biggest_gainers(
+    tickers: list[str] | None = None,
     top_n: int | None = None,
     min_price: float | None = None,
     min_vol: float | None = None,
@@ -233,85 +237,123 @@ def run_biggest_gainers(
       1. Sort universe by prior-day % gain, take top N
       2. Must have vol ≥ 1.5× avg on breakout day (the big-gain day)
       3. Look for EMA pullback entry on Day 2+ (not chasing on day of move)
-      4. Sector/theme clustering improves conviction; multiple gainers
-         from same theme = sector rotation signal
+      4. Gains from 3%+ are considered (market-driven momentum signal)
+
+    Implementation:
+      - Download prior 5 days of OHLCV for Stage 1 universe (parallel via get_bulk_historical)
+      - Calculate last trading day % gain = (Close[today] - Close[yesterday]) / Close[yesterday] * 100
+      - Filter by min_price, min_vol, min_gain
+      - Sort descending, return top N
 
     Args:
+        tickers:    Ticker universe (default: all Stage 1 candidates)
         top_n:      Top N gainers to return (default: ML_GAINER_SCANNER_TOP_N)
         min_price:  Minimum price filter (default: ML_MIN_PRICE)
         min_vol:    Minimum avg daily dollar volume (default: ML_MIN_DOLLAR_VOL)
 
     Returns:
-        list[dict] with: ticker, gain_pct_prior, vol_mult, sector, theme_badge, channel
+        list[dict] with: ticker, gain_pct_prior, last_close, vol_mult, channel
     """
-    from modules.data_pipeline import get_enriched, get_momentum_returns
-    import yfinance as yf
+    from modules.data_pipeline import get_historical
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    _top_n     = top_n     if top_n     is not None else getattr(C, "ML_GAINER_SCANNER_TOP_N", 50)
-    _min_price = min_price if min_price is not None else getattr(C, "ML_MIN_PRICE", 5.0)
-    _min_vol   = min_vol   if min_vol   is not None else getattr(C, "ML_MIN_DOLLAR_VOL", 1_000_000)
+    _top_n       = top_n     if top_n     is not None else getattr(C, "ML_GAINER_SCANNER_TOP_N", 50)
+    _min_price   = min_price if min_price is not None else getattr(C, "ML_MIN_PRICE", 5.0)
+    _min_vol     = min_vol   if min_vol   is not None else getattr(C, "ML_MIN_DOLLAR_VOL", 1_000_000)
+    _min_gain    = getattr(C, "ML_GAINER_MIN_GAIN_PCT", 3.0)
+    _tickers     = tickers or []
 
-    _prog("Gainers Scanner", 0, f"Fetching top {_top_n} gainers…")
-
-    # Channel 2 requires a real-time market data feed (e.g., Bloomberg, Refinitiv, or paid screener API)
-    # to rank all US stocks by prior-day % gain. Python's free sources (yfinance, finvizfinance)
-    # cannot efficiently fetch and sort 4000+ stocks by a single metric in parallel.
-    # This is a known limitation of the NASDAQ FTP + yfinance-only architecture.
-    #
-    # Graceful degradation: return empty list. Gap Scanner (Channel 1) and Leader Scanner (Channel 3)
-    # still provide coverage using historical + EMA-based logic.
-    logger.debug("[ML Channel2 Gainers] Channel disabled — requires real-time market data feed (gap & leader scans still active)")
-    quotes = []
-
-    if not quotes:
+    if not _tickers:
+        logger.debug("[ML Channel2 Gainers] No tickers provided")
         return []
 
+    # Gap Scanner already cached 3mo OHLCV for all tickers — read from cache (no download).
+    # Use period="3mo" to match the Gap Scanner's cache files (ticker_3mo.parquet).
+    _prog("Gainers Scanner", 0, f"從快取讀取 {len(_tickers)} 檔昨日收盤價…")
+    logger.info("[ML Channel2 Gainers] Reading prior-day gain from cache for %d tickers", len(_tickers))
+
+    bulk_data: dict = {}
+    total = len(_tickers)
+    completed = 0
+
+    def _fetch_one(tkr: str):
+        # use_cache=True → reads ticker_3mo.parquet written by Gap Scanner
+        return tkr, get_historical(tkr, period="3mo", use_cache=True)
+
+    with ThreadPoolExecutor(max_workers=_SCANNER_THREAD_WORKERS) as executor:
+        futures = {executor.submit(_fetch_one, tkr): tkr for tkr in _tickers}
+        for future in as_completed(futures):
+            completed += 1
+            try:
+                tkr, df = future.result()
+                if df is not None and not df.empty:
+                    bulk_data[tkr] = df
+            except Exception:
+                pass
+            if completed % 500 == 0 or completed == total:
+                pct = int(completed / total * 90)
+                _prog("Gainers Scanner", pct,
+                      f"讀取快取: {completed}/{total} 檔完成")
+                logger.info("[ML Channel2 Gainers] Cache read: %d/%d tickers", completed, total)
+
+    logger.info("[ML Channel2 Gainers] Loaded OHLCV for %d/%d tickers from cache",
+                len(bulk_data), total)
+
     results: list[dict] = []
-    for row in quotes[:_top_n * 3]:
+
+    for ticker, df in bulk_data.items():
         try:
-            gain_pct = float(row.get("Change", "0").replace("%", "").strip() or 0)
-            price    = float(row.get("Price", "0") or 0)
-            vol      = float(row.get("Volume", "0").replace(",", "") or 0)
-            avg_vol  = float(row.get("Avg Volume", "0").replace(",", "") or 0)
-            sector   = row.get("Sector", "")
-            industry = row.get("Industry", "")
-            ticker   = row.get("Ticker", "")
-
-            if price < _min_price:
-                continue
-            if avg_vol > 0 and price * avg_vol < _min_vol:
+            if df is None or df.empty or len(df) < 2:
                 continue
 
-            vol_mult = vol / avg_vol if avg_vol > 0 else 0.0
+            # Get last 2 rows (yesterday and today)
+            df_sorted = df.sort_index()
+            if len(df_sorted) < 2:
+                continue
 
-            # Theme badge: detect common leading themes
-            theme_badge = _detect_theme_from_industry(industry, sector)
+            close_yesterday = float(df_sorted.iloc[-2]["Close"])
+            close_today     = float(df_sorted.iloc[-1]["Close"])
+            vol_today       = float(df_sorted.iloc[-1]["Volume"])
+            
+            # Compute prior-day % gain
+            if close_yesterday > 0:
+                gain_pct = ((close_today - close_yesterday) / close_yesterday) * 100
+            else:
+                continue
+
+            # Filter: min gain, min price, min volume
+            if gain_pct < _min_gain:
+                continue
+            if close_today < _min_price:
+                continue
+            if vol_today < _min_vol / close_today:  # Dollar volume proxy
+                continue
+
+            # Compute avg volume for vol_mult
+            avg_vol = float(df_sorted["Volume"].tail(5).mean())
+            vol_mult = vol_today / avg_vol if avg_vol > 0 else 1.0
 
             results.append({
-                "ticker":           ticker,
-                "channel":          "GAINER",
-                "gain_pct_prior":   round(gain_pct, 2),
-                "price":            round(price, 2),
-                "vol_mult":         round(vol_mult, 2),
-                "sector":           sector,
-                "industry":         industry,
-                "theme_badge":      theme_badge,
-                "notes": (
-                    f"+{gain_pct:.1f}% 前日大漲 | "
-                    f"Vol {vol_mult:.1f}x | "
-                    f"{'主題: ' + theme_badge if theme_badge else sector}"
-                ),
+                "ticker":        ticker,
+                "gain_pct_prior": round(gain_pct, 2),
+                "last_close":     round(close_today, 2),
+                "vol_mult":       round(vol_mult, 2),
+                "vol_today":      int(vol_today),
+                "channel":        "GAINER",
             })
+        except Exception:
+            continue
 
-            if len(results) >= _top_n:
-                break
+    # Sort by gain_pct descending
+    results.sort(key=lambda x: x["gain_pct_prior"], reverse=True)
+    
+    top_results = results[:_top_n]
+    _prog("Gainers Scanner", 100, 
+          f"Found {len(top_results)} gainers (≥{_min_gain}%) from {len(_tickers)} tickers")
+    logger.info("[ML Channel2 Gainers] Found %d gainers ≥%.1f%% from %d tickers",
+                len(top_results), _min_gain, len(_tickers))
 
-        except Exception as exc:
-            logger.debug("[ML Channel2] Row parse error: %s", exc)
-
-    _prog("Gainers Scanner", 100, f"Done — {len(results)} gainers found")
-    logger.info("[ML Channel2 Gainers] Found %d prior-day gainers", len(results))
-    return results
+    return top_results
 
 
 def _detect_theme_from_industry(industry: str, sector: str) -> str:
@@ -376,7 +418,10 @@ def run_leader_scanner(
     def _check_ticker_leader(ticker: str) -> dict | None:
         """Check a single ticker for leader pattern. Returns result dict or None."""
         try:
-            df = get_enriched(ticker, period="1y", use_cache=True)
+            # Performance optimization: only fetch EMA_9, EMA_21, EMA_50, EMA_150
+            # (needed by get_ema_alignment and get_pullback_depth)
+            df = get_enriched(ticker, period="1y", use_cache=True,
+                            indicators=["EMA_9", "EMA_21", "EMA_50", "EMA_150"])
             if df is None or len(df) < 50:
                 return None
 
@@ -543,10 +588,10 @@ def run_triple_scan(
             logger.warning("[TripleScan] Gap scanner failed: %s", exc)
 
     # Channel 2
-    if include_gainers:
+    if include_gainers and tickers:
         _prog("Triple Scan", 40, "Channel 2: Biggest Gainers…")
         try:
-            gainer_results = run_biggest_gainers()
+            gainer_results = run_biggest_gainers(tickers=tickers)
         except Exception as exc:
             logger.warning("[TripleScan] Gainers scanner failed: %s", exc)
 

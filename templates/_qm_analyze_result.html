@@ -516,42 +516,65 @@
   history.replaceState({}, '', '/qm/analyze?ticker=' + encodeURIComponent(window._qmLastTicker));
 
   // ── Rebuild radar chart (Chart.js) ───────────────────────────────────────
-  const _dims    = window._qmLastResult.dim_scores || {};
-  const _dimVals = ['A','B','C','D','E','F'].map(k => {
-    const d = _dims[k] || {};
-    const raw = parseFloat(d.score ?? 0);
-    return Math.max(0, Math.min(100, (raw + 2) * 20));
-  });
-  const _dimLabels = ['A · 動力', 'B · ADR', 'C · 整固', 'D · 均線', 'E · 類型', 'F · 市場'];
-  if (window._radarChart) { try { window._radarChart.destroy(); } catch(e) {} window._radarChart = null; }
-  const _rcCtx = document.getElementById('radarChart');
-  if (_rcCtx) {
-    window._radarChart = new Chart(_rcCtx.getContext('2d'), {
-      type: 'radar',
-      data: {
-        labels: _dimLabels,
-        datasets: [{
-          label: window._qmLastTicker,
-          data: _dimVals,
-          backgroundColor: 'rgba(0,212,255,0.1)',
-          borderColor: '#00d4ff',
-          pointBackgroundColor: '#00d4ff',
-          pointRadius: 4,
-        }]
-      },
-      options: {
-        scales: {
-          r: { min: 0, max: 100, ticks: { display: false },
-               grid: { color: '#30363d' },
-               pointLabels: { color: '#c9d1d9', font: { size: 11 } },
-               angleLines: { color: '#30363d' } }
-        },
-        plugins: { legend: { display: false } },
-        animation: { duration: 600 },
-        maintainAspectRatio: false,
-      }
+  // HTMX canvas swap requires a small delay to ensure canvas is fully ready
+  const _initRadarChart = () => {
+    const _dims    = window._qmLastResult.dim_scores || {};
+    const _dimVals = ['A','B','C','D','E','F'].map(k => {
+      const d = _dims[k] || {};
+      const raw = parseFloat(d.score ?? 0);
+      return Math.max(0, Math.min(100, (raw + 2) * 20));
     });
-  }
+    const _dimLabels = ['A · 動力', 'B · ADR', 'C · 整固', 'D · 均線', 'E · 類型', 'F · 市場'];
+    
+    // Clean up old chart completely
+    if (window._radarChart) {
+      try { 
+        window._radarChart.destroy();
+      } catch(e) {}
+      window._radarChart = null;
+    }
+    
+    // Reinit canvas to clear any residual state
+    const _rcCtx = document.getElementById('radarChart');
+    if (_rcCtx && _rcCtx.getContext) {
+      // Get context and verify it's valid before creating new chart
+      const ctx = _rcCtx.getContext('2d');
+      if (ctx) {
+        try {
+          window._radarChart = new Chart(_rcCtx, {
+            type: 'radar',
+            data: {
+              labels: _dimLabels,
+              datasets: [{
+                label: window._qmLastTicker,
+                data: _dimVals,
+                backgroundColor: 'rgba(0,212,255,0.1)',
+                borderColor: '#00d4ff',
+                pointBackgroundColor: '#00d4ff',
+                pointRadius: 4,
+              }]
+            },
+            options: {
+              scales: {
+                r: { min: 0, max: 100, ticks: { display: false },
+                     grid: { color: '#30363d' },
+                     pointLabels: { color: '#c9d1d9', font: { size: 11 } },
+                     angleLines: { color: '#30363d' } }
+              },
+              plugins: { legend: { display: false } },
+              animation: { duration: 600 },
+              maintainAspectRatio: false,
+            }
+          });
+        } catch(chartErr) {
+          console.warn('[QM] Chart.js init failed:', chartErr);
+        }
+      }
+    }
+  };
+  
+  // Delay chart init by 50ms to ensure canvas is fully rendered by HTMX
+  setTimeout(_initRadarChart, 50);
 
   // ── Set body data attrs for price chart ──────────────────────────────────
   const _plan = window._qmLastResult.trade_plan || {};

@@ -556,17 +556,22 @@ def get_historical(ticker: str, period: str = "2y",
 
 def get_bulk_historical(tickers: list, period: str = "1y",
                         batch_size: int = None,
-                        sleep_sec: float = 2.0) -> dict:
+                        sleep_sec: float = 2.0,
+                        progress_cb=None) -> dict:
     """
     Batch download OHLCV for multiple tickers.
     Returns dict[ticker] -> DataFrame.
     Downloads in batches to respect rate limits.
+
+    Args:
+        progress_cb: optional callable(done: int, total: int, msg: str) called after each batch
     """
     if batch_size is None:
         batch_size = C.RS_BATCH_SIZE
 
     result = {}
     batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
+    downloaded_count = 0
 
     for i, batch in enumerate(batches):
         try:
@@ -610,6 +615,14 @@ def get_bulk_historical(tickers: list, period: str = "1y",
         except Exception as exc:
             _yf_track_error(exc)
             logger.warning(f"Batch download error (batch {i}): {exc}")
+
+        downloaded_count += len(batch)
+        if progress_cb is not None:
+            try:
+                progress_cb(downloaded_count, len(tickers),
+                            f"批次 {i+1}/{len(batches)}: {downloaded_count}/{len(tickers)} tickers 下載完成")
+            except Exception:
+                pass
 
         if i < len(batches) - 1:
             time.sleep(sleep_sec)
@@ -917,30 +930,67 @@ def _build_study():
         _MINERVINI_STUDY = None
 
 
-def get_technicals(df: pd.DataFrame) -> pd.DataFrame:
+def get_technicals(df: pd.DataFrame, indicators: list[str] | None = None) -> pd.DataFrame:
     """
-    Compute all Minervini technical indicators on an OHLCV DataFrame.
+    Compute technical indicators on an OHLCV DataFrame.
 
-    Adds columns (if data is sufficient):
-      SMA_50, SMA_150, SMA_200
-      RSI_14
-      ATRr_14  (ATR as ratio / or ATR_14)
-      BBL_20_2.0, BBM_20_2.0, BBU_20_2.0, BBB_20_2.0  (Bollinger)
-      SMA200_SLOPE     (22-day slope of SMA_200, in % per day)
-      SMA150_SLOPE
-      ABOVE_SMA50, ABOVE_SMA150, ABOVE_SMA200  (bool)
-      SMA50_GT_SMA150, SMA50_GT_SMA200, SMA150_GT_SMA200  (bool)
-      PCT_FROM_52W_HIGH, PCT_FROM_52W_LOW  (float)
+    Args:
+        df: OHLCV DataFrame
+        indicators: None (compute all) | list of indicator names (selective computation)
+                   Examples: ["EMA_9", "EMA_21"], ["SMA_50", "SMA_150", "SMA_200"], etc.
+                   
+    Optimization: Pass indicators list to compute only needed columns (3-5x faster).
+    - Gap Scanner: ["EMA_9", "EMA_21"]
+    - Gainer Scanner: [] (OHLCV only, no indicators needed)
+    - Leader Scanner: None (compute all, for full ML scoring)
 
-    Returns the enriched DataFrame.
+    Returns the enriched DataFrame (full or selective).
     """
     if not PTA_AVAILABLE or df is None or df.empty:
         return df
 
     df = df.copy()
+    
+    # ── Selective computation mode (faster for ML scanners) ───────────────────
+    if indicators is not None:
+        close = df.get("Close", df.iloc[:, 3] if len(df.columns) > 3 else None)
+        if close is None:
+            return df
+        
+        # Compute only requested indicators
+        for ind in indicators:
+            if ind.startswith("EMA_"):
+                length = int(ind.split("_")[1])
+                if ind not in df.columns:
+                    try:
+                        df[ind] = close.ewm(span=length, adjust=False).mean()
+                    except Exception:
+                        pass
+            elif ind.startswith("SMA_"):
+                length = int(ind.split("_")[1])
+                if ind not in df.columns:
+                    try:
+                        df[ind] = close.rolling(length).mean()
+                    except Exception:
+                        pass
+            elif ind == "RSI_14":
+                if ind not in df.columns:
+                    try:
+                        df.ta.rsi(length=14, append=True)
+                    except Exception:
+                        pass
+            elif ind == "ATR_14":
+                if ind not in df.columns:
+                    try:
+                        df.ta.atr(length=14, append=True)
+                    except Exception:
+                        pass
+        return df
+    
+    # ── Full computation mode (all indicators, default for Minervini) ─────────
     _build_study()
 
-    # Compute indicators
+    # Compute all indicators
     try:
         if _MINERVINI_STUDY is not None:
             df.ta.strategy(_MINERVINI_STUDY)
@@ -1093,10 +1143,18 @@ def _rolling_slope_pct(series: pd.Series, window: int) -> pd.Series:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_enriched(ticker: str, period: str = "2y",
-                 use_cache: bool = True) -> pd.DataFrame:
+                 use_cache: bool = True,
+                 indicators: list[str] | None = None) -> pd.DataFrame:
     """
-    Get OHLCV + all technical indicators in one call.
+    Get OHLCV + technical indicators in one call.
     Returns DataFrame ready for trend template validation and VCP detection.
+
+    Args:
+        ticker: Stock ticker symbol
+        period: yfinance period (default "2y")
+        use_cache: Use parquet cache (default True)
+        indicators: None (compute all) | list (compute selective)
+                   Example: ["EMA_9", "EMA_21"] for Gap Scanner
 
     Cache strategy (two-tier):
       1. _enriched.parquet — pre-computed indicators, fast read (no recompute)
@@ -1114,6 +1172,11 @@ def get_enriched(ticker: str, period: str = "2y",
             if enriched_meta.read_text().strip() == today:
                 df = pd.read_parquet(enriched_file)
                 if not df.empty:
+                    # If indicators requested, return only those columns
+                    if indicators is not None:
+                        cols_to_keep = ["Open", "High", "Low", "Close", "Volume"]
+                        cols_to_keep += [c for c in indicators if c in df.columns]
+                        return df[cols_to_keep]
                     return df
         except Exception:
             pass
@@ -1122,10 +1185,13 @@ def get_enriched(ticker: str, period: str = "2y",
     df = get_historical(ticker, period=period, use_cache=use_cache)
     if df.empty:
         return df
-    df_enriched = get_technicals(df)
+    
+    # Compute technicals (selective or full)
+    df_enriched = get_technicals(df, indicators=indicators)
 
-    # Save enriched so next call (same process or next scan) hits fast path
-    if use_cache:
+    # Save enriched only if computing all (full mode)
+    # For selective mode, don't cache the partial enriched file
+    if use_cache and indicators is None:
         try:
             df_enriched.to_parquet(enriched_file)
             enriched_meta.write_text(today)

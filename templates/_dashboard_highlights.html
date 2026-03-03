@@ -1,0 +1,169 @@
+{# _dashboard_highlights.html — HTMX partial for /htmx/dashboard/highlights  #}
+{# Variables: r (combined scan summary dict)                                   #}
+{# Injected into <div id="combinedHighlightsBody"> via hx-trigger="load"      #}
+
+{% set sepa_rows = (r.get('sepa_rows') or [])[:5] %}
+{% set qm_rows   = (r.get('qm_rows')   or [])[:5] %}
+
+{% if not r or (not sepa_rows and not qm_rows and not r.get('saved_at')) %}
+{# ── Empty state ─────────────────────────────────────────────────────────── #}
+<div class="p-4 text-center text-muted">
+  <i class="bi bi-layers d-block mb-2 fs-3"></i>
+  尚無 Combined 掃描記錄。<br>
+  <a href="/combined" class="mt-2 d-inline-block">立即執行 Combined 掃描 →</a>
+</div>
+
+{% else %}
+{# ── Stats row ────────────────────────────────────────────────────────────── #}
+{% set m       = r.get('market_env') or {} %}
+{% set timing  = r.get('timing') or {} %}
+{% set saved   = r.get('saved_at', '') %}
+{% set regime  = m.get('regime', '') %}
+{% set sepa_ct = r.get('sepa_count', sepa_rows | length) %}
+{% set qm_4ct  = r.get('qm_count_4star') %}
+{% set qm_ct   = r.get('qm_count', qm_rows | length) %}
+{% set total_s = timing.get('total_secs') %}
+
+{% if regime == 'CONFIRMED_UPTREND' %}{% set regime_cls = 'bg-success' %}
+{% elif regime == 'UPTREND_UNDER_PRESSURE' %}{% set regime_cls = 'bg-warning text-dark' %}
+{% elif regime == 'MARKET_IN_CORRECTION' %}{% set regime_cls = 'bg-orange' %}
+{% else %}{% set regime_cls = 'bg-danger' %}{% endif %}
+
+<div class="border-bottom px-3 py-2 d-flex flex-wrap align-items-center gap-4">
+  {% if regime %}
+  <span class="badge {{ regime_cls }}" style="font-size:10px">{{ regime.replace('_', ' ') }}</span>
+  {% endif %}
+  {% if saved %}
+  <span class="text-muted" style="font-size:11px">{{ saved[:16].replace('T', ' ') }}</span>
+  {% endif %}
+  <span class="small text-muted">SEPA 通過: <strong class="text-info">{{ sepa_ct }}</strong></span>
+  <span class="small text-muted">QM 通過:
+    <strong style="color:#e3b341">
+      {% if qm_4ct is not none and qm_ct is not none and qm_ct != qm_4ct %}
+        {{ qm_4ct }} <small class="text-muted">(★4+ / {{ qm_ct }} total)</small>
+      {% else %}
+        {{ qm_ct }}
+      {% endif %}
+    </strong>
+  </span>
+  {% if total_s %}
+  <span class="small text-muted">掃描用時: <strong>{{ '%.0f' | format(total_s | float) }}s</strong></span>
+  {% endif %}
+</div>
+
+{# ── SEPA + QM top-5 side by side ─────────────────────────────────────────── #}
+<div class="row g-0">
+
+  {# SEPA Top 5 #}
+  <div class="col-12 col-lg-6" style="border-right:1px solid rgba(255,255,255,.08)">
+    <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
+      <i class="bi bi-funnel" style="color:var(--accent)"></i>
+      <span class="small fw-bold text-muted">SEPA Top 5</span>
+    </div>
+    <table class="table table-hover mb-0" style="font-size:13px">
+      <thead><tr>
+        <th style="width:26px">#</th>
+        <th>Ticker</th>
+        <th>Score</th>
+        <th>RS</th>
+        <th>VCP</th>
+      </tr></thead>
+      <tbody>
+        {% if sepa_rows %}
+          {% for s in sepa_rows %}
+          {% set score_val = s.get('total_score') %}
+          {% set rs_val    = s.get('rs_rank') %}
+          {% set vcp       = s.get('vcp_grade', '') %}
+          {% if score_val is not none and score_val | float >= 75 %}{% set score_cls = 'score-high' %}
+          {% elif score_val is not none and score_val | float >= 55 %}{% set score_cls = 'score-mid' %}
+          {% else %}{% set score_cls = 'score-low' %}{% endif %}
+          <tr onclick="window.location='/analyze?ticker={{ s.ticker }}'" style="cursor:pointer">
+            <td class="text-muted small">{{ loop.index }}</td>
+            <td>
+              <a href="/analyze?ticker={{ s.ticker }}" class="fw-bold" style="color:var(--accent)">{{ s.ticker }}</a>
+              {% if s.get('sector') %}
+              <div class="text-muted" style="font-size:10px">{{ s.sector }}</div>
+              {% endif %}
+            </td>
+            <td class="{{ score_cls }} fw-bold">
+              {% if score_val is not none %}{{ '%.1f' | format(score_val | float) }}{% else %}—{% endif %}
+            </td>
+            <td class="text-muted small">
+              {% if rs_val is not none %}{{ rs_val | int }}{% else %}—{% endif %}
+            </td>
+            <td>
+              {% if vcp and vcp not in ('D', '', 'None') %}
+              <span class="tag-vcp" style="font-size:10px">VCP {{ vcp }}</span>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="5" class="text-muted text-center small py-3">無 SEPA 結果</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {# QM Top 5 #}
+  <div class="col-12 col-lg-6">
+    <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
+      <i class="bi bi-lightning-charge" style="color:#e3b341"></i>
+      <span class="small fw-bold text-muted">QM Top 5</span>
+    </div>
+    <table class="table table-hover mb-0" style="font-size:13px">
+      <thead><tr>
+        <th style="width:26px">#</th>
+        <th>Ticker</th>
+        <th>Stars</th>
+        <th>ADR%</th>
+        <th>Setup</th>
+      </tr></thead>
+      <tbody>
+        {% if qm_rows %}
+          {% set setup_lbl = {
+            'HTF':'HTF','EP':'EP','LADDER':'LADDER',
+            'SURF_50':'SURF50','SURF_20':'SURF20','SURF_10':'SURF10',
+            'RPL':'RPL','FLAG':'FLAG'
+          } %}
+          {% for q in qm_rows %}
+          {% set star_val = (q.get('qm_star') or q.get('stars') or 0) | float %}
+          {% if star_val >= 5 %}{% set star_clr = '#3fb950' %}
+          {% elif star_val >= 4 %}{% set star_clr = '#e3b341' %}
+          {% else %}{% set star_clr = '#8b949e' %}{% endif %}
+          {% set full_s  = star_val | int %}
+          {% set half_s  = (star_val - (star_val | int)) >= 0.5 %}
+          {% set star_str = '★' * full_s + ('½' if half_s else '') %}
+          {% set adr_val = q.get('adr') %}
+          {% set st_code = q.get('setup_type', '') %}
+          {% set st_lbl  = setup_lbl.get(st_code, st_code or '—') %}
+          <tr onclick="window.location='/qm/analyze?ticker={{ q.ticker }}'" style="cursor:pointer">
+            <td class="text-muted small">{{ loop.index }}</td>
+            <td>
+              <a href="/qm/analyze?ticker={{ q.ticker }}" class="fw-bold" style="color:#e3b341">{{ q.ticker }}</a>
+            </td>
+            <td class="fw-bold" style="color:{{ star_clr }}">
+              {{ star_str }} <small>({{ '%.1f' | format(star_val) }})</small>
+            </td>
+            <td class="text-muted small">
+              {% if adr_val is not none %}{{ '%.1f' | format(adr_val | float) }}%{% else %}—{% endif %}
+            </td>
+            <td>
+              <span class="badge bg-secondary" style="font-size:10px">{{ st_lbl }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="5" class="text-muted text-center small py-3">無 QM 結果</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+</div><!-- /row -->
+
+<div class="px-3 pb-2 pt-1 text-end border-top">
+  <a href="/combined" class="text-secondary small">查看 / 重新執行 Combined 掃描 →</a>
+</div>
+
+{% endif %}

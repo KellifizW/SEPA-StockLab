@@ -1381,7 +1381,6 @@ def api_ml_scan_run():
     data               = request.get_json(silent=True) or {}
     min_star           = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
     top_n              = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
-    scanner_mode       = str(data.get("scanner_mode", "standard")).strip().lower()
     stage1_source      = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
     use_universe_cache = bool(data.get("use_universe_cache", False))
     jid          = _new_job()
@@ -1405,7 +1404,7 @@ def api_ml_scan_run():
         try:
             from modules.ml_screener import run_ml_scan, set_ml_scan_cancel
             set_ml_scan_cancel(cancel_ev)
-            result = run_ml_scan(min_star=min_star, top_n=top_n, scanner_mode=scanner_mode,
+            result = run_ml_scan(min_star=min_star, top_n=top_n,
                                  stage1_source=stage1_source,
                                  use_universe_cache=use_universe_cache)
             
@@ -1476,20 +1475,19 @@ def api_ml_scan_run():
                 logging.warning("ML theme report failed: %s", _te)
             
             # Triple channel summary (with error handling)
-            if scanner_mode != "standard":
-                try:
-                    channel_counts = {"GAP": 0, "GAINER": 0, "LEADER": 0}
-                    for row in (rows if isinstance(rows, list) else []):
-                        if not isinstance(row, dict):
-                            logging.debug("Skipping non-dict row in triple summary: %s", type(row).__name__)
-                            continue
-                        ch = str(row.get("channel", "")).upper()
-                        if ch in channel_counts:
-                            channel_counts[ch] += 1
-                    triple_summary = channel_counts
-                except Exception as _tse:
-                    logging.warning("ML triple summary calculation failed: %s", _tse)
-                    triple_summary = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+            try:
+                channel_counts = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+                for row in (rows if isinstance(rows, list) else []):
+                    if not isinstance(row, dict):
+                        logging.debug("Skipping non-dict row in triple summary: %s", type(row).__name__)
+                        continue
+                    ch = str(row.get("channel", "")).upper()
+                    if ch in channel_counts:
+                        channel_counts[ch] += 1
+                triple_summary = channel_counts
+            except Exception as _tse:
+                logging.warning("ML triple summary calculation failed: %s", _tse)
+                triple_summary = {"GAP": 0, "GAINER": 0, "LEADER": 0}
 
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
@@ -2384,6 +2382,16 @@ def htmx_ml_analyze_result():
     return render_template("_ml_analyze_result.html", d=d, ticker=ticker)
 
 
+@app.route("/htmx/dashboard/highlights")
+def htmx_dashboard_highlights():
+    """Server-rendered combined scan highlights for the dashboard.
+    Loaded on page init via hx-trigger='load' from the combined highlights card.
+    Renders _dashboard_highlights.html with the latest combined scan summary.
+    """
+    r = _load_combined_last()
+    return render_template("_dashboard_highlights.html", r=r)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # API – Quick-Add Watchlist & Positions (Global, Multi-Strategy)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2647,6 +2655,15 @@ def api_report_generate():
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"job_id": jid})
+
+
+@app.route("/api/report/status/<jid>", methods=["GET"])
+def api_report_status(jid):
+    try:
+        job = _get_job(jid)
+        return jsonify(_sanitize_for_json(job))
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

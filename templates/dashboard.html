@@ -118,70 +118,17 @@
   <div class="col-12">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <span>
-          <i class="bi bi-layers me-2" style="color:var(--accent)"></i>上次 Combined 掃描摘要
-          <span id="combinedRegimeBadge" class="badge ms-2" style="font-size:10px;display:none"></span>
-        </span>
-        <div class="d-flex align-items-center gap-2">
-          <span id="combinedLastTs" class="text-muted" style="font-size:11px"></span>
-          <a href="/combined" class="btn btn-sm btn-accent"><i class="bi bi-play-fill me-1"></i>立即掃描</a>
-        </div>
-      </div>
-      <!-- Stats mini-row -->
-      <div id="combinedStatsRow" style="display:none" class="border-bottom px-3 py-2 d-flex flex-wrap gap-4">
-        <span class="small text-muted">SEPA 通過: <strong id="combinedSepaCount" class="text-info">—</strong></span>
-        <span class="small text-muted">QM 通過: <strong id="combinedQmCount" style="color:#e3b341">—</strong></span>
-        <span class="small text-muted" id="combinedTimingInfo"></span>
+        <span><i class="bi bi-layers me-2" style="color:var(--accent)"></i>上次 Combined 掃描摘要</span>
+        <a href="/combined" class="btn btn-sm btn-accent"><i class="bi bi-play-fill me-1"></i>立即掃描</a>
       </div>
       <div class="card-body p-0">
-        <div id="combinedHighlightLoading" class="p-3 text-center text-muted small">
-          <div class="spinner-border spinner-border-sm text-secondary"></div>
-        </div>
-        <div id="combinedHighlightContent" style="display:none">
-          <div class="row g-0">
-            <!-- SEPA Top 5 -->
-            <div class="col-12 col-lg-6" style="border-right:1px solid rgba(255,255,255,.08)">
-              <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
-                <i class="bi bi-funnel" style="color:var(--accent)"></i>
-                <span class="small fw-bold text-muted">SEPA Top 5</span>
-              </div>
-              <table class="table table-hover mb-0" style="font-size:13px">
-                <thead><tr>
-                  <th style="width:26px">#</th>
-                  <th>Ticker</th>
-                  <th>Score</th>
-                  <th>RS</th>
-                  <th>VCP</th>
-                </tr></thead>
-                <tbody id="combinedSepaBody"></tbody>
-              </table>
-            </div>
-            <!-- QM Top 5 -->
-            <div class="col-12 col-lg-6">
-              <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
-                <i class="bi bi-lightning-charge" style="color:#e3b341"></i>
-                <span class="small fw-bold text-muted">QM Top 5</span>
-              </div>
-              <table class="table table-hover mb-0" style="font-size:13px">
-                <thead><tr>
-                  <th style="width:26px">#</th>
-                  <th>Ticker</th>
-                  <th>Stars</th>
-                  <th>ADR%</th>
-                  <th>Setup</th>
-                </tr></thead>
-                <tbody id="combinedQmBody"></tbody>
-              </table>
-            </div>
+        <div id="combinedHighlightsBody"
+             hx-get="/htmx/dashboard/highlights"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+          <div class="p-3 text-center text-muted small">
+            <div class="spinner-border spinner-border-sm text-secondary"></div>
           </div>
-          <div class="px-3 pb-2 pt-1 text-end border-top">
-            <a href="/combined" class="text-secondary small">查看 / 重新執行 Combined 掃描 →</a>
-          </div>
-        </div>
-        <div id="combinedHighlightEmpty" style="display:none" class="p-4 text-center text-muted">
-          <i class="bi bi-layers d-block mb-2 fs-3"></i>
-          尚無 Combined 掃描記錄。<br>
-          <a href="/combined" class="mt-2 d-inline-block">立即執行 Combined 掃描 →</a>
         </div>
       </div>
     </div>
@@ -216,117 +163,7 @@
 
 {% block extra_js %}
 <script>
-/* ── Combined scan highlights ──────────────────────────────────── */
-async function loadCombinedHighlights() {
-  try {
-    const r = await fetch('/api/combined/scan/last').then(x => x.json());
-    document.getElementById('combinedHighlightLoading').style.display = 'none';
-
-    const sepaRows = (r.sepa_rows || []).slice(0, 5);
-    const qmRows   = (r.qm_rows   || []).slice(0, 5);
-
-    if (!r.saved_at && !sepaRows.length && !qmRows.length) {
-      document.getElementById('combinedHighlightEmpty').style.display = 'block';
-      return;
-    }
-
-    // ── Header: timestamp + regime badge ──────────────────────────
-    if (r.saved_at) {
-      document.getElementById('combinedLastTs').textContent =
-        r.saved_at.slice(0, 16).replace('T', ' ');
-    }
-    const m = r.market_env || {};
-    if (m.regime) {
-      const badge = document.getElementById('combinedRegimeBadge');
-      const rc = m.regime === 'CONFIRMED_UPTREND'       ? ['bg-success',  m.regime]
-               : m.regime === 'UPTREND_UNDER_PRESSURE'  ? ['bg-warning text-dark', m.regime]
-               : m.regime === 'MARKET_IN_CORRECTION'    ? ['bg-orange',   m.regime]
-               : ['bg-danger', m.regime];
-      badge.className = `badge ms-2 ${rc[0]}`;
-      badge.textContent = rc[1].replace(/_/g, ' ');
-      badge.style.display = '';
-    }
-
-    // ── Stats row ─────────────────────────────────────────────────
-    document.getElementById('combinedSepaCount').textContent = r.sepa_count ?? sepaRows.length;
-    // Prefer the ≥4★ filtered count; fall back to raw total
-    const qmDisplayCount = r.qm_count_4star ?? r.qm_count ?? qmRows.length;
-    const qmCountEl = document.getElementById('combinedQmCount');
-    qmCountEl.textContent = qmDisplayCount;
-    if (r.qm_count_4star != null && r.qm_count != null && r.qm_count !== r.qm_count_4star) {
-      qmCountEl.title = `全部通過: ${r.qm_count} | 顯示 ≥4★: ${r.qm_count_4star}`;
-      // show sub-label
-      const lbl = document.querySelector(`[for='combinedQmCount'], .qm-count-sub`);
-      const parent = qmCountEl.closest('span');
-      if (parent && !parent.querySelector('.qm-count-sub')) {
-        const sub = document.createElement('small');
-        sub.className = 'text-muted ms-1 qm-count-sub';
-        sub.style.fontSize = '10px';
-        sub.textContent = `(★4+)`;
-        parent.appendChild(sub);
-      }
-    }
-    const t = r.timing || {};
-    if (t.total_secs) {
-      document.getElementById('combinedTimingInfo').textContent =
-        `掃描用時: ${Number(t.total_secs).toFixed(0)}s`;
-    }
-    document.getElementById('combinedStatsRow').style.display = '';
-
-    // ── SEPA rows ─────────────────────────────────────────────────
-    if (sepaRows.length) {
-      document.getElementById('combinedSepaBody').innerHTML = sepaRows.map((s, i) => {
-        const score = s.total_score != null ? Number(s.total_score).toFixed(1) : '—';
-        const sCls  = s.total_score >= 75 ? 'score-high' : s.total_score >= 55 ? 'score-mid' : 'score-low';
-        const rs    = s.rs_rank != null ? Number(s.rs_rank).toFixed(0) : '—';
-        const vcp   = s.vcp_grade && s.vcp_grade !== 'D'
-          ? `<span class="tag-vcp" style="font-size:10px">VCP ${s.vcp_grade}</span>` : '—';
-        return `<tr onclick="window.location='/analyze?ticker=${s.ticker}'" style="cursor:pointer">
-          <td class="text-muted small">${i+1}</td>
-          <td><a href="/analyze?ticker=${s.ticker}" class="fw-bold" style="color:var(--accent)">${s.ticker}</a>
-            <div class="text-muted" style="font-size:10px">${s.sector||''}</div></td>
-          <td class="${sCls} fw-bold">${score}</td>
-          <td class="text-muted small">${rs}</td>
-          <td>${vcp}</td>
-        </tr>`;
-      }).join('');
-    } else {
-      document.getElementById('combinedSepaBody').innerHTML =
-        '<tr><td colspan="5" class="text-muted text-center small py-3">無 SEPA 結果</td></tr>';
-    }
-
-    // ── QM rows ───────────────────────────────────────────────────
-    const setupLabel = {'HTF':'HTF','EP':'EP','LADDER':'LADDER','SURF_50':'SURF50',
-                        'SURF_20':'SURF20','SURF_10':'SURF10','RPL':'RPL','FLAG':'FLAG'};
-    if (qmRows.length) {
-      document.getElementById('combinedQmBody').innerHTML = qmRows.map((q, i) => {
-        const star  = parseFloat(q.qm_star != null ? q.qm_star : (q.stars || 0));
-        const sClr  = star >= 5 ? '#3fb950' : star >= 4 ? '#e3b341' : '#8b949e';
-        const stars = '★'.repeat(Math.floor(star)) + (star - Math.floor(star) >= 0.5 ? '½' : '');
-        const adr   = q.adr != null ? Number(q.adr).toFixed(1) + '%' : '—';
-        const slbl  = setupLabel[q.setup_type] || q.setup_type || '—';
-        return `<tr onclick="window.location='/qm/analyze?ticker=${q.ticker}'" style="cursor:pointer">
-          <td class="text-muted small">${i+1}</td>
-          <td><a href="/qm/analyze?ticker=${q.ticker}" class="fw-bold" style="color:#e3b341">${q.ticker}</a></td>
-          <td class="fw-bold" style="color:${sClr}">${stars} <small>(${star.toFixed(1)})</small></td>
-          <td class="text-muted small">${adr}</td>
-          <td><span class="badge bg-secondary" style="font-size:10px">${slbl}</span></td>
-        </tr>`;
-      }).join('');
-    } else {
-      document.getElementById('combinedQmBody').innerHTML =
-        '<tr><td colspan="5" class="text-muted text-center small py-3">無 QM 結果</td></tr>';
-    }
-
-    document.getElementById('combinedHighlightContent').style.display = 'block';
-  } catch(e) {
-    document.getElementById('combinedHighlightLoading').style.display = 'none';
-    document.getElementById('combinedHighlightEmpty').style.display = 'block';
-  }
-}
-
 window.addEventListener('DOMContentLoaded', () => {
-  setTimeout(() => loadCombinedHighlights(), 50);
   // Load Telegram bot status
   updateTelegramStatus();
 });
@@ -334,8 +171,8 @@ window.addEventListener('DOMContentLoaded', () => {
 async function generateReport() {
   toast('Generating report…');
   const r = await fetch('/api/report/generate', {method:'POST'}).then(x=>x.json());
-  pollJob(`/api/report/generate`, () => {
-    toastCompletion('✅ 報告已生成完成'); 
+  pollJob(`/api/report/status/${r.job_id}`, () => {
+    toastCompletion('✅ 報告已生成完成');
   }, e => toast('Error: ' + e, false));
 }
 
