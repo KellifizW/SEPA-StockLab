@@ -502,6 +502,12 @@ def get_historical(ticker: str, period: str = "2y",
         except Exception:
             pass
 
+    # Rate-limit: add inter-request delay to avoid triggering yfinance 429 errors
+    # Especially important during parallel scans with many workers (e.g., ML Channel 3)
+    intra_request_delay = getattr(C, "YFINANCE_INTRA_REQUEST_DELAY_SEC", 0.1)
+    if intra_request_delay > 0:
+        time.sleep(intra_request_delay)
+
     # Download from yfinance (retry with exponential backoff on 401/crumb error)
     max_retries = getattr(C, "YFINANCE_MAX_RETRIES", 1)
     retry_backoff = getattr(C, "YFINANCE_RETRY_BACKOFF", 0.5)

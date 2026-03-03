@@ -134,6 +134,8 @@ FINVIZ_TIMEOUT_SEC    = 600.0      # 10 minutes max (finvizfinance needs ~2 sec 
 YFINANCE_MAX_RETRIES     = 1        # Reduced from 2: 401/crumb errors often not recoverable by retry
                                     # Better to skip + continue than block waiting for auth reset
 YFINANCE_RETRY_BACKOFF   = 0.5      # Base delay (sec) between retry attempts (exponential: 0.5s, 1s, 2s...)
+YFINANCE_INTRA_REQUEST_DELAY_SEC = 0.15  # NEW: Inter-request delay to reduce 429 errors during parallel scans
+                                          # Tuning: 0.15s for 16 workers, 0.25-0.3s for 32 workers
 FUNDAMENTALS_TIMEOUT_SEC = 5.0      # Per-ticker fundamental fetch timeout (crisp fail instead of hanging)
 FUNDAMENTALS_SKIP_ON_TIMEOUT = True # Skip ticker on timeout instead of retrying endlessly
 CRUMB_RESET_COOLDOWN     = 3.0      # Min interval between session resets (prevent auth cascade)
@@ -836,9 +838,11 @@ ML_DTQ_CAUTION_MIN_PASS      = 5       # Minimum passing questions for CAUTION s
 
 # ── Three-Scanner System (Chapter 18, MartinLukCore Ch2) ──────────────────
 ML_TRIPLE_SCANNER_ENABLED    = True    # Enable three-channel scanning
-ML_SCANNER_WORKERS           = 32      # ThreadPoolExecutor workers per channel (32 = good for 16-core)
-                                       # Increase for faster yfinance (but risk rate-limiting)
-                                       # Decrease if yfinance API throttles (set to 16-20)
+ML_SCANNER_WORKERS           = 16      # ThreadPoolExecutor workers per channel
+                                       # REDUCED from 32 to avoid yfinance rate-limiting
+                                       # 32 workers caused concurrent YFRateLimitError on Channel 3
+                                       # Tradeoff: ~2x slower but stable (no 429 errors)
+                                       # Increase to 20-24 if first-day scan completes successfully
 ML_GAP_SCANNER_MIN_GAP_PCT   = 3.0     # Pre-market gap minimum (%)
 ML_GAP_SCANNER_MIN_VOL_MULT  = 1.5     # Gap scanner minimum volume multiple
 ML_GAINER_SCANNER_TOP_N      = 50      # Biggest gainers: top N prior-day performers

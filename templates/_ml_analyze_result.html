@@ -492,6 +492,40 @@
     </div>
   </div><!-- /chart slots -->
 
+  <!-- ML Watch Score + Dynamic Trade Plan -->
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-lg-5">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span>
+            <i class="bi bi-speedometer2 me-1" style="color:#e3b341"></i>動態評分 Watch Score
+            <span id="mlWatchScoreDelta" class="ml-score-delta flat"></span>
+          </span>
+          <span id="mlWatchScoreBadge" class="badge bg-secondary" style="font-size:13px">—</span>
+        </div>
+        <div class="card-body" id="mlWatchScoreArea">
+          <div class="text-secondary text-center" style="font-size:12px">
+            <div class="spinner-border spinner-border-sm me-1" style="color:#e3b341"></div>
+            載入動態評分… Loading watch score…
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-7">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-signpost-split me-1" style="color:#3fb950"></i>動態交易計劃 Live Trade Plan
+        </div>
+        <div class="card-body" id="mlWatchTradePlanArea">
+          <div class="text-secondary text-center" style="font-size:12px">
+            <div class="spinner-border spinner-border-sm me-1" style="color:#3fb950"></div>
+            載入交易計劃… Loading trade plan…
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Premarket Plan -->
   <div class="card mb-3" id="premktPlanCard">
     <div class="card-header">

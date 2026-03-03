@@ -479,45 +479,68 @@ def _score_dim_g() -> dict:
     Martin reduces activity in corrections, blocks in downtrend.
 
     Adjustment range: [-2.0, +1.0] with VETO for DOWNTREND.
+
+    Strategy:
+      1. Try live assess() for real-time regime
+      2. Fallback to DuckDB cached market_env_history (≤7 days old)
+      3. Last resort: regime = UNKNOWN → adj = 0.0
     """
     adj = 0.0
-    detail = {}
+    detail: dict = {}
     veto = False
+    regime = "UNKNOWN"
 
+    # ── Attempt 1: live market assessment ────────────────────────────────
     try:
         from modules.market_env import assess as mkt_assess
         mkt = mkt_assess(verbose=False)
-        regime = mkt.get("regime", "UNKNOWN")
-        detail["regime"] = regime
-
-        if regime in ("CONFIRMED_UPTREND", "BULL_CONFIRMED"):
-            adj += 0.8
-            detail["market"] = "確認上升趨勢 ✓"
-        elif regime == "BULL_UNCONFIRMED":
-            adj += 0.4
-            detail["market"] = "牛市未確認 — 觀望為主"
-        elif regime in ("BULL_EARLY", "BOTTOM_FORMING"):
-            adj += 0.3
-            detail["market"] = "牛市初期 / 築底中 — 可小量試探"
-        elif regime in ("UPTREND_UNDER_PRESSURE", "TRANSITION"):
-            adj += 0.0
-            detail["market"] = "過渡期 / 上升趨勢受壓 — 減少倉位"
-        elif regime in ("CHOPPY", "BEAR_RALLY"):
-            adj -= 0.5
-            detail["market"] = "震盪市 / 熊市反彈 — 減少交易頻率"
-        elif regime in ("MARKET_IN_CORRECTION", "BEAR_CONFIRMED"):
-            adj -= 1.5
-            detail["market"] = "市場修正 / 確認熊市 — 停止新倉"
-        elif regime == "DOWNTREND":
-            adj -= 2.0
-            veto = True
-            detail["market"] = "⛔ 下降趨勢 — 停止交易"
-        else:
-            adj += 0.0
-            detail["market"] = f"市場狀態: {regime}"
+        regime = mkt.get("regime", "UNKNOWN") if isinstance(mkt, dict) else "UNKNOWN"
+        detail["source"] = "live"
     except Exception as exc:
-        logger.debug("[ML DimG] market_env unavailable: %s", exc)
-        detail["market"] = "市場環境數據不可用"
+        logger.debug("[ML DimG] live assess() failed: %s — trying DB cache", exc)
+        # ── Attempt 2: DuckDB cached regime ──────────────────────────────
+        try:
+            from modules.db import query_market_env_history
+            _mkt_df = query_market_env_history(days=7)
+            if _mkt_df is not None and not _mkt_df.empty:
+                regime = str(_mkt_df.iloc[0].get("regime", "UNKNOWN"))
+                detail["source"] = "cached"
+                logger.info("[ML DimG] Using cached regime from DB: %s", regime)
+            else:
+                detail["source"] = "unavailable"
+                logger.warning("[ML DimG] No cached market_env in DB either")
+        except Exception as exc2:
+            logger.debug("[ML DimG] DB cache also failed: %s", exc2)
+            detail["source"] = "unavailable"
+
+    detail["regime"] = regime
+
+    # ── Map regime → adjustment ──────────────────────────────────────────
+    if regime in ("CONFIRMED_UPTREND", "BULL_CONFIRMED"):
+        adj += 0.8
+        detail["market"] = "確認上升趨勢 ✓"
+    elif regime == "BULL_UNCONFIRMED":
+        adj += 0.4
+        detail["market"] = "牛市未確認 — 觀望為主"
+    elif regime in ("BULL_EARLY", "BOTTOM_FORMING"):
+        adj += 0.3
+        detail["market"] = "牛市初期 / 築底中 — 可小量試探"
+    elif regime in ("UPTREND_UNDER_PRESSURE", "TRANSITION"):
+        adj += 0.0
+        detail["market"] = "過渡期 / 上升趨勢受壓 — 減少倉位"
+    elif regime in ("CHOPPY", "BEAR_RALLY"):
+        adj -= 0.5
+        detail["market"] = "震盪市 / 熊市反彈 — 減少交易頻率"
+    elif regime in ("MARKET_IN_CORRECTION", "BEAR_CONFIRMED"):
+        adj -= 1.5
+        detail["market"] = "市場修正 / 確認熊市 — 停止新倉"
+    elif regime == "DOWNTREND":
+        adj -= 2.0
+        veto = True
+        detail["market"] = "⛔ 下降趨勢 — 停止交易"
+    else:
+        adj += 0.0
+        detail["market"] = f"市場狀態: {regime}" if regime != "UNKNOWN" else "市場環境數據不可用"
 
     adj = max(-2.0, min(adj, 1.0))
     detail["adjustment"] = round(adj, 2)

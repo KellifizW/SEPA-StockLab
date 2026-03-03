@@ -4179,11 +4179,15 @@ def ml_watch_signals(ticker: str):
                 avwap_high_val = ah.get("avwap_value") if ah else None
                 avwap_low_val = al.get("avwap_value") if al else None
 
-                # Market env for dim G reference
+                # Market env for dim G reference — use cached regime from DuckDB
+                # (avoid calling assess() inline which takes 30-60s and blocks
+                #  the entire watch API response)
                 try:
-                    from modules.market_env import assess as mkt_assess
-                    mkt = mkt_assess(verbose=False)
-                    regime = mkt.get("regime", "") if isinstance(mkt, dict) else ""
+                    from modules.db import query_market_env_history
+                    _mkt_df = query_market_env_history(days=7)
+                    regime = ""
+                    if _mkt_df is not None and not _mkt_df.empty:
+                        regime = str(_mkt_df.iloc[0].get("regime", ""))
                     g_map = {
                         "BULL_CONFIRMED": 0.8, "CONFIRMED_UPTREND": 0.8,
                         "BULL_UNCONFIRMED": 0.4,
