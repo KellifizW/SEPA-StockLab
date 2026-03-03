@@ -511,9 +511,14 @@ def start_polling():
     
     每 TG_POLL_INTERVAL 秒檢查一次新訊息，處理指令並回覆
     """
+    global _polling_stop_event
+    
     if not _validate_config():
         logger.error("Telegram 設定無效，無法啟動 Polling")
         return
+    
+    # 重置停止事件，允許循環執行（重要！）
+    _polling_stop_event.clear()
     
     # 載入已批准的 Chat ID
     _load_approved_ids()

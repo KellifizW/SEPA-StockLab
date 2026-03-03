@@ -68,6 +68,10 @@ _scan_log_paths: dict = {}      # {job_id: Path} — for post-scan notification
 app = Flask(__name__)
 app.secret_key = "minervini-sepa-2026"
 
+# ── Telegram Bot State ─────────────────────────────────────────────────────
+_tg_enabled = C.TG_ENABLED  # Track current enable/disable state
+_tg_thread = None           # Will be set in __main__
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # In-memory job store  (scan / market are slow — run in background thread)
@@ -2636,6 +2640,75 @@ def api_reset_yf_session():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Telegram Bot Control API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/telegram/status", methods=["GET"])
+def api_telegram_status():
+    """Get current Telegram Bot polling status."""
+    global _tg_enabled, _tg_thread
+    try:
+        is_running = _tg_thread is not None and _tg_thread.is_alive() if _tg_thread else False
+        return jsonify({
+            "ok": True,
+            "enabled": _tg_enabled,
+            "running": is_running,
+            "config_enabled": C.TG_ENABLED
+        }), 200
+    except Exception as e:
+        logger.error(f"Failed to get Telegram status: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/telegram/toggle", methods=["POST"])
+def api_telegram_toggle():
+    """Start or stop Telegram Bot polling."""
+    global _tg_enabled, _tg_thread
+    
+    if not C.TG_ENABLED:
+        return jsonify({
+            "ok": False,
+            "error": "Telegram Bot not enabled in config (TG_ENABLED=False)"
+        }), 400
+    
+    try:
+        # Stop: currently running
+        if _tg_thread and _tg_thread.is_alive():
+            logger.info("Stopping Telegram Bot polling...")
+            from modules.telegram_bot import stop_polling
+            stop_polling()
+            _tg_thread.join(timeout=2)
+            _tg_enabled = False
+            logger.info("✅ Telegram Bot polling stopped")
+            return jsonify({
+                "ok": True,
+                "action": "stop",
+                "message": "Telegram Bot polling stopped"
+            }), 200
+        
+        # Start: currently stopped
+        else:
+            logger.info("Starting Telegram Bot polling...")
+            from modules.telegram_bot import start_polling
+            _tg_thread = threading.Thread(target=start_polling, daemon=True)
+            _tg_thread.start()
+            _tg_enabled = True
+            logger.info("✅ Telegram Bot polling started")
+            return jsonify({
+                "ok": True,
+                "action": "start",
+                "message": "Telegram Bot polling started"
+            }), 200
+    
+    except Exception as e:
+        logger.error(f"Failed to toggle Telegram: {e}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "error": str(e)
+        }), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Serve latest HTML report inline
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -4212,7 +4285,6 @@ if __name__ == "__main__":
     # Global state for clean shutdown
     _shutdown_event = threading.Event()
     _flask_thread = None
-    _tg_thread = None
     
     # Cleanup function
     def _cleanup_and_exit(code=0):
@@ -4314,9 +4386,11 @@ if __name__ == "__main__":
             from modules.telegram_bot import start_polling
             _tg_thread = threading.Thread(target=start_polling, daemon=True)
             _tg_thread.start()
+            _tg_enabled = True
             print(" * Telegram Bot Polling: ON")
         except Exception as e:
             print(f" ⚠️  Telegram Bot 啟動失敗: {e}")
+            _tg_enabled = False
     
     # Main thread: wait for signals
     # Keep the main thread alive to receive signals

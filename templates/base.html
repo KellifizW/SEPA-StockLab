@@ -149,7 +149,7 @@
         </li>
         <!-- ── Portfolio dropdown (全域共用) ──────────────────────── -->
         <li class="nav-item dropdown">
-          <a class="nav-link dropdown-toggle {% if request.path in ['/watchlist','/positions','/market'] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle {% if request.path in ['/watchlist','/positions'] %}active{% endif %}"
              href="#" data-bs-toggle="dropdown" aria-expanded="false">
             <i class="bi bi-briefcase-fill me-1" style="color:#58a6ff"></i>Portfolio
           </a>
@@ -159,9 +159,13 @@
               <i class="bi bi-bookmark-star me-2"></i>Watchlist 觀察名單</a></li>
             <li><a class="dropdown-item {% if request.path=='/positions' %}text-info{% endif %}" href="/positions">
               <i class="bi bi-briefcase me-2"></i>Positions 持倉</a></li>
-            <li><a class="dropdown-item {% if request.path=='/market' %}text-info{% endif %}" href="/market">
-              <i class="bi bi-bar-chart-line me-2"></i>Market 市場環境</a></li>
           </ul>
+        </li>
+        <!-- ── Market (獨立項) ──────────────────────────────────────── -->
+        <li class="nav-item">
+          <a class="nav-link {% if request.path=='/market' %}active{% endif %}" href="/market">
+            <i class="bi bi-bar-chart-line me-1"></i>Market 市場環境
+          </a>
         </li>
       </ul>
       <ul class="navbar-nav gap-1">

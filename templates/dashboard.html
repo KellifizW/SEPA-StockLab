@@ -202,6 +202,9 @@
         <button class="btn btn-outline-warning" onclick="generateReport()">
           <i class="bi bi-file-earmark-text me-1"></i>Generate Report
         </button>
+        <button id="tgToggleBtn" class="btn btn-sm btn-outline-info" onclick="toggleTelegramBot()" title="啟用/停用 Telegram Bot">
+          <i class="bi bi-telegram me-1"></i><span id="tgToggleLabel">Telegram</span>
+        </button>
         <button class="btn btn-sm btn-outline-danger" onclick="restartServer()" title="重啟 Flask 伺服器以套用程式碼更改">
           <i class="bi bi-arrow-clockwise me-1"></i>Restart Server
         </button>
@@ -324,6 +327,8 @@ async function loadCombinedHighlights() {
 
 window.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => loadCombinedHighlights(), 50);
+  // Load Telegram bot status
+  updateTelegramStatus();
 });
 
 async function generateReport() {
@@ -332,6 +337,50 @@ async function generateReport() {
   pollJob(`/api/report/generate`, () => {
     toastCompletion('✅ 報告已生成完成'); 
   }, e => toast('Error: ' + e, false));
+}
+
+// ── Telegram Bot Status & Control ──────────────────────────────
+async function updateTelegramStatus() {
+  try {
+    const r = await fetch('/api/telegram/status').then(x => x.json());
+    const btn = document.getElementById('tgToggleBtn');
+    const label = document.getElementById('tgToggleLabel');
+    
+    if (r.enabled) {
+      btn.className = 'btn btn-sm btn-info';
+      label.textContent = '🟢 Telegram';
+      btn.title = '點擊停用 Telegram Bot';
+    } else {
+      btn.className = 'btn btn-sm btn-outline-info';
+      label.textContent = '⚫ Telegram';
+      btn.title = '點擊啟用 Telegram Bot';
+    }
+  } catch(e) {
+    console.log('Telegram status unavailable:', e);
+  }
+}
+
+async function toggleTelegramBot() {
+  const btn = document.getElementById('tgToggleBtn');
+  btn.disabled = true;
+  
+  try {
+    const r = await fetch('/api/telegram/toggle', {method: 'POST'}).then(x => x.json());
+    
+    if (r.ok) {
+      await updateTelegramStatus();
+      const msg = r.action === 'start' 
+        ? '✅ Telegram Bot 已啟用' 
+        : '✅ Telegram Bot 已停用';
+      toast(msg, true);
+    } else {
+      toast('❌ ' + (r.error || 'Failed to toggle Telegram'), false);
+    }
+  } catch(e) {
+    toast('❌ 錯誤: ' + e.message, false);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function restartServer() {
