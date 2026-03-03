@@ -911,12 +911,13 @@ ML_THEME_HISTORY_DAYS        = 60      # Days of theme tracking history to retai
 ML_SCORECARD_HISTORY_DAYS    = 365     # Days of trade quality scorecard history
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TELEGRAM BOT  (Polling 方式通訊)
+# TELEGRAM BOT  (Polling 方式通訊 + 管理員審批系統)
 # ─────────────────────────────────────────────────────────────────────────────
-TG_ENABLED        = True                                    # 主開關 — 改為 True 才啟用
-TG_BOT_TOKEN      = os.getenv("TG_BOT_TOKEN", "")           # 從 .env 讀取，不要 hardcode
-TG_CHAT_ID        = os.getenv("TG_CHAT_ID", "")             # 從 .env 讀取，不要 hardcode
-TG_POLL_INTERVAL  = 2                                       # Polling 間隔（秒）
+TG_ENABLED            = True                                    # 主開關 — 改為 True 才啟用
+TG_BOT_TOKEN          = os.getenv("TG_BOT_TOKEN", "")           # 從 .env 讀取，不要 hardcode
+TG_ADMIN_CHAT_ID      = os.getenv("TG_ADMIN_CHAT_ID", "")       # 管理員 Chat ID，負責批准/拒絕新用戶
+TG_POLL_INTERVAL      = 2                                       # Polling 間隔（秒）
+TG_APPROVAL_ENABLED   = True                                    # 啟用新用戶審批系統
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNTIME SETTINGS (persisted to data/settings.json)
