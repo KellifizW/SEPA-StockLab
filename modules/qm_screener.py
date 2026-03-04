@@ -546,29 +546,45 @@ def _score_qm_stage3(row: dict, df: pd.DataFrame) -> dict | None:
                 ticker, close_price, sma_50, below50_penalty
             )
 
-    # ── Supplement 2: Earnings proximity blackout ─────────────────────────
-    # "Five star setup but I'm not trading it because of earnings." — Qullamaggie
+    # ── Pre-earnings star gate ────────────────────────────────────────────
+    # Check if the stock can possibly pass min_star BEFORE the expensive
+    # yfinance earnings date lookup.  Earnings check can only REDUCE the
+    # star (−1.0 penalty), never increase it.  If pre_star < min_star,
+    # the stock is already eliminated — no need to call get_next_earnings_date().
+    star_max = getattr(C, "QM_STAR_MAX", 6.0)
+    pre_earnings_star = round(max(0.0, min(star, star_max)), 1)
+    min_star = getattr(C, "QM_SCAN_MIN_STAR", 3.0)
+
     earnings_warning   = False
     days_to_earnings   = None
-    try:
-        from modules.data_pipeline import get_next_earnings_date
-        from datetime import date as _date
-        next_earn = get_next_earnings_date(ticker)
-        if next_earn:
-            days_to_earnings = (next_earn - _date.today()).days
-            blackout = getattr(C, "QM_EARNINGS_BLACKOUT_DAYS", 3)
-            if 0 <= days_to_earnings <= blackout:
-                star -= 1.0
-                earnings_warning = True
-                logger.info(
-                    "[QM S3] %s earnings in %d days — star -1.0 (blackout)",
-                    ticker, days_to_earnings
-                )
-    except Exception:
-        pass
+
+    if pre_earnings_star >= min_star:
+        # ── Supplement 2: Earnings proximity blackout ─────────────────────
+        # "Five star setup but I'm not trading it because of earnings." — Qullamaggie
+        # Only call yfinance for tickers that would otherwise pass the star gate.
+        try:
+            from modules.data_pipeline import get_next_earnings_date
+            from datetime import date as _date
+            next_earn = get_next_earnings_date(ticker)
+            if next_earn:
+                days_to_earnings = (next_earn - _date.today()).days
+                blackout = getattr(C, "QM_EARNINGS_BLACKOUT_DAYS", 3)
+                if 0 <= days_to_earnings <= blackout:
+                    star -= 1.0
+                    earnings_warning = True
+                    logger.info(
+                        "[QM S3] %s earnings in %d days — star -1.0 (blackout)",
+                        ticker, days_to_earnings
+                    )
+        except Exception:
+            pass
+    else:
+        logger.debug(
+            "[QM S3 EARLY-FILTER] %s pre_star=%.1f < min=%.1f — skipping earnings lookup",
+            ticker, pre_earnings_star, min_star
+        )
 
     # Cap and floor
-    star_max = getattr(C, "QM_STAR_MAX", 6.0)
     star = round(max(0.0, min(star, star_max)), 1)
 
     # Min star gate

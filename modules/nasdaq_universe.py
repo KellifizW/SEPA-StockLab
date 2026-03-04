@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import threading
 import time
 from io import StringIO
 from pathlib import Path
@@ -35,6 +36,12 @@ sys.path.insert(0, str(ROOT))
 import trader_config as C
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thread safety for _mem_universe_cache
+# (prevents double data fetch when SEPA + QM run in parallel)
+# ─────────────────────────────────────────────────────────────────────────────
+_universe_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NASDAQ FTP URLs — these are publicly accessible, no auth required
@@ -353,76 +360,94 @@ def get_universe_nasdaq(
             )
             return df
 
-    # ── File cache ─────────────────────────────────────────────────────────
-    if use_cache and _UNIVERSE_FILE.exists():
-        try:
-            cached = json.loads(_UNIVERSE_FILE.read_text())
-            age_h  = (time.time() - cached.get("ts", 0)) / 3600
-            if age_h < cache_ttl_hours and cached.get("rows") and _cache_is_permissive(cached):
-                rows = cached["rows"]
+    # ── File cache + Full build (synchronized to prevent parallel double-fetch)
+    # ───────────────────────────────────────────────────────────────────────
+    # Only one thread should fetch price/vol from yfinance at a time.
+    # Other threads wait here and then check _mem_universe_cache again (double-checked locking).
+    with _universe_lock:
+        # ── Double-check inside lock ────────────────────────────────────────
+        if use_cache and _mem_universe_cache is not None:
+            age_h = (time.time() - _mem_universe_cache["ts"]) / 3600
+            if age_h < cache_ttl_hours and _cache_is_permissive(_mem_universe_cache):
+                rows = _mem_universe_cache["rows"]
                 df   = _rows_to_df(rows, price_min, vol_min)
                 logger.info(
-                    "[NASDAQ Universe] File cache HIT — %.1fh old, %d rows → %d pass filter "
-                    "(price≥%.2f, vol≥%d)",
-                    age_h, len(rows), len(df), price_min, int(vol_min),
+                    "[NASDAQ Universe] Memory cache HIT (after wait) — %.1fh old, "
+                    "%d rows → %d pass filter",
+                    age_h, len(rows), len(df),
                 )
-                _mem_universe_cache = cached
                 return df
-            elif age_h < cache_ttl_hours and cached.get("rows"):
-                logger.info(
-                    "[NASDAQ Universe] Cache exists but built with stricter thresholds "
-                    "(build_price=%.2f > req=%.2f or build_vol=%d > req=%d) — rebuilding",
-                    cached.get("build_price_min", 0), price_min,
-                    cached.get("build_vol_min", 0), int(vol_min),
-                )
+
+        # ── File cache (inside lock) ────────────────────────────────────────
+        if use_cache and _UNIVERSE_FILE.exists():
+            try:
+                cached = json.loads(_UNIVERSE_FILE.read_text())
+                age_h  = (time.time() - cached.get("ts", 0)) / 3600
+                if age_h < cache_ttl_hours and cached.get("rows") and _cache_is_permissive(cached):
+                    rows = cached["rows"]
+                    df   = _rows_to_df(rows, price_min, vol_min)
+                    logger.info(
+                        "[NASDAQ Universe] File cache HIT — %.1fh old, %d rows → %d pass filter "
+                        "(price≥%.2f, vol≥%d)",
+                        age_h, len(rows), len(df), price_min, int(vol_min),
+                    )
+                    _mem_universe_cache = cached
+                    return df
+                elif age_h < cache_ttl_hours and cached.get("rows"):
+                    logger.info(
+                        "[NASDAQ Universe] Cache exists but built with stricter thresholds "
+                        "(build_price=%.2f > req=%.2f or build_vol=%d > req=%d) — rebuilding",
+                        cached.get("build_price_min", 0), price_min,
+                        cached.get("build_vol_min", 0), int(vol_min),
+                    )
+            except Exception as e:
+                logger.warning("[NASDAQ Universe] File cache read error: %s", e)
+
+        # ── Full build (inside lock, guaranteed single-threaded) ────────────
+        # Always build with the most permissive thresholds so the cache is reusable
+        # across callers with different filters.
+        build_price = min(price_min, _CACHE_BUILD_PRICE_MIN)
+        build_vol   = min(vol_min,   _CACHE_BUILD_VOL_MIN)
+
+        logger.info(
+            "[NASDAQ Universe] Starting full universe build (build thresholds: price≥%.2f, vol≥%d)…",
+            build_price, int(build_vol),
+        )
+        t_start = time.time()
+
+        raw_tickers = _download_raw_tickers()
+        if not raw_tickers:
+            logger.error("[NASDAQ Universe] Failed to get any tickers from NASDAQ FTP")
+            return pd.DataFrame()
+
+        rows = _fetch_price_volume_rows(raw_tickers, build_price, build_vol)
+
+        elapsed = time.time() - t_start
+        logger.info(
+            "[NASDAQ Universe] ✓ Built universe: %d rows in %.0fs (%.1f min)",
+            len(rows), elapsed, elapsed / 60,
+        )
+
+        # Save cache with build metadata
+        cache_payload = {
+            "rows": rows,
+            "build_price_min": build_price,
+            "build_vol_min":   build_vol,
+            "ts": time.time(),
+        }
+        try:
+            _UNIVERSE_FILE.write_text(json.dumps(cache_payload))
         except Exception as e:
-            logger.warning("[NASDAQ Universe] File cache read error: %s", e)
+            logger.warning("[NASDAQ Universe] Could not save file cache: %s", e)
 
-    # ── Full build ─────────────────────────────────────────────────────────
-    # Always build with the most permissive thresholds so the cache is reusable
-    # across callers with different filters.
-    build_price = min(price_min, _CACHE_BUILD_PRICE_MIN)
-    build_vol   = min(vol_min,   _CACHE_BUILD_VOL_MIN)
+        _mem_universe_cache = cache_payload
 
-    logger.info(
-        "[NASDAQ Universe] Starting full universe build (build thresholds: price≥%.2f, vol≥%d)…",
-        build_price, int(build_vol),
-    )
-    t_start = time.time()
-
-    raw_tickers = _download_raw_tickers()
-    if not raw_tickers:
-        logger.error("[NASDAQ Universe] Failed to get any tickers from NASDAQ FTP")
-        return pd.DataFrame()
-
-    rows = _fetch_price_volume_rows(raw_tickers, build_price, build_vol)
-
-    elapsed = time.time() - t_start
-    logger.info(
-        "[NASDAQ Universe] ✓ Built universe: %d rows in %.0fs (%.1f min)",
-        len(rows), elapsed, elapsed / 60,
-    )
-
-    # Save cache with build metadata
-    cache_payload = {
-        "rows": rows,
-        "build_price_min": build_price,
-        "build_vol_min":   build_vol,
-        "ts": time.time(),
-    }
-    try:
-        _UNIVERSE_FILE.write_text(json.dumps(cache_payload))
-    except Exception as e:
-        logger.warning("[NASDAQ Universe] Could not save file cache: %s", e)
-
-    _mem_universe_cache = cache_payload
-
-    df = _rows_to_df(rows, price_min, vol_min)
-    logger.info(
-        "[NASDAQ Universe] Returning %d tickers (price≥%.2f, vol≥%d)",
-        len(df), price_min, int(vol_min),
-    )
-    return df
+        df = _rows_to_df(rows, price_min, vol_min)
+        logger.info(
+            "[NASDAQ Universe] Returning %d tickers (price≥%.2f, vol≥%d)",
+            len(df), price_min, int(vol_min),
+        )
+        return df
 
 
 def filter_otc(tickers: list[str]) -> list[str]:
@@ -470,14 +495,43 @@ def filter_otc(tickers: list[str]) -> list[str]:
         return tickers
 
 
+def get_cached_ticker_data() -> dict[str, dict]:
+    """
+    Return cached NASDAQ FTP ticker data (close, avg_vol) without network calls.
+
+    Used by combined_scanner.py Stage 1.5 to pre-filter tickers using
+    dollar volume and basic price/volume heuristics BEFORE the expensive
+    2-year OHLCV batch download.
+
+    Returns:
+        dict: ticker → {"ticker": str, "close": float, "avg_vol": float}
+        Empty dict if cache is unavailable.
+    """
+    global _mem_universe_cache
+    # Prefer in-memory cache (populated by get_universe_nasdaq during Stage 1)
+    if _mem_universe_cache and _mem_universe_cache.get("rows"):
+        return {r["ticker"]: r for r in _mem_universe_cache["rows"]}
+    # Fall back to file cache
+    if _UNIVERSE_FILE.exists():
+        try:
+            cached = json.loads(_UNIVERSE_FILE.read_text())
+            rows = cached.get("rows", [])
+            if rows:
+                return {r["ticker"]: r for r in rows}
+        except Exception as exc:
+            logger.warning("[get_cached_ticker_data] File cache read error: %s", exc)
+    return {}
+
+
 def invalidate_cache() -> None:
     """Force next call to re-download from NASDAQ FTP and re-fetch price/vol data."""
     global _mem_universe_cache
-    _mem_universe_cache = None
-    for f in [_TICKER_LIST_FILE, _UNIVERSE_FILE]:
-        try:
-            if f.exists():
-                f.unlink()
-                logger.info("[NASDAQ Universe] Removed cache file: %s", f.name)
-        except Exception as e:
-            logger.warning("[NASDAQ Universe] Could not remove %s: %s", f.name, e)
+    with _universe_lock:
+        _mem_universe_cache = None
+        for f in [_TICKER_LIST_FILE, _UNIVERSE_FILE]:
+            try:
+                if f.exists():
+                    f.unlink()
+                    logger.info("[NASDAQ Universe] Removed cache file: %s", f.name)
+            except Exception as e:
+                logger.warning("[NASDAQ Universe] Could not remove %s: %s", f.name, e)

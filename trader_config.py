@@ -128,6 +128,12 @@ FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamenta
 FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
 FINVIZ_TIMEOUT_SEC    = 600.0      # 10 minutes max (finvizfinance needs ~2 sec per page × 464 pages = 15 min for full scan)
 
+# ── Stage 1.5 Pre-filter thresholds (combined_scanner.py) ────────────────────
+# Applied BEFORE the 2-year batch OHLCV download to reduce its scope.
+# Dollar volume = close × avg_vol — rough institutional interest proxy.
+SEPA_MIN_DOLLAR_VOL   = 2_000_000  # $2M minimum for SEPA (Minervini: institutional stocks)
+# QM uses QM_SCAN_MIN_DOLLAR_VOL (below, default $5M) for its own gate.
+
 # ─────────────────────────────────────────────────────────────────────────────
 # YFINANCE RETRY & RESILIENCE PARAMETERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +144,10 @@ YFINANCE_INTRA_REQUEST_DELAY_SEC = 0.15  # NEW: Inter-request delay to reduce 42
                                           # Tuning: 0.15s for 16 workers, 0.25-0.3s for 32 workers
 FUNDAMENTALS_TIMEOUT_SEC = 5.0      # Per-ticker fundamental fetch timeout (crisp fail instead of hanging)
 FUNDAMENTALS_SKIP_ON_TIMEOUT = True # Skip ticker on timeout instead of retrying endlessly
+FUNDAMENTALS_MAX_CONCURRENT = 4     # Global semaphore: max simultaneous get_fundamentals() yfinance calls
+                                    # Prevents 429/401 cascades when SEPA (32 workers) + QM (6 workers)
+                                    # run in parallel — without this, up to 38 threads × 6 requests each.
+                                    # Tuning: 3 = very safe, 4 = good balance, 6 = borderline, >8 = risky.
 CRUMB_RESET_COOLDOWN     = 3.0      # Min interval between session resets (prevent auth cascade)
 OHLCV_TIMEOUT_SEC        = 10.0     # Per-ticker OHLCV fetch timeout
 FINVIZ_MAX_PAGES      = 60         # If using pagination limiting (currently unused; finvizfinance loads all pages)

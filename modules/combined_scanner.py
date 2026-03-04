@@ -102,6 +102,195 @@ def _log_detail(stage: str, detail: str, ticker: str = "", indent: bool = True):
 
 def _cancelled() -> bool:
     return _combined_cancel.is_set()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STAGE 1.5 — Technical pre-filters (no network calls, pure local computation)
+#
+# These filters are applied BEFORE the expensive per-ticker yfinance queries.
+# They use data already available from Stage 1 (NASDAQ FTP cache: close, avg_vol)
+# and from the Stage 2 batch OHLCV download (enriched with SMA/EMA/RSI/ATR).
+#
+# Goal: Reduce the number of tickers entering Stage 2-3 analysis, which in turn
+# reduces get_fundamentals() and get_next_earnings_date() yfinance API calls.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _prefilter_dollar_volume(sepa_tickers: list, qm_tickers: list,
+                              verbose: bool = True) -> tuple[list, list]:
+    """
+    Stage 1.5A — Pre-filter using NASDAQ FTP cached close × avg_vol data.
+
+    Applied BEFORE the batch OHLCV download to reduce its scope.
+    Uses no additional network calls — reads from in-memory/file cache
+    that was populated during Stage 1.
+
+    Filters:
+      - QM: dollar_vol (close × avg_vol) ≥ QM_SCAN_MIN_DOLLAR_VOL ($5M default)
+             This is the QM Stage 2 gate — applied early to avoid downloading
+             2-year OHLCV for stocks that will certainly fail.
+      - SEPA: dollar_vol ≥ SEPA_MIN_DOLLAR_VOL ($2M default)
+              Minervini requires institutional participation; very low dollar
+              volume stocks lack institutional interest.
+
+    Returns:
+        (filtered_sepa_tickers, filtered_qm_tickers)
+    """
+    try:
+        from modules.nasdaq_universe import get_cached_ticker_data
+        cache = get_cached_ticker_data()
+    except Exception as exc:
+        logger.warning("[Stage 1.5A] Could not load NASDAQ FTP cache: %s", exc)
+        return sepa_tickers, qm_tickers
+
+    if not cache:
+        logger.info("[Stage 1.5A] No cached data available — skipping dollar volume pre-filter")
+        return sepa_tickers, qm_tickers
+
+    qm_min_dv   = getattr(C, "QM_SCAN_MIN_DOLLAR_VOL", 5_000_000)
+    sepa_min_dv  = getattr(C, "SEPA_MIN_DOLLAR_VOL", 2_000_000)
+
+    def _dollar_vol(ticker: str) -> float:
+        row = cache.get(ticker)
+        if not row:
+            return float("inf")  # Unknown → keep (don't penalise missing data)
+        return row.get("close", 0) * row.get("avg_vol", 0)
+
+    sepa_before = len(sepa_tickers)
+    qm_before   = len(qm_tickers)
+
+    sepa_filtered = [t for t in sepa_tickers if _dollar_vol(t) >= sepa_min_dv]
+    qm_filtered   = [t for t in qm_tickers   if _dollar_vol(t) >= qm_min_dv]
+
+    sepa_removed = sepa_before - len(sepa_filtered)
+    qm_removed   = qm_before  - len(qm_filtered)
+
+    if verbose and (sepa_removed or qm_removed):
+        logger.info(
+            "[Stage 1.5A] Dollar volume pre-filter: "
+            "SEPA %d→%d (−%d, min $%.0fM) | QM %d→%d (−%d, min $%.0fM)",
+            sepa_before, len(sepa_filtered), sepa_removed, sepa_min_dv / 1e6,
+            qm_before, len(qm_filtered), qm_removed, qm_min_dv / 1e6,
+        )
+    return sepa_filtered, qm_filtered
+
+
+def _prefilter_technical(sepa_tickers: list, qm_tickers: list,
+                          enriched_map: dict,
+                          verbose: bool = True) -> tuple[list, list]:
+    """
+    Stage 1.5B — Fast technical pre-screen using enriched OHLCV data.
+
+    Applied AFTER the batch download (enriched_map is available) but BEFORE
+    the full Stage 2-3 parallel analysis.  Uses only locally-computed
+    indicators from the batch download — zero additional network calls.
+
+    SEPA pre-screen (will fail TT1-TT8 if any of these fail):
+      • Price > SMA200 (TT2)
+      • Price > SMA150 (TT1)
+      • Price > SMA50  (TT6)
+      • SMA50 > SMA200 (partial TT5)
+
+    QM pre-screen (will fail QM Stage 2 gate if any of these fail):
+      • ADR ≥ QM_MIN_ADR_PCT (hard veto)
+      • 1M momentum > 0 (all QM momentum thresholds are positive)
+      • Price > SMA50 (Supplement 14: hard penalty, effectively a gate)
+
+    Returns:
+        (filtered_sepa_tickers, filtered_qm_tickers)
+    """
+    import numpy as np
+
+    def _safe_float(series_or_val, idx=-1) -> float | None:
+        """Safely extract a float from a Series or scalar."""
+        try:
+            if isinstance(series_or_val, pd.Series):
+                val = series_or_val.iloc[idx]
+            else:
+                val = series_or_val
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                return None
+            return float(val)
+        except Exception:
+            return None
+
+    def _passes_sepa(ticker: str) -> bool:
+        df = enriched_map.get(ticker)
+        if df is None or df.empty or len(df) < 200:
+            return False
+        last = df.iloc[-1]
+        close = _safe_float(last.get("Close"))
+        if close is None:
+            return False
+
+        sma50  = _safe_float(last.get("SMA_50"))
+        sma150 = _safe_float(last.get("SMA_150"))
+        sma200 = _safe_float(last.get("SMA_200"))
+
+        # TT2: Price > SMA200
+        if sma200 and close <= sma200:
+            return False
+        # TT1: Price > SMA150
+        if sma150 and close <= sma150:
+            return False
+        # TT6: Price > SMA50
+        if sma50 and close <= sma50:
+            return False
+        # Partial TT5: SMA50 > SMA200
+        if sma50 and sma200 and sma50 <= sma200:
+            return False
+        return True
+
+    def _passes_qm(ticker: str) -> bool:
+        df = enriched_map.get(ticker)
+        if df is None or df.empty or len(df) < 30:
+            return False
+        last = df.iloc[-1]
+        close = _safe_float(last.get("Close"))
+        if close is None:
+            return False
+
+        # ADR gate (estimated from ATR_14 / close)
+        atr14 = _safe_float(last.get("ATRr_14")) or _safe_float(last.get("ATR_14"))
+        if atr14:
+            adr_pct = (atr14 / close * 100) if close > 0 else 0
+            min_adr = getattr(C, "QM_MIN_ADR_PCT", 5.0)
+            if adr_pct < min_adr:
+                return False
+
+        # 1M momentum positive (basic direction check — QM requires 1M≥25%)
+        if len(df) > 22:
+            past = _safe_float(df["Close"].iloc[-23])
+            if past and past > 0:
+                mom_1m = (close / past - 1.0) * 100
+                if mom_1m < 0:
+                    return False  # Negative 1M return → won't pass QM momentum gate
+
+        # Price > SMA50 (Supplement 14)
+        sma50 = _safe_float(last.get("SMA_50"))
+        if sma50 and close < sma50:
+            return False
+
+        return True
+
+    sepa_before = len(sepa_tickers)
+    qm_before   = len(qm_tickers)
+
+    sepa_filtered = [t for t in sepa_tickers if _passes_sepa(t)]
+    qm_filtered   = [t for t in qm_tickers   if _passes_qm(t)]
+
+    sepa_removed = sepa_before - len(sepa_filtered)
+    qm_removed   = qm_before  - len(qm_filtered)
+
+    if verbose:
+        logger.info(
+            "[Stage 1.5B] Technical pre-screen: "
+            "SEPA %d→%d (−%d, SMA alignment) | QM %d→%d (−%d, ADR/momentum/SMA50)",
+            sepa_before, len(sepa_filtered), sepa_removed,
+            qm_before, len(qm_filtered), qm_removed,
+        )
+    return sepa_filtered, qm_filtered
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # COMBINED SCANNING ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -258,10 +447,40 @@ def run_combined_scan(custom_filters: dict | None = None,
     if not s1_tickers:
         print("[ERROR] Stage 1 returned no tickers from either method")
         return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+
+    # ── STAGE 1.5A: Dollar volume pre-filter (before batch download) ─────
+    # Use NASDAQ FTP cache data (close × avg_vol) to eliminate stocks with
+    # insufficient dollar volume BEFORE downloading 2-year OHLCV for them.
+    # This is a cheap local computation that saves significant download time.
+    _progress("Stage 1.5 -- Pre-filter", 21, "Applying dollar volume gate…")
+    _t15 = _time.perf_counter()
+
+    sepa_pre = list(sepa_s1_tickers)  # Keep original lists for timing report
+    qm_pre   = list(qm_s1_tickers)
+    sepa_pre, qm_pre = _prefilter_dollar_volume(sepa_pre, qm_pre, verbose=verbose)
+
+    # Recompute the union with filtered lists — this is what gets batch-downloaded
+    union_filtered = set(sepa_pre) | set(qm_pre)
+    s1_tickers_filtered = list(union_filtered)
+
+    s15a_removed = len(s1_tickers) - len(s1_tickers_filtered)
+    logger.info(
+        "[Stage 1.5A] Dollar volume pre-filter: %d → %d union tickers (−%d, %.0f%%)",
+        len(s1_tickers), len(s1_tickers_filtered), s15a_removed,
+        s15a_removed / max(len(s1_tickers), 1) * 100,
+    )
+    if verbose and s15a_removed > 0:
+        print(f"[Stage 1.5A] Dollar volume gate: {len(s1_tickers)}→{len(s1_tickers_filtered)} "
+              f"(−{s15a_removed} low $Vol tickers)")
+
+    _log_detail("Stage 1.5 -- Pre-filter",
+                f"Dollar volume: {len(s1_tickers)}→{len(s1_tickers_filtered)} (−{s15a_removed})")
+    _progress("Stage 1.5 -- Pre-filter", 22,
+              f"Dollar volume: {len(s1_tickers)}→{len(s1_tickers_filtered)}")
     
     # ── STAGE 2: Batch download (once for both methods) ──────────────────
     _progress("Stage 2 -- Batch Download", 25, "Downloading price history…")
-    _log_detail("Stage 2 -- Batch Download", f"Loading {len(s1_tickers)} tickers from cache")
+    _log_detail("Stage 2 -- Batch Download", f"Loading {len(s1_tickers_filtered)} tickers from cache")
     _t2_dl = _time.perf_counter()
     
     try:
@@ -278,7 +497,7 @@ def run_combined_scan(custom_filters: dict | None = None,
             _dl_max_pct[0] = pct
             _progress("Stage 2 -- Batch Download", pct, msg)
         enriched_map = batch_download_and_enrich(
-            s1_tickers, period="2y",
+            s1_tickers_filtered, period="2y",
             progress_cb=_combined_batch_cb,
         )
     except Exception as e:
@@ -293,10 +512,48 @@ def run_combined_scan(custom_filters: dict | None = None,
     if not enriched_map:
         print("[ERROR] Batch download returned no data")
         return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
-    
+
+    # ── STAGE 1.5B: Technical pre-screen (after batch download) ──────────
+    # Use the enriched OHLCV data (SMA50/150/200, ATR, momentum) to
+    # aggressively pre-filter tickers BEFORE the full Stage 2-3 analysis.
+    # This is a fast local computation — no additional network calls.
+    _progress("Stage 1.5B -- Technical Screen", 47, "Quick technical pre-screen…")
+    _t15b = _time.perf_counter()
+
+    sepa_screened, qm_screened = _prefilter_technical(
+        sepa_pre, qm_pre, enriched_map, verbose=verbose
+    )
+
+    s15b_sepa_removed = len(sepa_pre) - len(sepa_screened)
+    s15b_qm_removed   = len(qm_pre)  - len(qm_screened)
+    total_pre_screened = len(set(sepa_screened) | set(qm_screened))
+
+    logger.info(
+        "[Stage 1.5B] Technical pre-screen in %.1fs: "
+        "SEPA %d→%d (−%d) | QM %d→%d (−%d) | analysis set=%d",
+        _elapsed(_t15b),
+        len(sepa_pre), len(sepa_screened), s15b_sepa_removed,
+        len(qm_pre), len(qm_screened), s15b_qm_removed,
+        total_pre_screened,
+    )
+    if verbose:
+        print(f"[Stage 1.5B] Technical screen: "
+              f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | "
+              f"QM {len(qm_pre)}→{len(qm_screened)} | "
+              f"Analysis set: {total_pre_screened}")
+
+    _log_detail("Stage 1.5B -- Technical Screen",
+                f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | QM {len(qm_pre)}→{len(qm_screened)}")
+    _progress("Stage 1.5B -- Technical Screen", 48,
+              f"Analysis set: {total_pre_screened} tickers")
+
     # ── STAGE 2-3: Run SEPA and QM in parallel threads ────────────────────
+    # Each strategy receives ONLY its own pre-screened ticker list, not the
+    # full union.  This avoids wasted TT validation on QM-only tickers and
+    # wasted QM gate checks on SEPA-only tickers.
     _progress("Stage 2-3 -- Parallel Analysis", 50, "Running SEPA and QM analyses…")
-    _log_detail("Stage 2-3 -- Parallel Analysis", f"Starting parallel analysis of {len(s1_tickers)} tickers")
+    _log_detail("Stage 2-3 -- Parallel Analysis",
+                f"Starting parallel: SEPA={len(sepa_screened)} QM={len(qm_screened)}")
     _t_parallel = _time.perf_counter()
     
     sepa_result = None
@@ -315,11 +572,11 @@ def run_combined_scan(custom_filters: dict | None = None,
             sector_leaders = _get_sector_leaders(sector_df)
 
             # Stage 2 using pre-downloaded union data
-            # TT1-TT10 will naturally filter out QM-only tickers lacking
-            # Minervini fundamentals — no pre-filtering needed here
-            logger.info("[Combined SEPA] Starting Stage 2 with %d tickers", len(s1_tickers))
+            # Only SEPA-screened tickers are sent — QM-only tickers that can't
+            # pass TT alignment have already been removed by Stage 1.5B.
+            logger.info("[Combined SEPA] Starting Stage 2 with %d tickers", len(sepa_screened))
             _log_detail("Stage 2-3 -- Parallel Analysis", "SEPA: Stage 2 (Trend Template) starting", indent=False)
-            s2_results = run_stage2(s1_tickers, sector_leaders, verbose=verbose,
+            s2_results = run_stage2(sepa_screened, sector_leaders, verbose=verbose,
                                     enriched_map=enriched_map, shared=True)
             logger.info("[Combined SEPA] Stage 2 completed: %d passing TT1-TT10", len(s2_results))
             _log_detail("Stage 2-3 -- Parallel Analysis", f"SEPA: Stage 2 done: {len(s2_results)} passed TT1-TT10")
@@ -375,11 +632,11 @@ def run_combined_scan(custom_filters: dict | None = None,
         try:
             from modules.qm_screener import run_qm_stage2, run_qm_stage3
 
-            logger.info("[Combined QM] Starting Stage 2 with %d tickers", len(s1_tickers))
+            logger.info("[Combined QM] Starting Stage 2 with %d tickers", len(qm_screened))
             _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 2 (ADR + Momentum) starting", indent=False)
-            # Stage 2 — QM uses the FULL union universe so QM-only tickers
-            # (filtered out by SEPA's ROE/EPS requirements) are still evaluated
-            s2_passed = run_qm_stage2(s1_tickers, verbose=verbose,
+            # Stage 2 — QM uses its own pre-screened tickers.  Stage 1.5B already
+            # eliminated stocks with insufficient ADR and negative momentum.
+            s2_passed = run_qm_stage2(qm_screened, verbose=verbose,
                                       enriched_map=enriched_map, shared=True)
             logger.info("[Combined QM] Stage 2 completed: %d passing gate", len(s2_passed))
             _log_detail("Stage 2-3 -- Parallel Analysis", f"QM: Stage 2 done: {len(s2_passed)} passed gate")
@@ -505,12 +762,17 @@ def run_combined_scan(custom_filters: dict | None = None,
     _timing = {
         "stage0": _elapsed(_t0),
         "stage1": _elapsed(_t1),
+        "prefilter": _elapsed(_t15),
         "batch_download": _elapsed(_t2_dl),
         "parallel": parallel_elapsed,
         "total": total_elapsed,
         "sepa_s1_count": len(sepa_s1_tickers),
         "qm_s1_count":   len(qm_s1_tickers),
         "union_count":   len(s1_tickers),
+        "union_after_prefilter": len(s1_tickers_filtered),
+        "sepa_screened": len(sepa_screened),
+        "qm_screened":   len(qm_screened),
+        "prefilter_removed": s15a_removed + s15b_sepa_removed + s15b_qm_removed,
     }
 
     sepa_final = {
@@ -535,20 +797,24 @@ def run_combined_scan(custom_filters: dict | None = None,
     _qm_status_str = "已封鎖(熊市)" if qm_blocked else str(len(qm_final["passed"]))
     _progress("Complete", 100,
               f"\u2705 \u6383\u63cf\u5b8c\u6210: SEPA\u2192{len(sepa_final['passed'])} | QM\u2192{_qm_status_str} | "
-              f"Stage1 Union\u2192{len(s1_tickers)} | \u8017\u6642 {total_elapsed:.0f}s")
+              f"Stage1 {len(s1_tickers)}\u2192預篩{len(s1_tickers_filtered)}\u2192分析 SEPA={len(sepa_screened)} QM={len(qm_screened)} | "
+              f"\u8017\u6642 {total_elapsed:.0f}s")
     
     if verbose:
         print(f"\n[Combined Scan] Complete in {total_elapsed:.1f}s")
-        print(f"  Stage 1: SEPA={len(sepa_s1_tickers)} | QM={len(qm_s1_tickers)} "
+        print(f"  Stage 1:   SEPA={len(sepa_s1_tickers)} | QM={len(qm_s1_tickers)} "
               f"| Union={len(s1_tickers)}")
+        print(f"  Pre-filter: Union {len(s1_tickers)}→{len(s1_tickers_filtered)} ($Vol) | "
+              f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | QM {len(qm_pre)}→{len(qm_screened)} (tech)")
         qm_status = "BLOCKED (bear)" if qm_blocked else f"{len(qm_final['passed'])} passed"
-        print(f"  SEPA: {len(sepa_final['passed'])} passed | QM: {qm_status}")
+        print(f"  Results:   SEPA {len(sepa_final['passed'])} passed | QM {qm_status}")
 
     logger.info("[Combined Scan] Complete: SEPA=%d | QM=%s | Total=%.1fs | "
-                "S1 SEPA=%d QM=%d Union=%d",
+                "S1 Union=%d→Prefilter=%d→Screened SEPA=%d QM=%d",
                 len(sepa_final['passed']),
                 "BLOCKED" if qm_blocked else str(len(qm_final['passed'])),
                 total_elapsed,
-                len(sepa_s1_tickers), len(qm_s1_tickers), len(s1_tickers))
+                len(s1_tickers), len(s1_tickers_filtered),
+                len(sepa_screened), len(qm_screened))
     
     return (sepa_final, qm_final)

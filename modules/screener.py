@@ -832,7 +832,7 @@ def run_stage3(s2_results: list,
         ticker = tt_result["ticker"]
         df     = tt_result.get("df")
         try:
-            fundamentals = get_fundamentals(ticker)
+            fundamentals = get_fundamentals(ticker, scan_mode=True)
             scored = score_sepa_pillars(
                 ticker, df,
                 fundamentals=fundamentals,

@@ -93,6 +93,23 @@ _crumb_reset_lock  = threading.Lock()
 _last_crumb_reset  = [0.0]   # mutable float so closures can update it
 _CRUMB_RESET_COOLDOWN = None  # Will be loaded from trader_config
 
+# ─── Global semaphore limiting concurrent get_fundamentals() calls ────────────
+# Prevents rate-limit cascades (429/401) when SEPA + QM Stage 3 run in parallel.
+# Value: max simultaneous yfinance fundamental queries across ALL threads.
+# Default 4: safe for Yahoo Finance (empirically ~3-5 concurrent is OK).
+# Configurable via C.FUNDAMENTALS_MAX_CONCURRENT in trader_config.py.
+_fundamentals_sem: threading.Semaphore | None = None  # lazy-init on first use
+
+def _get_fundamentals_sem() -> threading.Semaphore:
+    """Return (or create) the fundamentals concurrency semaphore."""
+    global _fundamentals_sem
+    if _fundamentals_sem is None:
+        limit = int(getattr(C, "FUNDAMENTALS_MAX_CONCURRENT", 4))
+        _fundamentals_sem = threading.Semaphore(limit)
+        logger.debug("[DataPipeline] Fundamentals semaphore created (limit=%d)", limit)
+    return _fundamentals_sem
+
+
 # ─── yfinance call counter & rate-limit tracker ───────────────────────────────
 _yf_stats_lock = threading.Lock()
 _yf_stats: dict = {
@@ -636,13 +653,23 @@ def get_bulk_historical(tickers: list, period: str = "1y",
     return result
 
 
-def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
+def get_fundamentals(ticker: str, use_cache: bool = True,
+                     scan_mode: bool = False) -> dict:
     """
     Comprehensive fundamental data via yfinance.
     Returns a single dict with keys from multiple data sources:
       info, quarterly_eps, earnings_surprise, eps_revisions,
       institutional_holders, insider_transactions, analyst_targets
     Caches to JSON for up to FUNDAMENTALS_CACHE_DAYS to avoid repeated API calls.
+
+    Args:
+        ticker:    Stock ticker symbol
+        use_cache: Check local file/DB cache before fetching
+        scan_mode: If True, only fetch endpoints used in SEPA pillar scoring
+                   (.info, .get_earnings_history, .get_institutional_holders,
+                    .get_insider_transactions) — skips 4 unused endpoints
+                   to halve the yfinance API calls per ticker.
+                   Full fetch is used for deep single-stock analysis.
     """
     cache_file = PRICE_CACHE_DIR / f"{ticker.upper()}_fundamentals.json"
     meta_file  = cache_file.with_suffix(".fmeta")
@@ -687,8 +714,13 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
     retry_backoff = getattr(C, "YFINANCE_RETRY_BACKOFF", 0.5)
     timeout_sec = getattr(C, "FUNDAMENTALS_TIMEOUT_SEC", 5.0)
     skip_on_timeout = getattr(C, "FUNDAMENTALS_SKIP_ON_TIMEOUT", True)
-    
-    for _attempt in range(max_retries + 1):
+
+    # Acquire semaphore BEFORE yfinance calls — limits parallel fundamental
+    # requests across all threads to FUNDAMENTALS_MAX_CONCURRENT (default 4).
+    # This prevents 429/401 rate-limit cascades when SEPA + QM Stage 3 run
+    # concurrently in combined scan (otherwise up to 12 threads × 6 requests each).
+    with _get_fundamentals_sem():
+      for _attempt in range(max_retries + 1):
         result = {
             "ticker": ticker.upper(),
             "info": {},
@@ -740,12 +772,14 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
                     break
 
             # Quarterly income statement (for EPS acceleration detection)
-            try:
-                qi = tkr.quarterly_income_stmt
-                if qi is not None and not qi.empty:
-                    result["quarterly_eps"] = qi
-            except Exception:
-                pass
+            # scan_mode: SKIP — not used in SEPA pillar scoring
+            if not scan_mode:
+                try:
+                    qi = tkr.quarterly_income_stmt
+                    if qi is not None and not qi.empty:
+                        result["quarterly_eps"] = qi
+                except Exception:
+                    pass
 
             # Earnings history (EPS surprise data)
             try:
@@ -756,20 +790,22 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
                 pass
 
             # EPS revisions (analyst upgrades/downgrades of estimates)
-            try:
-                er = tkr.get_eps_revisions()
-                if er is not None and not er.empty:
-                    result["eps_revisions"] = er
-            except Exception:
-                pass
+            # scan_mode: SKIP — not used in SEPA pillar scoring
+            if not scan_mode:
+                try:
+                    er = tkr.get_eps_revisions()
+                    if er is not None and not er.empty:
+                        result["eps_revisions"] = er
+                except Exception:
+                    pass
 
-            # EPS trend over time
-            try:
-                et = tkr.get_eps_trend()
-                if et is not None and not et.empty:
-                    result["eps_trend"] = et
-            except Exception:
-                pass
+                # EPS trend over time
+                try:
+                    et = tkr.get_eps_trend()
+                    if et is not None and not et.empty:
+                        result["eps_trend"] = et
+                except Exception:
+                    pass
 
             # Institutional holders
             try:
@@ -788,21 +824,24 @@ def get_fundamentals(ticker: str, use_cache: bool = True) -> dict:
                 pass
 
             # Analyst price targets
-            try:
-                at = tkr.analyst_price_targets
-                if at is not None and not at.empty:
-                    result["analyst_targets"] = at
-            except Exception:
-                pass
+            # scan_mode: SKIP — not used in SEPA pillar scoring
+            #   (price targets in scoring come from .info["targetMeanPrice"])
+            if not scan_mode:
+                try:
+                    at = tkr.analyst_price_targets
+                    if at is not None and not at.empty:
+                        result["analyst_targets"] = at
+                except Exception:
+                    pass
 
-            # Quarterly revenue from income statement
-            try:
-                if not result["quarterly_eps"].empty:
-                    qi = result["quarterly_eps"]
-                    if "Total Revenue" in qi.index:
-                        result["quarterly_revenue"] = qi.loc[["Total Revenue"]]
-            except Exception:
-                pass
+                # Quarterly revenue from income statement
+                try:
+                    if not result["quarterly_eps"].empty:
+                        qi = result["quarterly_eps"]
+                        if "Total Revenue" in qi.index:
+                            result["quarterly_revenue"] = qi.loc[["Total Revenue"]]
+                except Exception:
+                    pass
 
             break  # fetched successfully — exit retry loop
 
