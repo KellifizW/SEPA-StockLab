@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-HK" data-bs-theme="dark">
 <head>
   <meta charset="UTF-8">
@@ -968,7 +968,7 @@ async function ibkrPlaceOrder() {
       const orderId = r.data?.order_id || 'N/A';
       toast(`✅ 訂單已提交 / Order #${orderId}`, true);
       // Reset form
-      if (tickerEl) ticketEl.value = '';
+      if (tickerEl) tickerEl.value = '';
       if (qtyEl) qtyEl.value = '';
       if (noteEl) noteEl.value = '';
     } else {
@@ -1068,6 +1068,7 @@ function ibkrQuickClosePos(ticker, qty) {
 }
 
 
+</script>
 <!-- Quick-Add Watchlist Modal -->
 <div class="modal fade" id="quickAddModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered">

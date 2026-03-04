@@ -4,9 +4,17 @@ modules/telegram_bot.py
 Telegram Bot Polling Integration + 管理員審批系統
 
 支援的指令（公共）：
-  /market   — 評估市場環境 (regime, breadth, sectors)
-  /help     — 顯示幫助訊息
-  
+  /market              — 評估市場環境 (regime, breadth, sectors)
+  /watchlist           — 顯示觀察清單 (A/B/C 分級)
+  /positions           — 顯示現有持倉
+  /analyze <ticker>    — SEPA 深度分析 (BUY/WATCH/AVOID)
+  /qm <ticker>         — QM Qullamaggie 6★ 評級
+  /ml <ticker>         — ML Martin Luk 7★ 評級
+  /scan                — SEPA 全市場掃描 (背景執行)
+  /qm_scan             — QM 全市場掃描 (背景執行)
+  /ml_scan             — ML 全市場掃描 (背景執行)
+  /help                — 顯示幫助訊息
+
 支援的指令（管理員專用）：
   /approve <chat_id>     — 批准新用戶
   /deny <chat_id>        — 拒絕新用戶
@@ -52,6 +60,10 @@ _APPROVED_IDS: Set[str] = set()
 _polling_thread: Optional[threading.Thread] = None
 _polling_stop_event = threading.Event()
 _approval_lock = threading.Lock()
+
+# Active scan tracking (prevent concurrent scans per user)
+_active_scans: Dict[str, str] = {}  # {chat_id: scan_type}
+_active_scans_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ANSI Colors
@@ -288,20 +300,442 @@ def _handle_market_command(chat_id: str) -> str:
         return f"❌ 評估市場環境失敗:\n{str(e)[:100]}"
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Feature Command Handlers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _format_stars(stars: float) -> str:
+    """Convert float star rating to ⭐ display."""
+    full = int(stars)
+    half = "½" if (stars - full) >= 0.5 else ""
+    return "⭐" * full + half
+
+
+def _chunk_message(text: str, max_len: int = 4000) -> List[str]:
+    """Split long message into chunks for Telegram (4096 char limit)."""
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
+
+
+def _send_chunked(text: str, chat_id: str, parse_mode: str = "HTML"):
+    """Send a potentially long message in chunks."""
+    for chunk in _chunk_message(text):
+        send_message(chunk, chat_id=chat_id, parse_mode=parse_mode)
+
+
+def _handle_watchlist_command(chat_id: str) -> str:
+    """
+    /watchlist 指令 — 顯示觀察清單 (A/B/C 分級)
+    """
+    try:
+        from modules.watchlist import _load
+        data = _load()
+
+        grade_labels = {"A": "🏆 Grade A", "B": "🥈 Grade B", "C": "🥉 Grade C"}
+        lines = ["<b>📋 觀察清單 (Watchlist)</b>"]
+
+        total = 0
+        for grade in ["A", "B", "C"]:
+            tickers_dict = data.get(grade, {})
+            count = len(tickers_dict)
+            total += count
+
+            lines.append(f"\n<b>{grade_labels[grade]} ({count}):</b>")
+
+            if not tickers_dict:
+                lines.append("  (空)")
+            else:
+                for ticker, info in tickers_dict.items():
+                    if isinstance(info, dict):
+                        rs = info.get("rs_rank", 0)
+                        vcp = info.get("vcp_grade", "?")
+                        pivot = info.get("pivot", 0)
+                        price = info.get("price", 0)
+                        added = info.get("added_date", "?")
+                        pivot_str = f" | Pivot: ${pivot:.2f}" if pivot else ""
+                        price_str = f" | 現價: ${price:.2f}" if price else ""
+                        lines.append(
+                            f"  • <code>{ticker}</code> RS:{int(rs)} VCP:{vcp}"
+                            f"{pivot_str}{price_str} (加入: {added})"
+                        )
+                    else:
+                        lines.append(f"  • <code>{ticker}</code>")
+
+        lines.append(f"\n<i>共 {total} 只股票</i>")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"_handle_watchlist_command 失敗: {e}", exc_info=True)
+        return f"❌ 載入觀察清單失敗:\n{str(e)[:100]}"
+
+
+def _handle_positions_command(chat_id: str) -> str:
+    """
+    /positions 指令 — 顯示持倉
+    """
+    try:
+        from modules.position_monitor import _load
+        data = _load()
+        positions = data.get("positions", {})
+
+        if not positions:
+            return "💼 <b>持倉</b>\n\n無持倉記錄"
+
+        lines = [f"<b>💼 持倉 ({len(positions)} 個)</b>"]
+
+        for ticker, pos in positions.items():
+            if not isinstance(pos, dict):
+                continue
+            buy_price = pos.get("buy_price", 0)
+            shares = pos.get("shares", 0)
+            stop_loss = pos.get("stop_loss", 0)
+            target = pos.get("target", 0)
+            rr = pos.get("rr", 0)
+            entry_date = pos.get("entry_date", "?")
+
+            lines.append(f"\n<b>📌 {ticker}</b>")
+            lines.append(f"  入場: ${buy_price:.2f} × {shares} 股 ({entry_date})")
+            if stop_loss:
+                stop_pct = (buy_price - stop_loss) / buy_price * 100 if buy_price else 0
+                lines.append(f"  止損: ${stop_loss:.2f} (-{stop_pct:.1f}%)")
+            if target:
+                lines.append(f"  目標: ${target:.2f} | R:R {rr:.1f}:1")
+
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"_handle_positions_command 失敗: {e}", exc_info=True)
+        return f"❌ 載入持倉失敗:\n{str(e)[:100]}"
+
+
+def _handle_analyze_command(chat_id: str, ticker: str):
+    """
+    /analyze <ticker> 指令 — SEPA 深度分析 (非同步背景執行)
+    """
+    ticker = ticker.upper().strip()
+    if not ticker:
+        send_message("❌ 用法: /analyze &lt;ticker&gt;\n例如: /analyze NVDA", chat_id=chat_id)
+        return
+
+    send_message(
+        f"⏳ 正在進行 SEPA 分析: <code>{ticker}</code>...\n(約需 30-60 秒)",
+        chat_id=chat_id, parse_mode="HTML"
+    )
+
+    def _run():
+        try:
+            from modules.stock_analyzer import analyze
+            result = analyze(ticker, print_report=False)
+
+            if result.get("error"):
+                send_message(f"❌ 分析失敗: {result['error']}", chat_id=chat_id)
+                return
+
+            rec = result.get("recommendation", {})
+            signal = rec.get("signal", "N/A")
+            signal_emoji = "✅" if signal == "BUY" else "👀" if signal in ("WATCH", "MONITOR") else "❌"
+            scores = result.get("sepa_scores", {})
+            total_score = scores.get("total_score", 0)
+            tt = result.get("trend_template", {})
+            tt_passed = sum(tt.get("checks", {}).values())
+            vcp = result.get("vcp", {})
+            pos = result.get("position", {})
+
+            text = (
+                f"<b>📊 SEPA 分析: {ticker}</b>\n\n"
+                f"{signal_emoji} <b>訊號: {signal}</b>\n"
+                f"<i>{rec.get('reason', '')}</i>\n\n"
+                f"<b>📈 SEPA 總分: {total_score:.0f}/100</b>\n"
+                f"趨勢:{scores.get('trend_score',0):>3} | 基本面:{scores.get('fundamental_score',0):>3} | "
+                f"催化劑:{scores.get('catalyst_score',0):>3}\n"
+                f"入場:{scores.get('entry_score',0):>3} | 風險回報:{scores.get('rr_score',0):>3}\n\n"
+                f"<b>趨勢模板 (TT):</b> {tt_passed}/10 通過\n"
+                f"<b>VCP 評級:</b> {vcp.get('grade','?')} ({vcp.get('vcp_score',0)}/100)\n\n"
+                f"<b>💰 入場計劃:</b>\n"
+                f"入場: ${pos.get('entry_price',0):.2f} | 止損: ${pos.get('stop_price',0):.2f} "
+                f"(-{pos.get('stop_pct',0):.1f}%)\n"
+                f"目標: ${pos.get('target_price',0):.2f} | R:R {pos.get('rr_ratio',0):.1f}:1\n"
+                f"倉位: {pos.get('shares',0):,} 股 = ${pos.get('position_value',0):,.0f} "
+                f"({pos.get('position_pct',0):.1f}%)\n\n"
+                f"<b>現價:</b> ${result.get('price',0):.2f} | <b>RS Rank:</b> {result.get('rs_rank',0):.0f}/99"
+            )
+            send_message(text, chat_id=chat_id, parse_mode="HTML")
+            logger.info(f"✅ SEPA 分析完成: {ticker}")
+        except Exception as e:
+            logger.error(f"_handle_analyze_command 背景執行失敗: {e}", exc_info=True)
+            send_message(f"❌ SEPA 分析失敗 ({ticker}):\n{str(e)[:100]}", chat_id=chat_id)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _handle_qm_command(chat_id: str, ticker: str):
+    """
+    /qm <ticker> 指令 — QM Qullamaggie 6★ 分析 (非同步背景執行)
+    """
+    ticker = ticker.upper().strip()
+    if not ticker:
+        send_message("❌ 用法: /qm &lt;ticker&gt;\n例如: /qm NVDA", chat_id=chat_id)
+        return
+
+    send_message(
+        f"⏳ 正在進行 QM 分析: <code>{ticker}</code>...\n(約需 30-60 秒)",
+        chat_id=chat_id, parse_mode="HTML"
+    )
+
+    def _run():
+        try:
+            from modules.qm_analyzer import analyze_qm
+            result = analyze_qm(ticker, print_report=False)
+
+            if result.get("error"):
+                send_message(f"❌ QM 分析失敗: {result['error']}", chat_id=chat_id)
+                return
+
+            stars = result.get("capped_stars", result.get("stars", 0))
+            rec = result.get("recommendation", "PASS")
+            rec_zh = result.get("recommendation_zh", "")
+            star_display = _format_stars(stars)
+            rec_emoji = "✅" if "BUY" in rec else "👀" if "WATCH" in rec else "❌"
+
+            dim_labels = {
+                "A": "A. 動能品質", "B": "B. ADR 波幅",
+                "C": "C. 整固形態", "D": "D. 均線排列",
+                "E": "E. 股票類型", "F": "F. 市場時機"
+            }
+            dims_lines = []
+            for k, label in dim_labels.items():
+                d = result.get("dim_scores", {}).get(k, {})
+                if d:
+                    dims_lines.append(f"  {label}: {d.get('score',0)}/{d.get('max_score',10)}")
+
+            trade_plan = result.get("trade_plan", {})
+            plan_text = ""
+            if isinstance(trade_plan, dict) and trade_plan.get("entry"):
+                plan_text = (
+                    f"\n\n<b>💰 交易計劃:</b>\n"
+                    f"入場: ${trade_plan.get('entry',0):.2f} | 止損: ${trade_plan.get('stop',0):.2f} | "
+                    f"目標: ${trade_plan.get('target',0):.2f}\n"
+                    f"建議倉位: {trade_plan.get('position_size_pct',0):.0f}%"
+                )
+
+            text = (
+                f"<b>⭐ QM 分析: {ticker}</b>\n\n"
+                f"{star_display} <b>{stars:.1f}★</b>\n"
+                f"{rec_emoji} <b>{rec}</b> {rec_zh}\n\n"
+                f"<b>6 維度評分:</b>\n" + "\n".join(dims_lines) +
+                f"\n\n<b>形態類型:</b> {result.get('setup_type','N/A')}"
+                + plan_text
+            )
+            send_message(text, chat_id=chat_id, parse_mode="HTML")
+            logger.info(f"✅ QM 分析完成: {ticker}")
+        except Exception as e:
+            logger.error(f"_handle_qm_command 背景執行失敗: {e}", exc_info=True)
+            send_message(f"❌ QM 分析失敗 ({ticker}):\n{str(e)[:100]}", chat_id=chat_id)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _handle_ml_command(chat_id: str, ticker: str):
+    """
+    /ml <ticker> 指令 — ML Martin Luk 7★ 分析 (非同步背景執行)
+    """
+    ticker = ticker.upper().strip()
+    if not ticker:
+        send_message("❌ 用法: /ml &lt;ticker&gt;\n例如: /ml NVDA", chat_id=chat_id)
+        return
+
+    send_message(
+        f"⏳ 正在進行 ML 分析: <code>{ticker}</code>...\n(約需 30-60 秒)",
+        chat_id=chat_id, parse_mode="HTML"
+    )
+
+    def _run():
+        try:
+            from modules.ml_analyzer import analyze_ml
+            result = analyze_ml(ticker, print_report=False)
+
+            if result.get("error"):
+                send_message(f"❌ ML 分析失敗: {result['error']}", chat_id=chat_id)
+                return
+
+            stars = result.get("capped_stars", result.get("stars", 0))
+            rec = result.get("recommendation", "PASS")
+            rec_zh = result.get("recommendation_zh", "")
+            star_display = _format_stars(stars)
+            rec_emoji = "✅" if "BUY" in rec else "👀" if "WATCH" in rec else "❌"
+
+            dim_labels = {
+                "A": "A. EMA 結構", "B": "B. 回調品質",
+                "C": "C. AVWAP 共鳴", "D": "D. 成交量形態",
+                "E": "E. 風險回報", "F": "F. 相對強度",
+                "G": "G. 市場環境"
+            }
+            dims_lines = []
+            for k, label in dim_labels.items():
+                d = result.get("dim_scores", {}).get(k, {})
+                if d:
+                    dims_lines.append(f"  {label}: {d.get('score',0)}/{d.get('max_score',10)}")
+
+            trade_plan = result.get("trade_plan", {})
+            plan_text = ""
+            if isinstance(trade_plan, dict) and trade_plan.get("entry"):
+                plan_text = (
+                    f"\n\n<b>💰 交易計劃:</b>\n"
+                    f"入場: ${trade_plan.get('entry',0):.2f} | 止損: ${trade_plan.get('stop',0):.2f} | "
+                    f"目標: ${trade_plan.get('target',0):.2f}\n"
+                    f"建議倉位: {trade_plan.get('position_size_pct',0):.0f}% (最大止損 2.5%)"
+                )
+
+            text = (
+                f"<b>⭐ ML 分析: {ticker}</b>\n\n"
+                f"{star_display} <b>{stars:.1f}★</b>\n"
+                f"{rec_emoji} <b>{rec}</b> {rec_zh}\n\n"
+                f"<b>7 維度評分:</b>\n" + "\n".join(dims_lines) +
+                f"\n\n<b>形態類型:</b> {result.get('setup_type','N/A')}"
+                + plan_text
+            )
+            send_message(text, chat_id=chat_id, parse_mode="HTML")
+            logger.info(f"✅ ML 分析完成: {ticker}")
+        except Exception as e:
+            logger.error(f"_handle_ml_command 背景執行失敗: {e}", exc_info=True)
+            send_message(f"❌ ML 分析失敗 ({ticker}):\n{str(e)[:100]}", chat_id=chat_id)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _handle_scan_command(chat_id: str, scan_type: str):
+    """
+    /scan | /qm_scan | /ml_scan 指令 — 後台全市場掃描 (非同步，需數分鐘)
+
+    Args:
+        scan_type: "SEPA" | "QM" | "ML"
+    """
+    with _active_scans_lock:
+        if chat_id in _active_scans:
+            existing = _active_scans[chat_id]
+            send_message(f"⚠️ 掃描進行中 ({existing})\n請等待完成後再啟動新掃描", chat_id=chat_id)
+            return
+        _active_scans[chat_id] = scan_type
+
+    scan_names = {"SEPA": "SEPA (Minervini)", "QM": "QM (Qullamaggie)", "ML": "ML (Martin Luk)"}
+    scan_name = scan_names.get(scan_type, scan_type)
+
+    send_message(
+        f"🚀 <b>{scan_name} 掃描已開始</b>\n"
+        f"⏳ 此操作需要 5-30 分鐘，完成後會通知\n"
+        f"<i>掃描美股全市場...</i>",
+        chat_id=chat_id, parse_mode="HTML"
+    )
+
+    def _run():
+        import time as _time
+        start_ts = _time.time()
+        try:
+            if scan_type == "SEPA":
+                from modules.screener import run_scan
+                results = run_scan(verbose=False)
+            elif scan_type == "QM":
+                from modules.qm_screener import run_qm_scan
+                results = run_qm_scan(verbose=False)
+            elif scan_type == "ML":
+                from modules.ml_screener import run_ml_scan
+                results = run_ml_scan(verbose=False)
+            else:
+                results = None
+
+            elapsed = _time.time() - start_ts
+            mins, secs = int(elapsed // 60), int(elapsed % 60)
+            time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+
+            if results is None or (hasattr(results, '__len__') and len(results) == 0):
+                send_message(
+                    f"✅ <b>{scan_name} 掃描完成</b> ({time_str})\n\n未找到符合條件的股票",
+                    chat_id=chat_id, parse_mode="HTML"
+                )
+                return
+
+            import pandas as pd
+            if isinstance(results, pd.DataFrame):
+                count = len(results)
+                top_n = min(15, count)
+
+                ticker_col = "ticker" if "ticker" in results.columns else (
+                    results.columns[0] if len(results.columns) > 0 else None
+                )
+                score_col = next(
+                    (c for c in ["sepa_score", "total_score", "score", "capped_stars", "stars"]
+                     if c in results.columns), None
+                )
+
+                rows = []
+                for i, (_, row) in enumerate(results.head(top_n).iterrows()):
+                    t = row.get(ticker_col, "?") if ticker_col else "?"
+                    s = f" — {score_col}: {row.get(score_col,0):.1f}" if score_col else ""
+                    rows.append(f"  {i+1}. <code>{t}</code>{s}")
+
+                full_text = (
+                    f"✅ <b>{scan_name} 掃描完成</b> ({time_str})\n"
+                    f"找到 <b>{count}</b> 只符合條件的股票\n\n"
+                    f"<b>Top {top_n} 結果:</b>\n"
+                    + "\n".join(rows)
+                )
+                _send_chunked(full_text, chat_id=chat_id, parse_mode="HTML")
+            else:
+                send_message(
+                    f"✅ <b>{scan_name} 掃描完成</b> ({time_str})",
+                    chat_id=chat_id, parse_mode="HTML"
+                )
+
+            logger.info(f"✅ {scan_type} 掃描完成 (Chat ID: {chat_id}, {time_str})")
+
+        except Exception as e:
+            logger.error(f"_handle_scan_command 背景執行失敗 [{scan_type}]: {e}", exc_info=True)
+            send_message(f"❌ {scan_name} 掃描失敗:\n{str(e)[:150]}", chat_id=chat_id)
+
+        finally:
+            with _active_scans_lock:
+                _active_scans.pop(chat_id, None)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _handle_help_command() -> str:
     """
     /help 指令 — 顯示幫助
-    
+
     Returns:
         幫助文字 (HTML 格式)
     """
-    text = """<b>📋 可用指令</b>
+    text = """<b>📋 SEPA StockLab — 可用指令</b>
 
+<b>📊 市場 &amp; 資訊:</b>
 <b>/market</b> — 評估市場環境 (Regime, Breadth, Sectors)
+<b>/watchlist</b> — 顯示觀察清單 (A/B/C 分級)
+<b>/positions</b> — 顯示現有持倉
+
+<b>🔍 單股分析 (需 30-60 秒):</b>
+<b>/analyze &lt;ticker&gt;</b> — SEPA 深度分析 (BUY/WATCH/AVOID)
+<b>/qm &lt;ticker&gt;</b> — QM Qullamaggie 6★ 評級
+<b>/ml &lt;ticker&gt;</b> — ML Martin Luk 7★ 評級
+
+<b>🚀 全市場掃描 (需 5-30 分鐘，完成後通知):</b>
+<b>/scan</b> — SEPA (Minervini) 掃描
+<b>/qm_scan</b> — QM (Qullamaggie) 掃描
+<b>/ml_scan</b> — ML (Martin Luk) 掃描
+
+<b>ℹ️ 其他:</b>
 <b>/help</b> — 顯示此幫助訊息
 
-<i>SEPA StockLab Telegram Bot</i>
-<i>Polling mode (本地運行)</i>"""
+<i>SEPA StockLab Telegram Bot | 本地運行 (Polling mode)</i>"""
     return text.strip()
 
 
@@ -631,21 +1065,46 @@ def _process_update(update: Dict):
             return
         
         # 公共指令
+        # ── 非同步指令（背景執行，函數內部自行 send_message) ──────────────────
+        if cmd == "/analyze":
+            _handle_analyze_command(chat_id_str, args)
+            return
+        elif cmd == "/qm":
+            _handle_qm_command(chat_id_str, args)
+            return
+        elif cmd == "/ml":
+            _handle_ml_command(chat_id_str, args)
+            return
+        elif cmd == "/scan":
+            _handle_scan_command(chat_id_str, "SEPA")
+            return
+        elif cmd == "/qm_scan":
+            _handle_scan_command(chat_id_str, "QM")
+            return
+        elif cmd == "/ml_scan":
+            _handle_scan_command(chat_id_str, "ML")
+            return
+
+        # ── 同步指令（即時回覆) ───────────────────────────────────────────────
         if cmd == "/market":
             reply = _handle_market_command(chat_id_str)
+        elif cmd == "/watchlist":
+            reply = _handle_watchlist_command(chat_id_str)
+        elif cmd == "/positions":
+            reply = _handle_positions_command(chat_id_str)
         elif cmd == "/help":
             reply = _handle_help_command()
         else:
             reply = _handle_unknown_command(msg_text)
-        
+
         # 傳送回覆
         success = send_message(reply, chat_id=chat_id_str, parse_mode="HTML")
-        
+
         if success:
             logger.info(f"✅ 回覆已傳送 (Chat ID: {chat_id_str})")
         else:
             logger.warning(f"⚠️ 回覆傳送失敗 (Chat ID: {chat_id_str})")
-    
+
     except Exception as e:
         logger.error(f"_process_update 異常: {e}", exc_info=True)
 
