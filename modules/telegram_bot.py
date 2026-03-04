@@ -306,9 +306,24 @@ def _handle_market_command(chat_id: str) -> str:
 
 def _format_stars(stars: float) -> str:
     """Convert float star rating to ⭐ display."""
+    if stars <= 0:
+        return "☆"
     full = int(stars)
     half = "½" if (stars - full) >= 0.5 else ""
     return "⭐" * full + half
+
+
+def _format_setup_type(setup_type) -> str:
+    """Extract readable setup name from setup_type (str or dict)."""
+    if not setup_type:
+        return "N/A"
+    if isinstance(setup_type, dict):
+        primary = setup_type.get("primary_setup", "N/A")
+        confidence = setup_type.get("confidence", 0)
+        if confidence:
+            return f"{primary} (信心度: {confidence:.0%})"
+        return primary
+    return str(setup_type)
 
 
 def _chunk_message(text: str, max_len: int = 4000) -> List[str]:
@@ -520,11 +535,14 @@ def _handle_qm_command(chat_id: str, ticker: str):
             trade_plan = result.get("trade_plan", {})
             plan_text = ""
             if isinstance(trade_plan, dict) and trade_plan.get("entry"):
+                target = trade_plan.get("target", 0)
+                target_str = f"${target:.2f}" if target else "N/A"
+                pos_pct = trade_plan.get("position_size_pct", 0)
                 plan_text = (
                     f"\n\n<b>💰 交易計劃:</b>\n"
                     f"入場: ${trade_plan.get('entry',0):.2f} | 止損: ${trade_plan.get('stop',0):.2f} | "
-                    f"目標: ${trade_plan.get('target',0):.2f}\n"
-                    f"建議倉位: {trade_plan.get('position_size_pct',0):.0f}%"
+                    f"目標: {target_str}\n"
+                    f"建議倉位: {pos_pct:.0f}%" if pos_pct else "建議倉位: — (評分不足)"
                 )
 
             text = (
@@ -532,7 +550,7 @@ def _handle_qm_command(chat_id: str, ticker: str):
                 f"{star_display} <b>{stars:.1f}★</b>\n"
                 f"{rec_emoji} <b>{rec}</b> {rec_zh}\n\n"
                 f"<b>6 維度評分:</b>\n" + "\n".join(dims_lines) +
-                f"\n\n<b>形態類型:</b> {result.get('setup_type','N/A')}"
+                f"\n\n<b>形態類型:</b> {_format_setup_type(result.get('setup_type'))}"
                 + plan_text
             )
             send_message(text, chat_id=chat_id, parse_mode="HTML")
@@ -588,11 +606,15 @@ def _handle_ml_command(chat_id: str, ticker: str):
             trade_plan = result.get("trade_plan", {})
             plan_text = ""
             if isinstance(trade_plan, dict) and trade_plan.get("entry"):
+                target = trade_plan.get("target", 0)
+                target_str = f"${target:.2f}" if target else "N/A"
+                pos_pct = trade_plan.get("position_size_pct", 0)
+                pos_str = f"{pos_pct:.0f}% (最大止損 2.5%)" if pos_pct else "— (評分不足)"
                 plan_text = (
                     f"\n\n<b>💰 交易計劃:</b>\n"
                     f"入場: ${trade_plan.get('entry',0):.2f} | 止損: ${trade_plan.get('stop',0):.2f} | "
-                    f"目標: ${trade_plan.get('target',0):.2f}\n"
-                    f"建議倉位: {trade_plan.get('position_size_pct',0):.0f}% (最大止損 2.5%)"
+                    f"目標: {target_str}\n"
+                    f"建議倉位: {pos_str}"
                 )
 
             text = (
@@ -600,7 +622,7 @@ def _handle_ml_command(chat_id: str, ticker: str):
                 f"{star_display} <b>{stars:.1f}★</b>\n"
                 f"{rec_emoji} <b>{rec}</b> {rec_zh}\n\n"
                 f"<b>7 維度評分:</b>\n" + "\n".join(dims_lines) +
-                f"\n\n<b>形態類型:</b> {result.get('setup_type','N/A')}"
+                f"\n\n<b>形態類型:</b> {_format_setup_type(result.get('setup_type'))}"
                 + plan_text
             )
             send_message(text, chat_id=chat_id, parse_mode="HTML")
