@@ -79,12 +79,12 @@
             {% for t, p in positions.items() %}
             <tr>
               <td><strong><a href="/analyze?ticker={{ t }}" class="text-decoration-none" style="color:var(--accent)">{{ t }}</a></strong></td>
-              <td>${{ "%.2f"|format(p.buy_price) }}</td>
-              <td class="text-danger">${{ "%.2f"|format(p.stop_loss) }}</td>
-              <td class="text-success">${{ "%.2f"|format(p.target) }}</td>
-              <td>{{ "%.1f"|format(p.rr) }}:1</td>
-              <td>{{ "{:,}".format(p.shares) }}</td>
-              <td>${{ "{:,.0f}".format(p.risk_dollar) }}</td>
+              <td>${{ "%.2f"|format(p.buy_price|default(p.entry_price|default(p.avg_cost|default(0)))) }}</td>
+              <td class="text-danger">${{ "%.2f"|format(p.stop_loss|default(0)) }}</td>
+              <td class="text-success">${{ "%.2f"|format(p.target|default(0)) }}</td>
+              <td>{{ "%.1f"|format(p.rr|default(0)) }}:1</td>
+              <td>{{ "{:,}".format((p.shares|default(p.qty|default(0)))|int) }}</td>
+              <td>${{ "{:,.0f}".format(p.risk_dollar|default(0)) }}</td>
             </tr>
             {% endfor %}
             </tbody>

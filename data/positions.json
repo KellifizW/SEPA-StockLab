@@ -1,5 +1,28 @@
 {
-  "positions": {},
+  "positions": {
+    "CAKE": {
+      "entry_price": 64.51314285,
+      "shares": 7.0,
+      "qty": 7.0,
+      "avg_cost": 64.51314285,
+      "market_price": 63.8546028,
+      "market_value": 446.98,
+      "unrealized_pnl": -4.61,
+      "unrealized_pnl_pct": -1.03136605664683,
+      "source": "ibkr_sync"
+    },
+    "SPY": {
+      "entry_price": 683.01,
+      "shares": 1.0,
+      "qty": 1.0,
+      "avg_cost": 683.01,
+      "market_price": 686.0800171,
+      "market_value": 686.08,
+      "unrealized_pnl": 3.07,
+      "unrealized_pnl_pct": 0.4474696828358209,
+      "source": "ibkr_sync"
+    }
+  },
   "closed": [
     {
       "ticker": "OLD",

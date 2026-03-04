@@ -11,9 +11,11 @@ import os
 import threading
 import asyncio
 import logging
+import math
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 
 # ── Setup root path and imports ──────────────────────────────────────────────
@@ -204,6 +206,9 @@ def connect() -> Dict[str, Any]:
                 except (ValueError, IndexError, AttributeError):
                     nav = 0
             
+            # NOTE: Do NOT call reqPositions() here - it triggers event loop errors
+            # Position sync will be handled on-demand in get_positions()
+            
             _connection_state = "CONNECTED"
             _connection_failed_count = 0
             _last_error = ""
@@ -281,6 +286,17 @@ def _disconnect_sync():
     global _ib
     if _ib:
         _ib.disconnect()
+
+
+def is_ibkr_connected() -> bool:
+    """
+    Check if IBKR connection is currently active.
+    
+    Returns:
+        True if connected, False otherwise
+    """
+    with _ib_lock:
+        return _connection_state == "CONNECTED" and _ib and _ib.isConnected()
 
 
 def get_status() -> Dict[str, Any]:
@@ -613,9 +629,56 @@ def convert_currency(
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API: Positions & Account
 # ─────────────────────────────────────────────────────────────────────────────
+def _diagnose_position_cache() -> Dict[str, Any]:
+    """
+    Fallback diagnostic: Detect if account has positions by examining AccountValue fields.
+    Called when positions() returns empty but account shows unrealized_pnl.
+    
+    Returns dict with diagnostics to help identify position data.
+    """
+    with _ib_lock:
+        if not _ib or _connection_state != "CONNECTED":
+            return {"error": "Not connected"}
+        
+        try:
+            all_acct_vals = _ib.accountValues()
+            acct_vals = {av.tag: av.value for av in all_acct_vals}
+            
+            # These fields indicate presence of positions
+            diagnostic = {
+                "GrossPositionValue": float(acct_vals.get("GrossPositionValue", 0)),
+                "UnrealizedPnL": float(acct_vals.get("UnrealizedPnL", 0)),
+                "StockMarketValue": float(acct_vals.get("StockMarketValue", 0)),
+                "OptionMarketValue": float(acct_vals.get("OptionMarketValue", 0)),
+                "FuturesMarketValue": float(acct_vals.get("FuturesMarketValue", 0)),
+                "CashBalance": float(acct_vals.get("CashBalance", 0)),
+                "BuyingPower": float(acct_vals.get("BuyingPower", 0)),
+            }
+            
+            _logger.debug(f"Position cache diagnostic: {diagnostic}")
+            
+            # If GrossPositionValue > 0 or UnrealizedPnL != 0, we have positions
+            has_positions = (
+                diagnostic["GrossPositionValue"] > 0 or 
+                diagnostic["UnrealizedPnL"] != 0 or
+                diagnostic["StockMarketValue"] > 0
+            )
+            
+            return {
+                "has_positions": has_positions,
+                "diagnostic": diagnostic,
+                "positions_api_count": len(list(_ib.positions())),
+            }
+            
+        except Exception as e:
+            _logger.error(f"Diagnostic error: {e}")
+            return {"error": str(e)}
+
+
 def get_positions() -> List[Dict[str, Any]]:
     """
     Fetch all open positions from IBKR.
+    Handles multi-currency accounts by bypassing cached results.
     
     Returns:
         [
@@ -631,39 +694,95 @@ def get_positions() -> List[Dict[str, Any]]:
         ]
     """
     with _ib_lock:
+        # Check connection state AND verify actual connection
         if _connection_state != "CONNECTED" or not _ib:
-            _logger.warning("Not connected to IBKR")
+            _logger.warning(
+                f"❌ Not connected to IBKR (state={_connection_state}, _ib={_ib is not None})"
+            )
+            return []
+        
+        # Double-check actual connection status
+        if not _ib.isConnected():
+            _logger.warning(
+                f"❌ IBKR connection lost or broken (isConnected()=False)"
+            )
             return []
         
         try:
+            # Use portfolio() instead of positions() - it includes marketValue, unrealizedPNL
+            # positions() only returns: account, contract, position, avgCost (no market data)
             positions = []
-            for pos in _ib.positions():
-                contract = pos.contract
-                ticker = contract.symbol
-                
-                positions.append({
-                    "ticker": ticker,
-                    "qty": pos.position,
-                    "avg_cost": float(pos.avgCost) if pos.avgCost else 0,
-                    "market_value": float(pos.marketValue) if pos.marketValue else 0,
-                    "unrealized_pnl": float(pos.unrealizedPNL) if pos.unrealizedPNL else 0,
-                    "unrealized_pnl_pct": (
-                        (float(pos.unrealizedPNL) / float(pos.marketValue) * 100)
-                        if pos.marketValue and float(pos.marketValue) != 0
-                        else 0
-                    ),
-                    "market_price": (
-                        float(pos.marketValue) / abs(pos.position)
-                        if pos.position
-                        else 0
-                    ),
-                })
-            
+            _logger.debug("Fetching portfolio items via ib_insync...")
+            portfolio_list = list(_ib.portfolio())
+
+            _logger.debug(f"Raw portfolio list count: {len(portfolio_list)}")
+
+            if portfolio_list:
+                _logger.debug(f"✓ Found {len(portfolio_list)} portfolio items")
+                for idx, item in enumerate(portfolio_list):
+                    try:
+                        ticker = item.contract.symbol
+                        qty    = item.position
+
+                        _logger.debug(
+                            f"  Parsing portfolio {idx}: ticker={ticker}, "
+                            f"qty={qty}, avgCost={item.averageCost}, "
+                            f"marketValue={item.marketValue}, unrealizedPNL={item.unrealizedPNL}"
+                        )
+
+                        # Skip zero-quantity positions
+                        if qty == 0:
+                            continue
+
+                        positions.append({
+                            "ticker": ticker,
+                            "qty": qty,
+                            "avg_cost": float(item.averageCost) if item.averageCost else 0,
+                            "market_value": float(item.marketValue) if item.marketValue else 0,
+                            "unrealized_pnl": float(item.unrealizedPNL) if item.unrealizedPNL else 0,
+                            "unrealized_pnl_pct": (
+                                (float(item.unrealizedPNL) / float(item.marketValue) * 100)
+                                if item.marketValue and float(item.marketValue) != 0
+                                else 0
+                            ),
+                            "market_price": float(item.marketPrice) if item.marketPrice else 0,
+                        })
+                    except Exception as parse_err:
+                        _logger.error(
+                            f"  ❌ Error parsing portfolio item {idx}: {parse_err}",
+                            exc_info=True
+                        )
+                        continue
+            else:
+                # Fallback: try positions() + reqPositions() refresh
+                _logger.debug("portfolio() empty, trying reqPositions() refresh...")
+                _ib.reqPositions()
+                time.sleep(0.8)
+
+                for idx, pos in enumerate(list(_ib.positions())):
+                    try:
+                        ticker = pos.contract.symbol
+                        qty    = pos.position
+                        if qty == 0:
+                            continue
+                        positions.append({
+                            "ticker": ticker,
+                            "qty": qty,
+                            "avg_cost": float(pos.avgCost) if pos.avgCost else 0,
+                            "market_value": 0,
+                            "unrealized_pnl": 0,
+                            "unrealized_pnl_pct": 0,
+                            "market_price": 0,
+                        })
+                    except Exception as parse_err:
+                        _logger.error(f"  ❌ Error parsing position {idx}: {parse_err}", exc_info=True)
+                        continue
+
             _logger.info(f"{_GREEN}✓ Fetched {len(positions)} positions from IBKR{_RESET}")
             return positions
-            
+
         except Exception as e:
-            _logger.error(f"{_RED}Error fetching positions: {e}{_RESET}")
+            _logger.error(f"{_RED}Error fetching positions: {e}{_RESET}", exc_info=True)
             return []
 
 
@@ -685,35 +804,85 @@ def get_executions(days: int = 7) -> List[Dict[str, Any]]:
         ]
     """
     with _ib_lock:
+        # Check connection state AND verify actual connection
         if _connection_state != "CONNECTED" or not _ib:
+            _logger.warning(
+                f"❌ Not connected to IBKR (state={_connection_state}, _ib={_ib is not None})"
+            )
+            return []
+        
+        # Double-check actual connection status
+        if not _ib.isConnected():
+            _logger.warning(
+                f"❌ IBKR connection lost or broken (isConnected()=False)"
+            )
             return []
         
         try:
-            cutoff = datetime.now() - timedelta(days=days)
+            # Method 1: Try standard trades() API first
             executions = []
+            _logger.debug("Attempting to fetch trades via ib_insync...")
+            # Use UTC-aware cutoff to match IBKR's timezone-aware fill times
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             
-            for trade in _ib.trades():
-                for fill in trade.fills:
-                    if fill.execution.time < cutoff:
-                        continue
-                    
-                    executions.append({
-                        "exec_id": fill.execution.execId,
-                        "time": fill.execution.time.isoformat(),
-                        "ticker": trade.contract.symbol,
-                        "action": fill.execution.side,
-                        "qty": fill.execution.shares,
-                        "price": float(fill.execution.price),
-                        "commission": float(fill.commissionReport.commission)
-                        if fill.commissionReport
-                        else 0,
-                    })
+            trade_list = list(_ib.trades())
             
-            _logger.info(f"{_GREEN}✓ Fetched {len(executions)} executions{_RESET}")
+            if trade_list:
+                _logger.debug(f"✓ Found {len(trade_list)} trades via standard API")
+                for trade in trade_list:
+                    for fill in trade.fills:
+                        fill_time = fill.execution.time
+                        # Normalize to UTC-aware if naive
+                        if fill_time.tzinfo is None:
+                            fill_time = fill_time.replace(tzinfo=timezone.utc)
+                        if fill_time < cutoff:
+                            continue
+                        
+                        executions.append({
+                            "exec_id": fill.execution.execId,
+                            "time": fill_time.isoformat(),
+                            "ticker": trade.contract.symbol,
+                            "action": fill.execution.side,
+                            "qty": fill.execution.shares,
+                            "price": float(fill.execution.price),
+                            "commission": float(fill.commissionReport.commission)
+                            if fill.commissionReport
+                            else 0,
+                        })
+            else:
+                # Method 2: If standard API empty, request from server
+                _logger.debug("Standard API returned empty, requesting from IBKR server...")
+                _ib.reqPositions()  # Position request may trigger trade sync
+                time.sleep(0.8)
+                
+                trade_list = list(_ib.trades())
+                _logger.debug(f"After reqPositions: {len(trade_list)} trades")
+                
+                for trade in trade_list:
+                    for fill in trade.fills:
+                        fill_time = fill.execution.time
+                        if fill_time.tzinfo is None:
+                            fill_time = fill_time.replace(tzinfo=timezone.utc)
+                        if fill_time < cutoff:
+                            continue
+                        
+                        executions.append({
+                            "exec_id": fill.execution.execId,
+                            "time": fill_time.isoformat(),
+                            "ticker": trade.contract.symbol,
+                            "action": fill.execution.side,
+                            "qty": fill.execution.shares,
+                            "price": float(fill.execution.price),
+                            "commission": float(fill.commissionReport.commission)
+                            if fill.commissionReport
+                            else 0,
+                        })
+            
+            _logger.info(f"{_GREEN}✓ Fetched {len(executions)} executions (last {days} days){_RESET}")
             return sorted(executions, key=lambda x: x["time"], reverse=True)
             
         except Exception as e:
-            _logger.error(f"{_RED}Error fetching executions: {e}{_RESET}")
+            _logger.error(f"{_RED}Error fetching executions: {e}{_RESET}", exc_info=True)
             return []
 
 
@@ -879,9 +1048,16 @@ def place_order(
 
 
 async def _place_order_async(contract: Contract, order: Order) -> Trade:
-    """Async order placement helper."""
+    """
+    Async order placement helper.
+    
+    Note: Trade objects are event-driven like Ticker objects, not awaitable.
+    We simply place the order and return the Trade object immediately.
+    The actual execution happens asynchronously via event handlers.
+    """
+    _logger.debug(f"Placing order: {order.action} {order.totalQuantity} {contract.symbol} @ {order.orderType}")
     trade = _ib.placeOrder(contract, order)  # type: ignore[union-attr]
-    await trade
+    _logger.debug(f"Order placed, trade object returned. OrderId={trade.order.orderId}")
     return trade
 
 
@@ -899,7 +1075,20 @@ def cancel_order(order_id: int) -> Dict[str, Any]:
             }
         
         try:
-            _ib.cancelOrder(_ib.openTrades()[order_id])
+            # Get the Trade object by order ID from open trades
+            open_trades = _ib.openTrades()  # type: ignore[union-attr]
+            trade_to_cancel = None
+            
+            for trade in open_trades:
+                if trade.order.orderId == order_id:
+                    trade_to_cancel = trade
+                    break
+            
+            if trade_to_cancel is None:
+                raise ValueError(f"Order {order_id} not found in open trades")
+            
+            # Cancel the order by passing the Trade's Order object
+            _ib.cancelOrder(trade_to_cancel.order)  # type: ignore[union-attr]
             _logger.info(f"{_GREEN}✓ Cancel request sent for order {order_id}{_RESET}")
             
             return {
@@ -918,9 +1107,43 @@ def cancel_order(order_id: int) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API: Market Data (Quotes)
 # ─────────────────────────────────────────────────────────────────────────────
-def get_quote(ticker: str) -> Dict[str, Any]:
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert value to float, handling None and NaN."""
+    if value is None:
+        return default
+    try:
+        fval = float(value)
+        if math.isnan(fval):
+            return default
+        return fval
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Safely convert value to int, handling None and NaN."""
+    if value is None:
+        return default
+    try:
+        fval = float(value)
+        if math.isnan(fval):
+            return default
+        return int(fval)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_quote(ticker: str, fallback_to_yfinance: bool = True) -> Dict[str, Any]:
     """
-    Get real-time quote snapshot for a ticker.
+    Get real-time quote snapshot for a ticker using IBKR.
+    Uses snapshot mode (one-time request) to preserve monthly free quota.
+    
+    NOTE: Without market data subscription, some stocks may return no data.
+    In that case, this falls back to yfinance if enabled.
+    
+    Args:
+        ticker: Stock symbol (e.g., 'AAPL')
+        fallback_to_yfinance: If True and IBKR fails, try yfinance (method 5)
     
     Returns:
         {
@@ -931,10 +1154,135 @@ def get_quote(ticker: str) -> Dict[str, Any]:
             "volume": int,
             "bid_size": int,
             "ask_size": int,
+            "source": "ibkr" | "yfinance" | "cache",
+            "error": str (if any),
         }
     """
+    ticker_upper = ticker.upper()
     with _ib_lock:
         if _connection_state != "CONNECTED" or not _ib:
+            if fallback_to_yfinance:
+                _logger.debug(f"IBKR not connected, falling back to yfinance for {ticker_upper}")
+                return _get_quote_from_yfinance(ticker_upper)
+            return {
+                "ticker": ticker_upper,
+                "bid": 0,
+                "ask": 0,
+                "last": 0,
+                "volume": 0,
+                "bid_size": 0,
+                "ask_size": 0,
+                "source": "error",
+                "error": "IBKR not connected",
+            }
+        
+        # Check cache first
+        now = datetime.now()
+        if (ticker_upper in _quote_cache and 
+            ticker_upper in _last_quote_time and
+            (now - _last_quote_time[ticker_upper]).total_seconds() < C.IBKR_QUOTE_CACHE_SEC):
+            cached = _quote_cache[ticker_upper].copy()
+            cached["source"] = "cache"
+            return cached
+        
+        try:
+            contract = Contract(
+                symbol=ticker_upper,
+                secType="STK",
+                exchange="SMART",
+                currency="USD",
+            )
+            
+            # Request snapshot: real-time data, one-time only (no subscription needed)
+            # Free quota: ~100 per month ($1 USD for US stocks)
+            ticker_data = _run_async(_get_quote_async(contract, snapshot_only=True))
+            
+            # Debug: Log the ticker object contents
+            _logger.debug(f"IBKR Snapshot raw data for {ticker_upper}: bid={ticker_data.bid}, ask={ticker_data.ask}, "
+                         f"last={ticker_data.last}, volume={ticker_data.volume}, "
+                         f"bidSize={ticker_data.bidSize}, askSize={ticker_data.askSize}")
+            
+            # Check if we got valid data (at least one price field with non-zero value)
+            bid_val = _safe_float(ticker_data.bid)
+            ask_val = _safe_float(ticker_data.ask)
+            last_val = _safe_float(ticker_data.last)
+            
+            has_data = (bid_val > 0 or ask_val > 0 or last_val > 0)
+            
+            if not has_data:
+                # Snapshot failed (likely Error 10089: market data subscription required)
+                # Fall back to yfinance
+                _logger.warning(f"IBKR snapshot returned no valid prices for {ticker_upper} "
+                               f"(bid={bid_val}, ask={ask_val}, last={last_val}), falling back to yfinance")
+                if fallback_to_yfinance:
+                    return _get_quote_from_yfinance(ticker_upper)
+                else:
+                    return {
+                        "ticker": ticker_upper,
+                        "bid": 0,
+                        "ask": 0,
+                        "last": 0,
+                        "volume": 0,
+                        "bid_size": 0,
+                        "ask_size": 0,
+                        "source": "error",
+                        "error": "No market data available (market data subscription may be required)",
+                    }
+            
+            quote = {
+                "ticker": ticker_upper,
+                "bid": bid_val,
+                "ask": ask_val,
+                "last": last_val,
+                "volume": _safe_int(ticker_data.volume),
+                "bid_size": _safe_int(ticker_data.bidSize),
+                "ask_size": _safe_int(ticker_data.askSize),
+                "source": "ibkr_snapshot",
+            }
+            
+            # Cache result
+            _quote_cache[ticker_upper] = quote.copy()
+            _last_quote_time[ticker_upper] = now
+            
+            return quote
+            
+        except Exception as e:
+            _logger.error(f"{_RED}Error fetching quote for {ticker_upper} from IBKR: {e}{_RESET}")
+            if fallback_to_yfinance:
+                _logger.info(f"Falling back to yfinance for {ticker_upper}")
+                return _get_quote_from_yfinance(ticker_upper)
+            return {
+                "ticker": ticker_upper,
+                "bid": 0,
+                "ask": 0,
+                "last": 0,
+                "volume": 0,
+                "bid_size": 0,
+                "ask_size": 0,
+                "source": "error",
+                "error": str(e),
+            }
+
+
+def _get_quote_from_yfinance(ticker: str) -> Dict[str, Any]:
+    """
+    Fallback: Get quote from yfinance (free data source).
+    This implements Strategy 5: External free data source.
+    Returns last close price with estimated bid/ask spread.
+    """
+    try:
+        import yfinance as yf
+        import pandas as pd
+        import numpy as np
+        
+        _logger.debug(f"Fetching quote from yfinance for {ticker}")
+        
+        # Download last day of data
+        data = yf.download(ticker, period="1d", progress=False)
+        
+        # Handle empty data
+        if data is None or (isinstance(data, pd.DataFrame) and len(data) == 0):
+            _logger.warning(f"yfinance returned no data for {ticker}")
             return {
                 "ticker": ticker,
                 "bid": 0,
@@ -943,61 +1291,145 @@ def get_quote(ticker: str) -> Dict[str, Any]:
                 "volume": 0,
                 "bid_size": 0,
                 "ask_size": 0,
-                "error": "Not connected",
+                "source": "yfinance",
+                "error": "No data returned",
             }
         
-        # Check cache
-        now = datetime.now()
-        if (ticker in _quote_cache and 
-            ticker in _last_quote_time and
-            (now - _last_quote_time[ticker]).total_seconds() < C.IBKR_QUOTE_CACHE_SEC):
-            return _quote_cache[ticker]
-        
-        try:
-            contract = Contract(
-                symbol=ticker.upper(),
-                secType="STK",
-                exchange="SMART",
-                currency="USD",
-            )
-            
-            ticker_data = _run_async(_get_quote_async(contract))
-            
-            quote = {
-                "ticker": ticker.upper(),
-                "bid": float(ticker_data.bid) if ticker_data.bid else 0,
-                "ask": float(ticker_data.ask) if ticker_data.ask else 0,
-                "last": float(ticker_data.last) if ticker_data.last else 0,
-                "volume": int(ticker_data.volume) if ticker_data.volume else 0,
-                "bid_size": int(ticker_data.bidSize) if ticker_data.bidSize else 0,
-                "ask_size": int(ticker_data.askSize) if ticker_data.askSize else 0,
-            }
-            
-            # Cache result
-            _quote_cache[ticker.upper()] = quote
-            _last_quote_time[ticker.upper()] = now
-            
-            return quote
-            
-        except Exception as e:
-            _logger.error(f"{_RED}Error fetching quote for {ticker}: {e}{_RESET}")
+        # Ensure we have a DataFrame
+        if not isinstance(data, pd.DataFrame):
+            _logger.error(f"yfinance returned unexpected data type: {type(data)}")
             return {
-                "ticker": ticker.upper(),
+                "ticker": ticker,
                 "bid": 0,
                 "ask": 0,
                 "last": 0,
                 "volume": 0,
                 "bid_size": 0,
                 "ask_size": 0,
-                "error": str(e),
+                "source": "yfinance",
+                "error": f"Unexpected data type: {type(data).__name__}",
             }
+        
+        # Extract last row as Series
+        last_row = data.iloc[-1]
+        
+        # Safely extract scalar values using .item() or .values
+        try:
+            if 'Close' in data.columns:
+                close_value = last_row['Close']
+                # Ensure it's a scalar
+                if hasattr(close_value, 'item'):
+                    last_close = float(close_value.item())
+                elif isinstance(close_value, (list, np.ndarray)):
+                    last_close = float(close_value[0]) if len(close_value) > 0 else 0
+                else:
+                    last_close = float(close_value)
+            else:
+                last_close = 0
+        except (TypeError, ValueError, IndexError) as e:
+            _logger.error(f"Failed to extract Close price: {type(e).__name__}: {e}")
+            last_close = 0
+        
+        try:
+            if 'Volume' in data.columns:
+                volume_value = last_row['Volume']
+                # Ensure it's a scalar
+                if hasattr(volume_value, 'item'):
+                    last_volume = int(volume_value.item())
+                elif isinstance(volume_value, (list, np.ndarray)):
+                    last_volume = int(volume_value[0]) if len(volume_value) > 0 else 0
+                else:
+                    last_volume = int(volume_value)
+            else:
+                last_volume = 0
+        except (TypeError, ValueError, IndexError):
+            last_volume = 0
+        
+        if last_close > 0:
+            _logger.debug(f"Got yfinance data for {ticker}: close={last_close}, volume={last_volume}")
+            return {
+                "ticker": ticker,
+                "bid": last_close * 0.995,  # Estimate bid as ~0.5% below last
+                "ask": last_close * 1.005,  # Estimate ask as ~0.5% above last
+                "last": last_close,
+                "volume": last_volume,
+                "bid_size": 0,  # yfinance doesn't provide depth
+                "ask_size": 0,
+                "source": "yfinance",
+            }
+        else:
+            _logger.warning(f"yfinance returned invalid close price for {ticker}: {last_close}")
+            return {
+                "ticker": ticker,
+                "bid": 0,
+                "ask": 0,
+                "last": 0,
+                "volume": last_volume,
+                "bid_size": 0,
+                "ask_size": 0,
+                "source": "yfinance",
+                "error": "Invalid price data",
+            }
+    except Exception as e:
+        _logger.error(f"Failed to fetch from yfinance: {type(e).__name__}: {e}", exc_info=True)
+        return {
+            "ticker": ticker,
+            "bid": 0,
+            "ask": 0,
+            "last": 0,
+            "volume": 0,
+            "bid_size": 0,
+            "ask_size": 0,
+            "source": "yfinance",
+            "error": str(e),
+        }
 
 
-async def _get_quote_async(contract: Contract):
-    """Async quote fetching helper."""
-    ticker = _ib.reqMktData(contract, "", False, False)  # type: ignore[union-attr]
-    await ticker
-    return ticker
+async def _get_quote_async(contract: Contract, snapshot_only: bool = True):
+    """
+    Async quote fetching helper - requests a snapshot quote.
+    
+    IBKR Snapshot Behavior:
+    - Real-time data (not delayed)
+    - One-time request, gets data within ~11 seconds window, then stops
+    - Free: ~100 per month ($1 USD monthly quota for US stocks)
+    - Cannot be streamed without subscription
+    
+    Args:
+        contract: Stock contract to fetch
+        snapshot_only: If True, cancel subscription immediately after getting data.
+                      Should always be True for snapshot mode.
+    """
+    try:
+        _logger.debug(f"Requesting snapshot quote for {contract.symbol}")
+        
+        # Request market data in snapshot mode
+        # The snapshot parameter in reqMktData(contract, "", False, False):
+        #   - contract: the contract
+        #   - "": generic tick list (empty = standard ticks)
+        #   - False: snapshot
+        #   - False: regulatory snapshot
+        ticker = _ib.reqMktData(contract, "", False, False)  # type: ignore[union-attr]
+        
+        # Wait for ticker to populate with market data
+        # Per IBKR: snapshot should return within ~11 seconds
+        # Ticker objects are event-driven (not awaitable), so poll for data
+        max_attempts = 120  # 12 seconds with 0.1s delays (covers 11s window + buffer)
+        for attempt in range(max_attempts):
+            if ticker.bid is not None or ticker.ask is not None:
+                _logger.debug(f"Got snapshot data for {contract.symbol} at attempt {attempt}")
+                break
+            await asyncio.sleep(0.1)
+        
+        # Always cancel subscription immediately to preserve quota
+        if snapshot_only:
+            _ib.cancelMktData(contract)  # type: ignore[union-attr]
+            _logger.debug(f"Cancelled market data subscription for {contract.symbol}")
+        
+        return ticker
+    except Exception as e:
+        _logger.error(f"Error in _get_quote_async: {type(e).__name__}: {e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────

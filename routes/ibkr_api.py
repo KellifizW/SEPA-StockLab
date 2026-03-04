@@ -66,6 +66,103 @@ def api_ibkr_status():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@bp.route("/api/ibkr/diagnostics", methods=["GET"])
+def api_ibkr_diagnostics():
+    """Get detailed IBKR diagnostics including connection, positions, and trades.
+    
+    Helps debug why positions/trades aren't showing.
+    """
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({
+            "ok": False,
+            "error": error_msg,
+            "diagnostics": {"ibkr_enabled": False}
+        }), 503
+    
+    try:
+        client_module = _client()
+        
+        # Get basic connection status
+        status = client_module.get_status()
+        
+        # Try to fetch positions
+        positions = client_module.get_positions()
+        
+        # Try to fetch trades
+        trades = client_module.get_executions(days=7)
+        
+        # Get detailed position cache diagnostics
+        position_diagnostic = client_module._diagnose_position_cache()
+        
+        # Analyze why data might be empty
+        diagnosis = {
+            "connection_state": status.get("state"),
+            "is_connected": status.get("connected"),
+            "account": status.get("account"),
+            "nav": status.get("nav"),
+            "unrealized_pnl": status.get("unrealized_pnl"),
+            "last_error": status.get("last_error"),
+            "positions_count": len(positions),
+            "trades_count": len(trades),
+            "position_cache_diagnostic": position_diagnostic,
+            "possible_issues": [],
+        }
+        
+        # Detect issues
+        if not status.get("connected"):
+            diagnosis["possible_issues"].append(
+                "❌ IBKR is NOT connected. Click 'Connect' button on web UI."
+            )
+        elif status.get("state") != "CONNECTED":
+            diagnosis["possible_issues"].append(
+                f"⚠️ Connection state is {status.get('state')}, not CONNECTED"
+            )
+        
+        # Check if positions API empty but account has positions
+        if (status.get("connected") and 
+            len(positions) == 0 and 
+            position_diagnostic.get("has_positions")):
+            diagnosis["possible_issues"].append(
+                f"⚠️ ALERT: Positions API returned 0 but account shows: "
+                f"GrossPositionValue=${position_diagnostic['diagnostic'].get('GrossPositionValue', 0):.2f}, "
+                f"UnrealizedPnL=${position_diagnostic['diagnostic'].get('UnrealizedPnL', 0):.2f}. "
+                f"This indicates ib_insync cache may not have synced properly. "
+                f"Try: 1) Restart Flask app, 2) Re-connect to IBKR"
+            )
+        
+        if status.get("connected") and len(positions) == 0 and status.get("unrealized_pnl") == 0:
+            diagnosis["possible_issues"].append(
+                "✓ Connected and no positions. This is OK if you have no open trades."
+            )
+        
+        if status.get("connected") and len(trades) == 0:
+            diagnosis["possible_issues"].append(
+                "✓ Connected but no recent trades. Check date filter or trading history."
+            )
+        
+        if not diagnosis["possible_issues"]:
+            diagnosis["possible_issues"].append("✓ All systems operational!")
+        
+        return jsonify({
+            "ok": True,
+            "data": {
+                "status": status,
+                "positions": positions,
+                "trades": trades,
+                "diagnostics": diagnosis,
+            }
+        })
+    
+    except Exception as exc:
+        logger.error("api_ibkr_diagnostics error: %s", exc, exc_info=True)
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "diagnostics": {"error_type": type(exc).__name__}
+        }), 500
+
+
 @bp.route("/api/ibkr/connect", methods=["POST"])
 def api_ibkr_connect():
     """Initiate IBKR connection."""
@@ -180,30 +277,68 @@ def api_ibkr_positions():
     try:
         from modules import position_monitor, db
 
-        ibkr_positions = _client().get_positions()
+        # Auto-connect if not already connected
+        client = _client()
+        if not client.is_ibkr_connected():
+            logger.info("IBKR not connected, attempting to reconnect...")
+            client.connect()
+
+        ibkr_positions = client.get_positions()
         if not ibkr_positions:
             return jsonify({"ok": True,
                             "data": {"positions": [], "message": "No positions found"}})
 
-        local_positions = position_monitor._load()
+        # UPSERT: add new positions AND update existing ones from IBKR data
+        local_data = position_monitor._load()
+        if "positions" not in local_data:
+            local_data["positions"] = {}
+
         for ibkr_pos in ibkr_positions:
             ticker = ibkr_pos["ticker"]
-            if ticker in local_positions.get("positions", {}):
-                local_positions["positions"][ticker].update({
+            if ticker in local_data["positions"]:
+                # Update market data for existing position
+                local_data["positions"][ticker].update({
                     "market_price": ibkr_pos["market_price"],
                     "unrealized_pnl": ibkr_pos["unrealized_pnl"],
                     "unrealized_pnl_pct": ibkr_pos["unrealized_pnl_pct"],
+                    "qty": ibkr_pos["qty"],
+                    "market_value": ibkr_pos["market_value"],
                 })
-        position_monitor._save(local_positions)
+            else:
+                # Add new position from IBKR (not yet in local store)
+                local_data["positions"][ticker] = {
+                    # Fields expected by dashboard.html / positions.html
+                    "buy_price": ibkr_pos["avg_cost"],
+                    "entry_price": ibkr_pos["avg_cost"],
+                    "stop_loss": 0,
+                    "target": 0,
+                    "rr": 0,
+                    "shares": ibkr_pos["qty"],
+                    "risk_dollar": 0,
+                    # IBKR market data
+                    "qty": ibkr_pos["qty"],
+                    "avg_cost": ibkr_pos["avg_cost"],
+                    "market_price": ibkr_pos["market_price"],
+                    "market_value": ibkr_pos["market_value"],
+                    "unrealized_pnl": ibkr_pos["unrealized_pnl"],
+                    "unrealized_pnl_pct": ibkr_pos["unrealized_pnl_pct"],
+                    "source": "ibkr_sync",
+                }
+            logger.info("IBKR sync upserted position: %s qty=%s", ticker, ibkr_pos["qty"])
+
+        position_monitor._save(local_data)
 
         for pos in ibkr_positions:
-            db.log_position_action(
-                ticker=pos["ticker"], action="SYNC",
-                price=pos["market_price"], shares=pos["qty"],
-                stop_price=None,
-                pnl_pct=pos["unrealized_pnl_pct"],
-                note=f"IBKR sync: {pos['unrealized_pnl_pct']:.2f}% unrealized PnL",
-            )
+            try:
+                db.log_position_action(
+                    ticker=pos["ticker"], action="SYNC",
+                    price=pos["market_price"], shares=pos["qty"],
+                    stop_price=None,
+                    pnl_pct=pos["unrealized_pnl_pct"],
+                    note=f"IBKR sync: {pos['unrealized_pnl_pct']:.2f}% unrealized PnL",
+                )
+            except Exception as db_exc:
+                logger.warning("db.log_position_action failed for %s: %s", pos["ticker"], db_exc)
 
         return jsonify({"ok": True,
                         "data": {"positions": ibkr_positions,
@@ -236,8 +371,20 @@ def api_ibkr_trades():
     try:
         from modules import db
         days = request.args.get("days", default=7, type=int)
-        executions = _client().get_executions(days=days)
-        db_orders = db.query_ibkr_orders(days=days)
+        
+        # Auto-connect if not already connected
+        client = _client()
+        if not client.is_ibkr_connected():
+            logger.info("IBKR not connected, attempting to reconnect...")
+            client.connect()
+        
+        executions = client.get_executions(days=days)
+        # Wrap db call separately so a DB error never blocks the trade history response
+        try:
+            db_orders = db.query_ibkr_orders(days=days)
+        except Exception as db_exc:
+            logger.warning("db.query_ibkr_orders failed: %s", db_exc)
+            db_orders = []
         return jsonify({"ok": True,
                         "data": {"executions": executions,
                                  "db_orders": db_orders,

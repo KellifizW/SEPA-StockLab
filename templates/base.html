@@ -971,9 +971,14 @@ async function ibkrPlaceOrder() {
       const orderId = r.data?.order_id || 'N/A';
       toast(`✅ 訂單已提交 / Order #${orderId}`, true);
       // Reset form
-      if (tickerEl) ticketEl.value = '';
+      if (tickerEl) tickerEl.value = '';
       if (qtyEl) qtyEl.value = '';
       if (noteEl) noteEl.value = '';
+      
+      // AUTO-SYNC: Refresh positions and history after successful order
+      await new Promise(r => setTimeout(r, 500));  // Wait for IBKR to process
+      ibkrSyncPositions();
+      ibkrLoadHistory();
     } else {
       const msg = r.data?.message || r.error || 'Unknown error';
       toast(`❌ 下單失敗 / Order failed: ${msg}`, false);
@@ -986,14 +991,14 @@ async function ibkrPlaceOrder() {
 }
 
 // GET /api/ibkr/positions
-async function ibkrSyncPositions() {
+async function ibkrSyncPositions(silent = false) {
   try {
     const btn = document.getElementById('ibkrSyncPositionsBtn');
     if (btn) btn.disabled = true;
     
     const response = await fetch('/api/ibkr/positions');
     if (!response.ok) {
-      toast('❌ IBKR API 未實施 / IBKR API not yet implemented', false);
+      if (!silent) toast('❌ IBKR API 未實施 / IBKR API not yet implemented', false);
       if (btn) btn.disabled = false;
       return;
     }
@@ -1003,7 +1008,7 @@ async function ibkrSyncPositions() {
     const listDiv = document.getElementById('ibkrPositionsList');
     if (!positions || positions.length === 0) {
       if (listDiv) listDiv.innerHTML = '<div style="text-align:center; color:#8b949e; padding:20px 8px; font-size:12px;">-- 無持倉 / No positions --</div>';
-      toast('✓ 已同期，但無持倉', true);
+      if (!silent) toast('✓ 已同期，但無持倉', true);
       if (btn) btn.disabled = false;
       return;
     }
@@ -1039,13 +1044,176 @@ async function ibkrSyncPositions() {
       `;
     }
     if (listDiv) listDiv.innerHTML = html;
-    toast(`✅ 已同期 ${positions.length} 個持倉`, true);
+    if (!silent) toast(`✅ 已同期 ${positions.length} 個持倉`, true);
     
     if (btn) btn.disabled = false;
   } catch(e) {
-    toast(`❌ 同期失敗: ${e.message}`, false);
+    if (!silent) toast(`❌ 同期失敗: ${e.message}`, false);
   }
 }
+
+// Load trading history from API
+async function ibkrLoadHistory() {
+  try {
+    const daysEl = document.getElementById('ibkrHistoryDays');
+    const days = daysEl ? parseInt(daysEl.value) : 7;
+    const listDiv = document.getElementById('ibkrHistoryList');
+    if (!listDiv) return;
+    
+    listDiv.innerHTML = '<div style="text-align:center; color:#8b949e;"><span class="spinner-glow">⟳</span></div>';
+    
+    const response = await fetch(`/api/ibkr/trades?days=${days}`);
+    if (!response.ok) {
+      listDiv.innerHTML = '<div style="text-align:center; color:#f85149; font-size:12px;">API Error</div>';
+      return;
+    }
+    
+    const r = await response.json();
+    const executions = r.data?.executions || [];
+    
+    if (!executions || executions.length === 0) {
+      listDiv.innerHTML = '<div style="text-align:center; color:#8b949e; padding:20px 8px; font-size:12px;">-- 無交易記錄 / No trades --</div>';
+      return;
+    }
+    
+    let html = '';
+    for (const exec of executions) {
+      // API returns: action, exec_id, qty, ticker, price, commission, time
+      const action = (exec.action || exec.side || '').toUpperCase();
+      const isLong = action === 'BUY' || action === 'BOT';
+      const sideClass = isLong ? 'score-high' : 'score-low';
+      const sideText = isLong ? '買入' : '賣出';
+      const commStr = exec.commission ? ` | 佣金: $${Number(exec.commission).toFixed(2)}` : '';
+      const timeStr = exec.time ? new Date(exec.time).toLocaleString('zh-HK') : 'N/A';
+      const qty = exec.qty || exec.shares || 0;
+      const ticker = exec.ticker || exec.symbol || 'N/A';
+      const execId = exec.exec_id || exec.execId || 'N/A';
+      
+      html += `
+        <div style="background:#1c2128; border:1px solid #30363d; border-radius:6px; padding:10px; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+            <div>
+              <strong style="color:#c9d1d9; font-size:13px;">${ticker}</strong>
+              <div class="${sideClass}" style="font-size:12px; font-weight:600; margin-top:2px;">${sideText} ${qty} @ $${Number(exec.price).toFixed(2)}</div>
+            </div>
+            <div style="text-align:right; font-size:11px; color:#8b949e;">
+              成交: ${timeStr}
+            </div>
+          </div>
+          <div style="font-size:11px; color:#8b949e;">
+            執行ID: ${execId}${commStr}
+          </div>
+        </div>
+      `;
+    }
+    
+    if (listDiv) listDiv.innerHTML = html || '<div style="text-align:center; color:#8b949e; padding:20px 8px;">-- 無數據 / No data --</div>';
+  } catch(e) {
+    const listDiv = document.getElementById('ibkrHistoryList');
+    if (listDiv) listDiv.innerHTML = `<div style="color:#f85149; font-size:12px;">Error: ${e.message}</div>`;
+  }
+}
+
+// Initialize IBKR tab event listeners — must run after DOM loads
+function _initializeIBKRTabListeners() {
+  // Load history when days selector changes
+  const historyDaysEl = document.getElementById('ibkrHistoryDays');
+  if (historyDaysEl) {
+    historyDaysEl.addEventListener('change', ibkrLoadHistory);
+    console.log('✓ ibkrHistoryDays change listener registered');
+  } else {
+    console.warn('✗ ibkrHistoryDays element not found');
+  }
+
+  // Register a click listener on the History tab button
+  const historyTabBtn = document.getElementById('ibkrTabHistory');
+  if (historyTabBtn) {
+    historyTabBtn.addEventListener('click', () => {
+      console.log('ℹ History tab clicked, loading trades...');
+      setTimeout(ibkrLoadHistory, 100);
+    });
+    console.log('✓ ibkrTabHistory click listener registered');
+  } else {
+    console.warn('✗ ibkrTabHistory element not found');
+  }
+
+  // Register a click listener on the Positions tab button — auto-sync on open
+  const positionsTabBtn = document.getElementById('ibkrTabPositions');
+  if (positionsTabBtn) {
+    positionsTabBtn.addEventListener('click', () => {
+      console.log('ℹ Positions tab clicked, syncing...');
+      setTimeout(ibkrSyncPositions, 100);
+    });
+    console.log('✓ ibkrTabPositions click listener registered');
+  } else {
+    console.warn('✗ ibkrTabPositions element not found');
+  }
+
+  // Auto-load positions + history when the IBKR offcanvas sidebar opens
+  document.addEventListener('show.bs.offcanvas', (e) => {
+    if (e.target && e.target.id === 'ibkrDrawer') {
+      console.log('ℹ IBKR drawer opened, syncing positions and loading history...');
+      setTimeout(() => {
+        ibkrSyncPositions(true).catch(() => {});  // silent — no toast on auto-open
+        ibkrLoadHistory().catch(() => {});
+      }, 300);
+    }
+  });
+  console.log('✓ ibkrDrawer show listener registered');
+}
+
+// Call on DOMContentLoaded
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initializeIBKRTabListeners);
+} else {
+  // DOM already loaded (script executed after DOM is ready)
+  _initializeIBKRTabListeners();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PERIODIC AUTO-SYNC: Every 5 seconds, refresh positions if sidebar is open
+// ═══════════════════════════════════════════════════════════════════════════
+let _ibkrAutoRefreshInterval = null;
+let _ibkrLastRefreshTime = 0;
+
+function _startIBKRAutoRefresh() {
+  if (_ibkrAutoRefreshInterval) return;  // Already running
+  _ibkrAutoRefreshInterval = setInterval(() => {
+    const now = Date.now();
+    // Refresh only if last refresh was > 4.5s ago (avoid hammering API)
+    if (now - _ibkrLastRefreshTime >= 4500) {
+      _ibkrLastRefreshTime = now;
+      
+      // Check if IBKR sidebar is visible (offcanvas open)
+      const offcanvasEl = document.getElementById('ibkrDrawer');
+      const isSidebarOpen = offcanvasEl && offcanvasEl.classList?.contains('show');
+      
+      if (isSidebarOpen) {
+        // Silent refresh — no toast to avoid spam
+        ibkrSyncPositions(true).catch(() => {});
+      }
+    }
+  }, 5000);  // Every 5 seconds
+  console.log('✓ IBKR auto-sync started (5 sec interval)');
+}
+
+function _stopIBKRAutoRefresh() {
+  if (_ibkrAutoRefreshInterval) {
+    clearInterval(_ibkrAutoRefreshInterval);
+    _ibkrAutoRefreshInterval = null;
+    console.log('✗ IBKR auto-sync stopped');
+  }
+}
+
+// Start auto-refresh when page loads
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _startIBKRAutoRefresh);
+} else {
+  _startIBKRAutoRefresh();
+}
+
+// Stop auto-refresh when page unloads (cleanup)
+window.addEventListener('beforeunload', _stopIBKRAutoRefresh);
 
 // Quick close position helper → pre-fill Sell order
 function ibkrQuickClosePos(ticker, qty) {
