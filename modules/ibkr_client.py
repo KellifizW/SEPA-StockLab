@@ -46,6 +46,8 @@ _RESET = "\033[0m"
 # ─────────────────────────────────────────────────────────────────────────────
 _ib: Optional[IB] = None
 _ib_lock = threading.Lock()
+_loop_lock = threading.Lock()  # Protect event loop creation
+_loop_ready = threading.Event()  # Signal when event loop is ready
 _connection_state = "DISCONNECTED"  # DISCONNECTED | CONNECTING | CONNECTED | ERROR
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _ib_thread: Optional[threading.Thread] = None
@@ -76,35 +78,68 @@ def _start_event_loop() -> asyncio.AbstractEventLoop:
     """
     Start a dedicated asyncio event loop in a background thread.
     ib_insync requires this loop to maintain connection and handle events.
+    Thread-safe: waits for background thread to be fully ready.
     """
-    global _loop, _ib_thread
+    global _loop, _ib_thread, _loop_ready
     
-    if _ib_thread and _ib_thread.is_alive():
+    with _loop_lock:
+        # Check if loop already exists and is running
+        if _ib_thread and _ib_thread.is_alive() and _loop:
+            # Ensure the loop is set and ready
+            if _loop_ready.is_set():
+                return _loop
+            # Wait if not ready yet
+            if not _loop_ready.wait(timeout=2.0):
+                raise RuntimeError("Existing event loop failed to ready")
+            return _loop
+        
+        # Clear the ready flag for a fresh start
+        _loop_ready.clear()
+        
+        def _run_loop(loop: asyncio.AbstractEventLoop):
+            """Run asyncio event loop in background thread."""
+            try:
+                asyncio.set_event_loop(loop)
+                _loop_ready.set()  # Signal that loop is ready
+                _logger.debug(f"{_GREEN}Event loop thread ready{_RESET}")
+                loop.run_forever()
+            except Exception as e:
+                _logger.error(f"{_RED}Event loop error: {e}{_RESET}")
+        
+        _loop = asyncio.new_event_loop()
+        _ib_thread = threading.Thread(target=_run_loop, args=(_loop,), daemon=True)
+        _ib_thread.start()
+        
+        # Wait for loop to be ready (with timeout)
+        if not _loop_ready.wait(timeout=5.0):
+            raise RuntimeError("Event loop failed to start within 5 seconds")
+        
+        _logger.info(f"{_GREEN}Background asyncio event loop started{_RESET}")
         return _loop
-    
-    def _run_loop(loop: asyncio.AbstractEventLoop):
-        """Run asyncio event loop in background thread."""
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-    
-    _loop = asyncio.new_event_loop()
-    _ib_thread = threading.Thread(target=_run_loop, args=(_loop,), daemon=True)
-    _ib_thread.start()
-    
-    _logger.info(f"{_GREEN}Background asyncio event loop started{_RESET}")
-    return _loop
 
 
 def _run_async(coro):
     """
     Execute an async coroutine from sync code (Flask route).
     Schedules coroutine on the background event loop and waits for it.
+    Thread-safe with error handling.
     """
-    if not _loop or not _ib_thread or not _ib_thread.is_alive():
-        raise RuntimeError("Event loop not running. Call connect() first.")
-    
-    future = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return future.result(timeout=C.IBKR_TIMEOUT_SEC)
+    try:
+        if not _loop or not _ib_thread or not _ib_thread.is_alive():
+            raise RuntimeError("Event loop not running")
+        
+        _logger.debug(f"{_YELLOW}Scheduling coroutine on event loop{_RESET}")
+        future = asyncio.run_coroutine_threadsafe(coro, _loop)
+        _logger.debug(f"{_YELLOW}Waiting for coroutine result (timeout={C.IBKR_TIMEOUT_SEC}s){_RESET}")
+        result = future.result(timeout=C.IBKR_TIMEOUT_SEC)
+        _logger.debug(f"{_GREEN}Coroutine completed successfully{_RESET}")
+        return result
+    except asyncio.TimeoutError as e:
+        _logger.error(f"{_RED}TIMEOUT in _run_async: {e}{_RESET}")
+        raise RuntimeError(f"IBKR operation timed out after {C.IBKR_TIMEOUT_SEC}s")
+    except Exception as e:
+        _logger.error(f"{_RED}EXCEPTION in _run_async: {type(e).__name__}: {e}{_RESET}", exc_info=True)
+        raise RuntimeError(f"Failed to execute async operation: {str(e)}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -131,7 +166,7 @@ def connect() -> Dict[str, Any]:
                 "success": True,
                 "state": "CONNECTED",
                 "message": "Already connected to IBKR",
-                "account": _ib.client.account if _ib else "",
+                "account": (_ib.managedAccounts()[0] if _ib and _ib.managedAccounts() else "UNKNOWN") if _ib else "",
             }
         
         if _connection_state == "CONNECTING":
@@ -156,8 +191,18 @@ def connect() -> Dict[str, Any]:
             
             _ib = _run_async(_connect_async(host, port, client_id))
             
-            account = _ib.client.account if _ib and _ib.isConnected() else ""
-            nav = _ib.accountValues("NetLiquidation")[0].value if _ib else 0
+            # Get account - managedAccounts() may return empty list if API is in read-only mode
+            managed_accts = _ib.managedAccounts() if _ib else []
+            account = managed_accts[0] if managed_accts else "UNKNOWN"
+            
+            # Get NAV - safer to check both length and value
+            acct_vals = _ib.accountValues("NetLiquidation") if _ib else []
+            nav = 0
+            if acct_vals and len(acct_vals) > 0:
+                try:
+                    nav = float(acct_vals[0].value)
+                except (ValueError, IndexError, AttributeError):
+                    nav = 0
             
             _connection_state = "CONNECTED"
             _connection_failed_count = 0
@@ -208,7 +253,7 @@ def disconnect() -> Dict[str, Any]:
     with _ib_lock:
         try:
             if _ib and _ib.isConnected():
-                _run_async(_disconnect_async())
+                _disconnect_sync()
                 _ib = None
             
             _connection_state = "DISCONNECTED"
@@ -231,10 +276,11 @@ def disconnect() -> Dict[str, Any]:
             }
 
 
-async def _disconnect_async():
-    """Async disconnection helper."""
+def _disconnect_sync():
+    """Synchronous disconnection helper."""
+    global _ib
     if _ib:
-        await _ib.disconnectAsync()
+        _ib.disconnect()
 
 
 def get_status() -> Dict[str, Any]:
@@ -250,6 +296,7 @@ def get_status() -> Dict[str, Any]:
             "buying_power": float,
             "unrealized_pnl": float,
             "cash": float,
+            "account_currency": str,  # NEW: "USD", "HKD", etc.
             "last_error": str,
         }
     """
@@ -263,16 +310,43 @@ def get_status() -> Dict[str, Any]:
                 "buying_power": 0,
                 "unrealized_pnl": 0,
                 "cash": 0,
+                "account_currency": "USD",  # Default fallback
                 "last_error": _last_error,
             }
         
         try:
-            account = _ib.client.account
+            # Get account safely
+            managed_accts = _ib.managedAccounts() if _ib else []
+            account = managed_accts[0] if managed_accts else "UNKNOWN"
             
-            # Get account values (safer than using fields directly)
+            # Get ALL account values with full object (not just dict)
+            all_acct_vals = _ib.accountValues()
             acct_vals = {
-                av.tag: av.value for av in _ib.accountValues()
+                av.tag: av.value for av in all_acct_vals
             }
+            
+            # Try to detect account currency from various possible fields
+            account_currency = "USD"  # default
+            
+            # Method 1: Direct Currency field
+            if "Currency" in acct_vals:
+                account_currency = acct_vals["Currency"].upper()
+            # Method 2: BaseCurrency field
+            elif "BaseCurrency" in acct_vals:
+                account_currency = acct_vals["BaseCurrency"].upper()
+            # Method 3: Check AccountCurrency field (might exist)
+            elif "AccountCurrency" in acct_vals:
+                account_currency = acct_vals["AccountCurrency"].upper()
+            # Method 4: Look for currency in the raw AccountValue objects
+            else:
+                for av in all_acct_vals:
+                    if hasattr(av, 'currency') and av.currency:
+                        account_currency = av.currency.upper()
+                        break
+                    # Check if tag contains currency info
+                    if av.tag == "Currency":
+                        account_currency = av.value.upper()
+                        break
             
             nav = float(acct_vals.get("NetLiquidation", 0))
             buying_power = float(acct_vals.get("BuyingPower", 0))
@@ -287,6 +361,7 @@ def get_status() -> Dict[str, Any]:
                 "buying_power": buying_power,
                 "unrealized_pnl": unrealized_pnl,
                 "cash": cash,
+                "account_currency": account_currency,  # NEW: Detected or defaulted currency
                 "last_error": "",
             }
             
@@ -300,8 +375,239 @@ def get_status() -> Dict[str, Any]:
                 "buying_power": 0,
                 "unrealized_pnl": 0,
                 "cash": 0,
+                "account_currency": "USD",  # Default fallback
                 "last_error": str(e),
             }
+
+
+def get_account_detail() -> Dict[str, Any]:
+    """
+    Get detailed multi-currency account breakdown from IBKR.
+
+    Returns:
+        {
+            "connected": bool,
+            "nav": float,               # Net Liquidation Value in base currency
+            "cash_by_currency": {       # Cash per currency, e.g. {"USD": 5000, "HKD": 50000}
+                "USD": float,
+                "HKD": float,
+                ...
+            },
+            "stock_value": float,       # Total stock market value in base currency
+            "total_cash": float,        # Total cash in base currency
+            "unrealized_pnl": float,
+            "account": str,
+            "base_currency": str,       # Account base currency
+        }
+    """
+    with _ib_lock:
+        if _connection_state != "CONNECTED" or not _ib or not _ib.isConnected():
+            return {"connected": False, "error": "Not connected to IBKR"}
+
+        try:
+            managed_accts = _ib.managedAccounts() if _ib else []
+            account = managed_accts[0] if managed_accts else "UNKNOWN"
+
+            all_acct_vals = _ib.accountValues()
+
+            cash_by_currency: Dict[str, float] = {}
+            stock_value = 0.0
+            total_cash_base = 0.0
+            nav = 0.0
+            unrealized_pnl = 0.0
+            realized_pnl = 0.0
+            buying_power = 0.0
+            available_funds = 0.0
+            excess_liquidity = 0.0
+            maint_margin = 0.0
+            init_margin = 0.0
+            gross_position = 0.0
+            base_currency = "HKD"  # default; will be overridden
+
+            for av in all_acct_vals:
+                try:
+                    val = float(av.value)
+                except (ValueError, TypeError):
+                    continue
+
+                # Cash balance per individual currency (exclude BASE summary)
+                if av.tag == "CashBalance" and av.currency and av.currency != "BASE":
+                    if av.currency not in cash_by_currency:
+                        cash_by_currency[av.currency] = 0.0
+                    cash_by_currency[av.currency] += val
+
+                # Total cash in base currency
+                elif av.tag == "TotalCashBalance" and av.currency == "BASE":
+                    total_cash_base = val
+
+                # Stock market value in base currency
+                elif av.tag == "StockMarketValue" and av.currency == "BASE":
+                    stock_value = val
+
+                # Net Liquidation in base currency
+                elif av.tag == "NetLiquidation" and av.currency == "BASE":
+                    nav = val
+
+                # Unrealized PnL
+                elif av.tag == "UnrealizedPnL" and av.currency == "BASE":
+                    unrealized_pnl = val
+
+                # Realized PnL (today's closed trades)
+                elif av.tag == "RealizedPnL" and av.currency == "BASE":
+                    realized_pnl = val
+
+                # Buying power (max purchasable including margin)
+                elif av.tag == "BuyingPower" and av.currency == "BASE":
+                    buying_power = val
+
+                # Available funds (cash after margin requirements)
+                elif av.tag == "AvailableFunds" and av.currency == "BASE":
+                    available_funds = val
+
+                # Excess liquidity (margin safety buffer to avoid liquidation)
+                elif av.tag == "ExcessLiquidity" and av.currency == "BASE":
+                    excess_liquidity = val
+
+                # Maintenance margin requirement
+                elif av.tag == "MaintMarginReq" and av.currency == "BASE":
+                    maint_margin = val
+
+                # Initial margin requirement for new positions
+                elif av.tag == "InitMarginReq" and av.currency == "BASE":
+                    init_margin = val
+
+                # Gross position value (total market value of all positions)
+                elif av.tag == "GrossPositionValue" and av.currency == "BASE":
+                    gross_position = val
+
+                # Detect base currency
+                elif av.tag == "ExchangeRate" and av.currency:
+                    base_currency = av.currency  # ExchangeRate currency = base currency
+
+            # Fallback: use config
+            if base_currency == "HKD":
+                import trader_config as _C
+                base_currency = _C.ACCOUNT_BASE_CURRENCY
+
+            return {
+                "connected": True,
+                "account": account,
+                "nav": nav,
+                "cash_by_currency": cash_by_currency,
+                "stock_value": stock_value,
+                "total_cash": total_cash_base,
+                "unrealized_pnl": unrealized_pnl,
+                "realized_pnl": realized_pnl,
+                "buying_power": buying_power,
+                "available_funds": available_funds,
+                "excess_liquidity": excess_liquidity,
+                "maint_margin": maint_margin,
+                "init_margin": init_margin,
+                "gross_position": gross_position,
+                "base_currency": base_currency,
+            }
+
+        except Exception as e:
+            _logger.error(f"{_RED}Error getting account detail: {e}{_RESET}")
+            return {"connected": False, "error": str(e)}
+
+
+def convert_currency(
+    from_currency: str,
+    to_currency: str,
+    amount: float,
+) -> Dict[str, Any]:
+    """
+    Convert currency via IBKR IDEALPRO FOREX market order.
+
+    IBKR FOREX contract convention:
+      - symbol = USD (base), currency = HKD (quote) → pair is USD/HKD
+      - BUY  USD.HKD = buy USD,  pay HKD  (HKD → USD)
+      - SELL USD.HKD = sell USD, receive HKD (USD → HKD)
+      - totalQuantity is always expressed in USD units
+
+    Supported pairs: HKD ↔ USD only (IDEALPRO).
+    For US stocks, IBKR auto-converts via IB Smart Routing — explicit
+    conversion via this function gives better IDEALPRO rates.
+
+    Args:
+        from_currency: Source currency, e.g. "HKD"
+        to_currency:   Target currency, e.g. "USD"
+        amount:        Amount in from_currency to convert
+
+    Returns:
+        {"success": bool, "order_id": int, "qty_usd": int, "status": str, ...}
+    """
+    with _ib_lock:
+        if _connection_state != "CONNECTED" or not _ib or not _ib.isConnected():
+            return {"success": False, "error": "Not connected to IBKR"}
+
+        try:
+            from_currency = from_currency.upper()
+            to_currency = to_currency.upper()
+
+            # Only support USD ↔ HKD for now
+            supported = {("HKD", "USD"), ("USD", "HKD")}
+            if (from_currency, to_currency) not in supported:
+                return {
+                    "success": False,
+                    "error": f"Unsupported pair: {from_currency}→{to_currency}. Supported: HKD↔USD",
+                }
+
+            # IDEALPRO pair: USD.HKD
+            # totalQuantity is always in USD (the major currency)
+            import trader_config as _C
+            rate = _C.USD_TO_HKD_RATE
+
+            if from_currency == "HKD" and to_currency == "USD":
+                action = "BUY"
+                qty_usd = round(amount / rate)  # HKD ÷ rate = USD to buy
+            else:  # USD → HKD
+                action = "SELL"
+                qty_usd = round(amount)  # sell this many USD
+
+            if qty_usd <= 0:
+                return {"success": False, "error": "Amount too small (< 1 USD)"}
+
+            contract = Contract(
+                symbol="USD",
+                secType="CASH",
+                currency="HKD",
+                exchange="IDEALPRO",
+            )
+            _run_async(_ib.qualifyContractsAsync(contract))
+
+            order = Order()
+            order.action = action
+            order.orderType = "MKT"
+            order.totalQuantity = qty_usd
+
+            trade = _run_async(_place_order_async(contract, order))
+
+            _logger.info(
+                f"{_GREEN}✓ FX Order: {action} {qty_usd} USD.HKD"
+                f" (Order ID: {trade.order.orderId}){_RESET}"
+            )
+
+            return {
+                "success": True,
+                "order_id": trade.order.orderId,
+                "action": action,
+                "pair": "USD.HKD",
+                "qty_usd": qty_usd,
+                "from_currency": from_currency,
+                "to_currency": to_currency,
+                "approx_amount": amount,
+                "status": trade.orderStatus.status if trade.orderStatus else "Submitted",
+                "message": (
+                    f"兌換訂單已提交 / FX order submitted: "
+                    f"{action} {qty_usd:,} USD.HKD (Order #{trade.order.orderId})"
+                ),
+            }
+
+        except Exception as e:
+            _logger.error(f"{_RED}FX conversion error: {e}{_RESET}")
+            return {"success": False, "error": str(e)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

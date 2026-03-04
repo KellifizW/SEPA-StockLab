@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Currency Toggle Test</title>
+</head>
+<body>
+    <h1>Currency Toggle Test</h1>
+    <button id="currencyToggleBtn" onclick="toggleCurrency(event)">USD</button>
+    <div id="accountSizeDisplay">$101,933.69</div>
+    
+    <script>
+        async function toggleCurrency(event) {
+            event.stopPropagation();
+            console.log("toggleCurrency called");
+            try {
+                const btn = document.getElementById('currencyToggleBtn');
+                const currentCurrency = btn.textContent.trim();
+                const newCurrency = currentCurrency === 'USD' ? 'HKD' : 'USD';
+                console.log(`Current: ${currentCurrency}, New: ${newCurrency}`);
+                
+                // Mock API call
+                const response = {
+                    ok: true,
+                    currency: newCurrency,
+                    nav_display: newCurrency === 'HKD' ? 'HK$800,179.47' : '$101,933.69'
+                };
+                
+                btn.textContent = response.currency;
+                document.getElementById('accountSizeDisplay').textContent = response.nav_display;
+                alert(`✅ Currency changed to ${response.currency}`);
+            } catch(e) {
+                alert(`❌ Error: ${e.message}`);
+            }
+        }
+    </script>
+</body>
+</html>

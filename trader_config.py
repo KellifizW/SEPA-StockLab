@@ -16,6 +16,9 @@ if _env_file.exists():
 # ACCOUNT & RISK PARAMETERS
 # ─────────────────────────────────────────────────────────────────────────────
 ACCOUNT_SIZE = 100_000          # Total account equity (USD)
+DEFAULT_CURRENCY = "USD"        # Display currency (USD or HKD)
+ACCOUNT_BASE_CURRENCY = "HKD"   # Account base currency from IBKR (USD or HKD). Set this if IBKR is not connected!
+USD_TO_HKD_RATE = 7.85          # USD to HKD exchange rate (set manually or fetch from API)
 MAX_RISK_PER_TRADE_PCT = 1.5    # Max loss per trade as % of account (1-2%)
 MAX_POSITION_SIZE_PCT = 20.0    # Max single position as % of account
 MAX_OPEN_POSITIONS = 6          # Concentrated portfolio (4-8 ideal)

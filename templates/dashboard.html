@@ -27,12 +27,34 @@
     </div>
   </div>
   <div class="col-6 col-md-3">
-    <div class="metric-card" style="cursor:pointer; position:relative;" onclick="editAccountSize()" title="點擊編輯帳戶大小 Click to edit">
-      <div class="metric-val" id="accountSizeDisplay">${{ "{:,.0f}".format(account_size) }}</div>
-      <div class="metric-lbl">Account Size <i class="bi bi-pencil-square" style="font-size:0.8rem; margin-left:4px; opacity:0.6;"></i></div>
-      <div style="position:absolute; top:8px; right:8px; font-size:10px; opacity:0;" id="editHint" class="text-muted">
-        <i class="bi bi-pencil"></i>
+    <div class="metric-card" style="cursor:pointer; position:relative;" title="點擊編輯帳戶大小 Click to edit">
+      <div class="metric-val" id="accountSizeDisplay">{{ account_size_display }}</div>
+      <div class="metric-lbl">
+        Account Size 
+        <button 
+          id="currencyToggleBtn" 
+          class="btn btn-sm btn-outline-secondary ms-2" 
+          style="padding: 2px 6px; font-size: 0.75rem; line-height: 1;"
+          onclick="toggleCurrency(event)"
+          title="Click to switch currency / 點擊切換貨幣">
+          {{ currency }}
+        </button>
+        <i class="bi bi-pencil-square" style="font-size:0.8rem; margin-left:4px; opacity:0.6; cursor:pointer;" onclick="editAccountSize()"></i>
       </div>
+      <div style="position:absolute; top:8px; right:8px; font-size:10px;" id="syncStatus" class="text-muted">
+        {% if nav_sync_status == 'LIVE' %}
+          <span style="color:#72d946;" title="即時同步自IBKR Real-time sync from IBKR"><i class="bi bi-cloud-check"></i> LIVE</span>
+        {% elif nav_sync_status == 'CACHED' %}
+          <span style="color:#ffc107;" title="使用最後快取的餘額 Using last cached balance"><i class="bi bi-clock-history"></i> CACHED</span>
+        {% else %}
+          <span style="color:#6c757d;" title="使用預設設定值 Using default config"><i class="bi bi-gear"></i> CONFIG</span>
+        {% endif %}
+      </div>
+      {% if nav_sync_time %}
+      <div style="position:absolute; bottom:8px; right:8px; font-size:9px; opacity:0.7; color:#888;">
+        {{ nav_sync_time }}
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -270,44 +292,56 @@ async function restartServer() {
   }
 }
 
-// ── Account Size edit handler ──────────────────────────────────────────────
-function editAccountSize() {
-  const currentVal = document.getElementById('accountSizeDisplay').textContent
-    .replace(/[\$,]/g, '');
-  
-  const modal = new bootstrap.Modal(document.getElementById('editAccountModal'));
-  document.getElementById('editAccountInput').value = currentVal;
-  document.getElementById('editAccountInput').select();
-  modal.show();
-}
-
-async function saveAccountSize() {
-  const input = document.getElementById('editAccountInput');
-  const newSize = parseFloat(input.value);
-  
-  if (!newSize || newSize <= 0) {
-    toast('❌ 帳戶大小必須 > 0', false);
-    return;
-  }
+// ── Currency Toggle handler ──────────────────────────────────────────────
+async function toggleCurrency(event) {
+  event.stopPropagation();  // Prevent edit onclick from triggering
   
   try {
-    const r = await fetch('/api/settings/account-size', {
-      method: 'PATCH',
+    // Get current currency
+    const btn = document.getElementById('currencyToggleBtn');
+    const currentCurrency = btn.textContent.trim();
+    const newCurrency = currentCurrency === 'USD' ? 'HKD' : 'USD';
+    
+    // Call API to save new currency
+    const r = await fetch('/api/currency', {
+      method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({value: newSize})
+      body: JSON.stringify({currency: newCurrency})
     }).then(x => x.json());
     
     if (r.ok) {
-      document.getElementById('accountSizeDisplay').textContent = 
-        '$' + newSize.toLocaleString('en-US', {maximumFractionDigits: 0});
-      toast(`✅ ${r.message || '帳戶大小已更新'}`, true);
-      bootstrap.Modal.getInstance(document.getElementById('editAccountModal')).hide();
+      // Update display
+      btn.textContent = r.currency;
+      document.getElementById('accountSizeDisplay').textContent = r.nav_display;
+      toast(`✅ Currency changed to ${r.currency}`, true);
     } else {
-      toast(`❌ ${r.error || '更新失敗'}`, false);
+      toast(`❌ ${r.error || 'Failed to change currency'}`, false);
     }
   } catch(e) {
-    toast(`❌ 網路錯誤: ${e}`, false);
+    toast(`❌ Error: ${e.message}`, false);
   }
+}
+
+// ── Account Size edit handler ──────────────────────────────────────────────
+async function editAccountSize() {
+  // Show a modal explaining that account size is synced from IBKR
+  const syncStatus = document.getElementById('syncStatus').textContent.trim();
+  
+  const msg = `Your account size is now synchronized from IBKR in real-time.\n\n` +
+              `Status: ${syncStatus}\n` +
+              `Last sync: {{ nav_sync_time or 'Never' }}\n\n` +
+              `To update your account size:\n` +
+              `1. Connect to IBKR (if not connected)\n` +
+              `2. The NAV will auto-sync from your IBKR account\n` +
+              `3. If offline, cached value is used`;
+  
+  alert(msg);
+}
+
+async function saveAccountSize() {
+  // Modal-based account size edit (deprecated in favor of IBKR auto-sync)
+  // This function is kept for backward compatibility with the modal UI
+  alert('Account size is now automatically synchronized from IBKR.\nManual editing is not needed.');
 }
 </script>
 

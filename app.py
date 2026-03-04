@@ -67,7 +67,17 @@ _scan_log_paths: dict = {}      # {job_id: Path} — for post-scan notification
 
 app = Flask(__name__)
 app.secret_key = "minervini-sepa-2026"
-app.config['TEMPLATES_AUTO_RELOAD'] = True  # Reload templates on-disk without server restart
+
+# ── Pre-import ibkr_client in main thread to avoid eventkit event loop issues ──
+# ib_insync -> eventkit tries to get event loop at import time, so we must
+# import it once in the main thread during app startup. This avoids RuntimeError
+# when Flask worker threads try to use the module.
+if C.IBKR_ENABLED:
+    try:
+        from modules import ibkr_client
+        logger.info("✓ IBKR module pre-loaded in main thread")
+    except Exception as e:
+        logger.warning(f"Failed to pre-load IBKR module: {e}")
 
 # ── Telegram Bot State ─────────────────────────────────────────────────────
 _tg_enabled = C.TG_ENABLED  # Track current enable/disable state
@@ -106,6 +116,211 @@ def _set_cache(key, data):
     import time
     with _cache_lock:
         _cache[key] = {"data": data, "time": time.time()}
+
+# ── IBKR account NAV caching (for real-time account size sync) ────────────────
+_NAV_CACHE_FILE = ROOT / C.DATA_DIR / "ibkr_nav_cache.json"
+_nav_lock = threading.Lock()
+
+def _detect_ibkr_account_currency() -> str:
+    """
+    Auto-detect IBKR account base currency from accountValues.
+    Returns: "USD" or "HKD" or other currency code.
+    """
+    if not C.IBKR_ENABLED:
+        return C.DEFAULT_CURRENCY
+    
+    try:
+        status = ibkr_client.get_status()
+        if status.get("connected") and "account_currency" in status:
+            return status["account_currency"]
+    except:
+        pass
+    
+    return C.DEFAULT_CURRENCY
+
+def _save_nav_cache(nav: float, buying_power: float = 0, account: str = "", currency: str = None):
+    """Save latest IBKR NAV, timestamp, and account currency to cache."""
+    try:
+        with _nav_lock:
+            # Auto-detect currency if not provided
+            if currency is None:
+                currency = _detect_ibkr_account_currency()
+                logger.info(f"💾 _save_nav_cache: Auto-detected currency = {currency}")
+            else:
+                logger.info(f"💾 _save_nav_cache: Using provided currency = {currency}")
+            
+            cache_data = {
+                "nav": nav,
+                "buying_power": buying_power,
+                "account": account,
+                "account_currency": currency,  # NEW: store detected currency
+                "last_sync": datetime.now().isoformat(),
+                "formatted_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            _NAV_CACHE_FILE.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+            logger.info(f"✅ NAV cache saved: nav=${nav:,.2f}, currency={currency}, file={_NAV_CACHE_FILE}")
+    except Exception as e:
+        logger.warning(f"Failed to save NAV cache: {e}")
+
+def _load_nav_cache() -> dict:
+    """Load last cached IBKR NAV, sync time, and currency."""
+    try:
+        with _nav_lock:
+            if _NAV_CACHE_FILE.exists():
+                return json.loads(_NAV_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"Failed to load NAV cache: {e}")
+    return {}
+
+def _get_account_size() -> tuple:
+    """
+    Get current account size (NAV) from IBKR or cache.
+    
+    Returns: (nav, last_sync_time, sync_status)
+        nav: float — account NAV in dollars (or HKD if account currency is HKD)
+        last_sync_time: str — formatted timestamp of last IBKR sync ("YYYY-MM-DD HH:MM:SS")
+        sync_status: str — "LIVE" (from IBKR) | "CACHED" (from file) | "DEFAULT" (config fallback)
+    """
+    if C.IBKR_ENABLED:
+        try:
+            # Try to get live NAV from IBKR
+            status = ibkr_client.get_status()
+            if status.get("connected") and status.get("nav", 0) > 0:
+                nav = float(status["nav"])
+                buying_power = float(status.get("buying_power", 0))
+                account = status.get("account", "")
+                # Use CONFIG as authoritative source for account currency
+                # (IBKR 'Currency' tag reflects denomination, not account base currency)
+                currency = C.ACCOUNT_BASE_CURRENCY
+                ibkr_currency = status.get("account_currency", "USD")
+                logger.info(f"✅ Got LIVE status from IBKR: nav={nav}, ibkr_detected={ibkr_currency}, using_config={currency}")
+                _save_nav_cache(nav, buying_power, account, currency)  # Store config-based currency
+                return nav, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "LIVE"
+        except Exception as e:
+            logger.warning(f"Failed to get live IBKR NAV: {e}")
+    
+    # Fall back to cached value
+    cached = _load_nav_cache()
+    if cached and cached.get("nav", 0) > 0:
+        nav = float(cached["nav"])
+        last_sync = cached.get("formatted_time", "Unknown")
+        logger.info(f"📦 Using CACHED value: nav={nav}, account_currency={cached.get('account_currency', 'NOT SET')}")
+        return nav, last_sync, "CACHED"
+    
+    # Final fallback to config
+    logger.warning(f"⚠️  Using DEFAULT config value: {C.ACCOUNT_SIZE}")
+    return C.ACCOUNT_SIZE, "", "DEFAULT"
+
+# ── Currency settings ────────────────────────────────────────────────────────
+_CURRENCY_SETTINGS_FILE = ROOT / C.DATA_DIR / "currency_settings.json"
+_currency_lock = threading.Lock()
+
+def _save_currency_setting(currency: str, usd_hkd_rate: float = None):
+    """Save user's preferred currency display setting."""
+    try:
+        with _currency_lock:
+            # Always save a valid rate (never null) — fall back to config if not provided
+            effective_rate = float(usd_hkd_rate) if (usd_hkd_rate and usd_hkd_rate > 0) else float(C.USD_TO_HKD_RATE)
+            settings = {
+                "currency": currency.upper(),
+                "usd_hkd_rate": effective_rate,
+                "last_updated": datetime.now().isoformat()
+            }
+            _CURRENCY_SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False), encoding="utf-8")
+            logger.debug(f"Currency setting saved: {currency}, rate={effective_rate}")
+    except Exception as e:
+        logger.warning(f"Failed to save currency setting: {e}")
+
+def _load_currency_setting() -> tuple:
+    """Load user's preferred currency setting. Returns (currency, usd_hkd_rate)."""
+    try:
+        with _currency_lock:
+            if _CURRENCY_SETTINGS_FILE.exists():
+                data = json.loads(_CURRENCY_SETTINGS_FILE.read_text(encoding="utf-8"))
+                currency = data.get("currency", C.DEFAULT_CURRENCY)
+                # Use 'or' to handle null/None/0 from JSON — fall back to config rate
+                rate = data.get("usd_hkd_rate") or C.USD_TO_HKD_RATE
+                return currency, float(rate)
+    except Exception as e:
+        logger.warning(f"Failed to load currency setting: {e}")
+    return C.DEFAULT_CURRENCY, float(C.USD_TO_HKD_RATE)
+
+def _get_account_base_currency() -> str:
+    """
+    Get the account's base currency.
+    Priority: CONFIG (trader_config.py) > CACHE (when config is default USD)
+    
+    The config value is authoritative because IBKR's accountValues 'Currency'
+    tag returns the denomination of individual values (always USD), not the
+    true account base currency. Set ACCOUNT_BASE_CURRENCY in trader_config.py.
+    """
+    # Method 1: Use config value if it's been explicitly set (non-default)
+    config_currency = C.ACCOUNT_BASE_CURRENCY.upper()
+    if config_currency != "USD":
+        logger.info(f"🔍 Account currency from CONFIG (explicit): {config_currency}")
+        return config_currency
+    
+    # Method 2: Check cache – only when config is still default USD
+    # (in case user has USD account and IBKR correctly detected something else)
+    try:
+        cached = _load_nav_cache()
+        cached_currency = cached.get("account_currency", "").upper()
+        if cached_currency and cached_currency != "USD":
+            logger.info(f"🔍 Account currency from CACHE (non-USD): {cached_currency}")
+            return cached_currency
+    except Exception as e:
+        logger.debug(f"Cache lookup failed: {e}")
+    
+    logger.info(f"🔍 Account currency: USD (config default)")
+    return "USD"
+    
+
+def _convert_amount(amount: float, target_currency: str = None) -> tuple:
+    """
+    Convert account amount to target currency.
+    Handles cases where account base currency is not USD.
+    
+    Args:
+        amount: The amount in the account's base currency
+        target_currency: Target currency (USD or HKD), defaults to saved setting
+    
+    Returns: (converted_amount, currency_symbol, display_format)
+    """
+    logger.info(f"📊 _convert_amount called: amount={amount}, target_currency={target_currency}")
+    
+    if target_currency is None:
+        target_currency, rate = _load_currency_setting()
+        logger.info(f"   Loaded currency setting: {target_currency}, rate={rate}")
+    else:
+        _, rate = _load_currency_setting()
+        logger.info(f"   Using provided target_currency={target_currency}, rate={rate}")
+    
+    target_currency = target_currency.upper()
+    
+    # Get account base currency
+    account_base_currency = _get_account_base_currency()
+    logger.info(f"   Account base currency: {account_base_currency}")
+    
+    # Step 1: Convert from account base currency to USD (if needed)
+    if account_base_currency == "HKD":
+        # Account is in HKD, so input amount is HKD
+        # Convert HKD to USD first
+        amount_usd = amount / rate
+        logger.info(f"   Step 1: HK${amount:,.2f} ÷ {rate} = ${amount_usd:,.2f} USD")
+    else:
+        # Account is in USD (or unknown, default to USD)
+        amount_usd = amount
+        logger.info(f"   Step 1: Assuming account is USD, amount_usd = {amount_usd:,.2f}")
+    
+    # Step 2: Convert from USD to target currency
+    if target_currency == "HKD":
+        display = f"HK${amount_usd * rate:,.2f}"
+        logger.info(f"   Step 2: ${amount_usd:,.2f} × {rate} = {display}")
+        return amount_usd * rate, "HK$", display
+    else:  # USD
+        display = f"${amount_usd:,.2f}"
+        logger.info(f"   Step 2: Display as USD = {display}")
+        return amount_usd, "$", display
 
 # ── last scan persistence ─────────────────────────────────────────────────────
 _LAST_SCAN_FILE = ROOT / C.DATA_DIR / "last_scan.json"
@@ -209,12 +424,15 @@ def _load_qm_last_scan() -> dict:
 _ML_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "ml_last_scan.json"
 
 
-def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None):
+def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None,
+                       triple_summary: Optional[dict] = None):
     try:
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
                 "all_scored_count": len(all_rows) if all_rows else len(rows),
                 "all_scored": all_rows or []}
+        if triple_summary:
+            data["triple_summary"] = triple_summary
         _ML_LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
@@ -555,9 +773,26 @@ def dashboard():
     wl   = _load_watchlist()
     pos  = _load_positions()
     wl_counts = {g: len(v) for g, v in wl.items()}
+    
+    # Get account size from IBKR (live) or cache or default config
+    account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    logger.info(f"📋 Dashboard: account_size={account_size}, status={nav_sync_status}")
+    
+    # Get currency setting
+    currency, usd_hkd_rate = _load_currency_setting()
+    logger.info(f"💱 Dashboard: currency={currency}, rate={usd_hkd_rate}")
+    
+    _, currency_symbol, account_size_display = _convert_amount(account_size, currency)
+    logger.info(f"✨ Dashboard: final display = {account_size_display}")
+    
     return render_template("dashboard.html",
                            wl=wl, wl_counts=wl_counts,
-                           positions=pos, account_size=C.ACCOUNT_SIZE,
+                           positions=pos, account_size=account_size,
+                           account_size_display=account_size_display,
+                           currency=currency, currency_symbol=currency_symbol,
+                           usd_hkd_rate=usd_hkd_rate,
+                           nav_sync_time=nav_sync_time,
+                           nav_sync_status=nav_sync_status,
                            today=date.today().isoformat())
 
 
@@ -586,8 +821,11 @@ def watchlist_page():
 @app.route("/positions")
 def positions_page():
     pos = _load_positions()
+    account_size, nav_sync_time, nav_sync_status = _get_account_size()
     return render_template("positions.html", positions=pos,
-                           account_size=C.ACCOUNT_SIZE)
+                           account_size=account_size,
+                           nav_sync_time=nav_sync_time,
+                           nav_sync_status=nav_sync_status)
 
 
 @app.route("/market")
@@ -611,7 +849,10 @@ def guide_page():
 @app.route("/calc")
 def calc_page():
     """Position Sizing Calculator — all three strategies."""
-    return render_template("calc.html", account_size=C.ACCOUNT_SIZE)
+    account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    return render_template("calc.html", account_size=account_size,
+                           nav_sync_time=nav_sync_time,
+                           nav_sync_status=nav_sync_status)
 
 
 # ─── Qullamaggie (QM) page routes ────────────────────────────────────────────
@@ -1382,7 +1623,6 @@ def api_ml_scan_run():
     data               = request.get_json(silent=True) or {}
     min_star           = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
     top_n              = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
-    scanner_mode       = str(data.get("scanner_mode", "standard")).strip().lower()
     stage1_source      = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
     use_universe_cache = bool(data.get("use_universe_cache", False))
     jid          = _new_job()
@@ -1406,7 +1646,7 @@ def api_ml_scan_run():
         try:
             from modules.ml_screener import run_ml_scan, set_ml_scan_cancel
             set_ml_scan_cancel(cancel_ev)
-            result = run_ml_scan(min_star=min_star, top_n=top_n, scanner_mode=scanner_mode,
+            result = run_ml_scan(min_star=min_star, top_n=top_n,
                                  stage1_source=stage1_source,
                                  use_universe_cache=use_universe_cache)
             
@@ -1461,8 +1701,6 @@ def api_ml_scan_run():
                     clean_rows.append(row)
                 rows = clean_rows
             
-            _save_ml_last_scan(rows, all_rows=all_rows)
-
             # Theme report and triple channel summary
             themes = []
             triple_summary = {}
@@ -1477,20 +1715,23 @@ def api_ml_scan_run():
                 logging.warning("ML theme report failed: %s", _te)
             
             # Triple channel summary (with error handling)
-            if scanner_mode != "standard":
-                try:
-                    channel_counts = {"GAP": 0, "GAINER": 0, "LEADER": 0}
-                    for row in (rows if isinstance(rows, list) else []):
-                        if not isinstance(row, dict):
-                            logging.debug("Skipping non-dict row in triple summary: %s", type(row).__name__)
-                            continue
-                        ch = str(row.get("channel", "")).upper()
-                        if ch in channel_counts:
-                            channel_counts[ch] += 1
-                    triple_summary = channel_counts
-                except Exception as _tse:
-                    logging.warning("ML triple summary calculation failed: %s", _tse)
-                    triple_summary = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+            try:
+                channel_counts = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+                for row in (rows if isinstance(rows, list) else []):
+                    if not isinstance(row, dict):
+                        logging.debug("Skipping non-dict row in triple summary: %s", type(row).__name__)
+                        continue
+                    ch = str(row.get("channel", "")).upper()
+                    if ch in channel_counts:
+                        channel_counts[ch] += 1
+                triple_summary = channel_counts
+            except Exception as _tse:
+                logging.warning("ML triple summary calculation failed: %s", _tse)
+                triple_summary = {"GAP": 0, "GAINER": 0, "LEADER": 0}
+
+            # Persist scan results + triple_summary (computed above)
+            _save_ml_last_scan(rows, all_rows=all_rows,
+                               triple_summary=triple_summary)
 
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
@@ -1645,7 +1886,19 @@ def api_ml_analyze():
 def api_analyze():
     data   = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
-    acct   = float(data.get("account_size", C.ACCOUNT_SIZE))
+    
+    # Get account size from IBKR (live) or cache or config
+    acct, _, _ = _get_account_size()
+    
+    # Allow override if explicitly provided in request
+    if "account_size" in data and data["account_size"]:
+        try:
+            override = float(data["account_size"])
+            if override > 0:
+                acct = override
+        except (ValueError, TypeError):
+            pass  # Use auto-detected size
+    
     jid    = _new_job()
 
     # Per-analyze log file
@@ -2385,6 +2638,16 @@ def htmx_ml_analyze_result():
     return render_template("_ml_analyze_result.html", d=d, ticker=ticker)
 
 
+@app.route("/htmx/dashboard/highlights")
+def htmx_dashboard_highlights():
+    """Server-rendered combined scan highlights for the dashboard.
+    Loaded on page init via hx-trigger='load' from the combined highlights card.
+    Renders _dashboard_highlights.html with the latest combined scan summary.
+    """
+    r = _load_combined_last()
+    return render_template("_dashboard_highlights.html", r=r)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # API – Quick-Add Watchlist & Positions (Global, Multi-Strategy)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2488,6 +2751,105 @@ def api_get_settings():
             "error": str(exc),
             "account_size": C.ACCOUNT_SIZE
         })
+
+
+@app.route("/api/ibkr/sync-nav", methods=["POST"])
+def api_sync_nav():
+    """Sync account NAV from IBKR and cache it."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        # Force fresh NAV fetch from IBKR
+        status = ibkr_client.get_status()
+        if status.get("connected") and status.get("nav", 0) > 0:
+            nav = float(status["nav"])
+            buying_power = float(status.get("buying_power", 0))
+            account = status.get("account", "")
+            
+            # Save to cache
+            _save_nav_cache(nav, buying_power, account)
+            
+            return jsonify({
+                "ok": True,
+                "nav": nav,
+                "buying_power": buying_power,
+                "account": account,
+                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "message": f"✅ NAV synced: ${nav:,.2f}"
+            })
+        else:
+            return jsonify({
+                "ok": False,
+                "error": "Not connected to IBKR or no NAV data available"
+            }), 503
+    except Exception as e:
+        logger.error(f"api_sync_nav error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/account/size", methods=["GET"])
+def api_get_account_size():
+    """Get current account size from IBKR or cache."""
+    nav, last_sync, status = _get_account_size()
+    return jsonify({
+        "ok": True,
+        "nav": nav,
+        "last_sync": last_sync,
+        "sync_status": status
+    })
+
+
+@app.route("/api/currency", methods=["GET"])
+def api_get_currency():
+    """Get current currency display setting and exchange rate."""
+    currency, usd_hkd_rate = _load_currency_setting()
+    nav, _, _ = _get_account_size()
+    _, currency_symbol, display_str = _convert_amount(nav, currency)
+    
+    return jsonify({
+        "ok": True,
+        "currency": currency,
+        "currency_symbol": currency_symbol,
+        "usd_hkd_rate": usd_hkd_rate,
+        "nav_usd": nav,
+        "nav_display": display_str
+    })
+
+
+@app.route("/api/currency", methods=["POST"])
+def api_set_currency():
+    """Change currency display setting."""
+    data = request.get_json(silent=True) or {}
+    target_currency = data.get("currency", "USD").upper()
+    new_rate = data.get("usd_hkd_rate")
+    
+    # Validate currency
+    if target_currency not in ["USD", "HKD"]:
+        return jsonify({"ok": False, "error": "Currency must be USD or HKD"}), 400
+    
+    try:
+        # Save setting
+        _save_currency_setting(target_currency, new_rate)
+        
+        # Get display
+        nav, _, _ = _get_account_size()
+        _, currency_symbol, display_str = _convert_amount(nav, target_currency)
+        
+        # Verify it was saved
+        loaded_currency, loaded_rate = _load_currency_setting()
+        
+        return jsonify({
+            "ok": True,
+            "currency": loaded_currency,
+            "currency_symbol": currency_symbol,
+            "usd_hkd_rate": loaded_rate,
+            "nav_display": display_str,
+            "message": f"✅ Currency changed to {loaded_currency}"
+        })
+    except Exception as e:
+        logger.error(f"api_set_currency error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/settings/account-size", methods=["PATCH"])
@@ -2648,6 +3010,15 @@ def api_report_generate():
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"job_id": jid})
+
+
+@app.route("/api/report/status/<jid>", methods=["GET"])
+def api_report_status(jid):
+    try:
+        job = _get_job(jid)
+        return jsonify(_sanitize_for_json(job))
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3872,6 +4243,395 @@ def qm_watch_signals(ticker: str):
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc), "ticker": ticker}), 500
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ML Watch Signals — Martin Luk 盯盤模式 dynamic signal bundle
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_ml_intraday_signals(
+    candles_5m: list,
+    ema9: float, ema21: float, vwap: float,
+    orh: float, orl: float, lod: float, hod: float,
+    prev_close: float, avwap_high: float, avwap_low: float,
+    daily_dim_g_score: float,
+) -> dict:
+    """
+    Martin Luk intraday watch signal engine.
+
+    Returns:
+      active_signals   : list[str]  human-readable signals (with emoji)
+      signal_counts    : dict       {total, bullish, bearish, neutral}
+      vwap_status      : dict       {price, diff_pct, above}
+      ema_status       : dict       {ema9, ema9_diff, ema21, ema21_diff, above_both}
+      orh_status       : dict       {orh, orl, orh_broken, orl_broken}
+      chase_status     : dict       {chase_pct, safe}
+      flush_v_status   : dict       {detected, depth_pct, recovery_pct}
+      higher_lows      : dict       {count, valid, trend}
+      avwap_intraday   : dict       {high, low, above_high, above_low, position}
+      watch_score      : int        0-100 composite score
+      watch_breakdown  : list[dict] per-dimension score breakdown
+      watch_iron_rules : list[dict] blocking rules
+      setup_advice     : str        action recommendation key
+    """
+    import math
+    signals: list = []
+    w_score = 0
+    w_breakdown: list = []
+    w_iron_rules: list = []
+
+    current_price = candles_5m[-1]["close"] if candles_5m else 0
+
+    # ── VWAP position (Chapter 6) ─────────────────────────────────────────
+    vwap_diff = ((current_price - vwap) / vwap * 100) if vwap > 0 else 0
+    vwap_above = current_price > vwap if vwap > 0 else False
+    if vwap_above:
+        signals.append("🟢 股價在 VWAP 上方 Price above VWAP — 多頭主導")
+        w_score += C.ML_WSCORE_VWAP_ABOVE
+        w_breakdown.append({"dim": "VWAP", "pts": C.ML_WSCORE_VWAP_ABOVE,
+                            "note": f"股價在 VWAP ${vwap:.2f} 上方 ({vwap_diff:+.1f}%)"})
+    elif vwap > 0:
+        signals.append("🔴 股價在 VWAP 下方 Price below VWAP — 空方主導")
+        w_score += C.ML_WSCORE_VWAP_BELOW
+        w_breakdown.append({"dim": "VWAP", "pts": C.ML_WSCORE_VWAP_BELOW,
+                            "note": f"股價在 VWAP ${vwap:.2f} 下方 ({vwap_diff:+.1f}%)"})
+    else:
+        w_breakdown.append({"dim": "VWAP", "pts": 0, "note": "VWAP 數據不可用"})
+
+    # ── EMA position (Chapter 5, 7) ───────────────────────────────────────
+    ema9_diff = ((current_price - ema9) / ema9 * 100) if ema9 > 0 else 0
+    ema21_diff = ((current_price - ema21) / ema21 * 100) if ema21 > 0 else 0
+    above_ema9 = current_price > ema9 if ema9 > 0 else False
+    above_ema21 = current_price > ema21 if ema21 > 0 else False
+
+    if above_ema9:
+        w_score += C.ML_WSCORE_EMA9_ABOVE
+        signals.append(f"🟢 股價在 EMA9 ${ema9:.2f} 上方")
+    else:
+        w_score += C.ML_WSCORE_EMA9_BELOW
+        signals.append(f"🔴 股價跌穿 EMA9 ${ema9:.2f}")
+
+    if above_ema21:
+        w_score += C.ML_WSCORE_EMA21_ABOVE
+        signals.append(f"🟢 股價在 EMA21 ${ema21:.2f} 上方")
+    else:
+        w_score += C.ML_WSCORE_EMA21_BELOW
+        signals.append(f"🔴 股價跌穿 EMA21 ${ema21:.2f} — 關鍵支撐失守")
+    w_breakdown.append({"dim": "EMA 排列", "pts": (C.ML_WSCORE_EMA9_ABOVE if above_ema9 else C.ML_WSCORE_EMA9_BELOW) +
+                        (C.ML_WSCORE_EMA21_ABOVE if above_ema21 else C.ML_WSCORE_EMA21_BELOW),
+                        "note": f"EMA9 {'▲' if above_ema9 else '▼'} EMA21 {'▲' if above_ema21 else '▼'}"})
+
+    # ── ORH breakout / breakdown (Chapter 7) ──────────────────────────────
+    orh_broken = False
+    orl_broken = False
+    orh_candle_count = max(1, C.ML_WATCH_ORH_WINDOW_MIN // 5)
+    if len(candles_5m) > orh_candle_count and orh > 0:
+        rest = candles_5m[orh_candle_count:]
+        orh_broken = any(c["close"] > orh for c in rest)
+        orl_broken = any(c["close"] < orl for c in rest)
+
+    if orh_broken:
+        w_score += C.ML_WSCORE_ORH_BREAK
+        signals.append(f"🟢 突破 ORH ${orh:.2f} — Opening Range High 突破確認")
+        w_breakdown.append({"dim": "ORH 突破", "pts": C.ML_WSCORE_ORH_BREAK, "note": f"ORH ${orh:.2f} 已突破"})
+    elif orl_broken:
+        w_score += C.ML_WSCORE_ORL_BREAK
+        signals.append(f"🔴 跌破 ORL ${orl:.2f} — Opening Range Low 失守")
+        w_breakdown.append({"dim": "ORH 突破", "pts": C.ML_WSCORE_ORL_BREAK, "note": f"ORL ${orl:.2f} 已跌破"})
+    else:
+        w_breakdown.append({"dim": "ORH 突破", "pts": 0, "note": "ORH 範圍內整理中"})
+
+    # ── Chase distance from LOD (Chapter 9) ───────────────────────────────
+    chase_pct = ((current_price - lod) / lod * 100) if lod > 0 else 0
+    chase_safe = chase_pct <= C.ML_WATCH_MAX_CHASE_PCT
+    if chase_safe:
+        w_score += C.ML_WSCORE_CHASE_OK
+        w_breakdown.append({"dim": "追價距離", "pts": C.ML_WSCORE_CHASE_OK,
+                            "note": f"距 LOD {chase_pct:.1f}% — 安全入場區"})
+    else:
+        w_score += C.ML_WSCORE_CHASE_HIGH
+        signals.append(f"🔴 追價過高 距 LOD {chase_pct:.1f}% — Martin 規則：>{C.ML_WATCH_MAX_CHASE_PCT}% 禁入場")
+        w_breakdown.append({"dim": "追價距離", "pts": C.ML_WSCORE_CHASE_HIGH,
+                            "note": f"距 LOD {chase_pct:.1f}% — 超過安全線"})
+        w_iron_rules.append({"rule": "CHASE_TOO_HIGH",
+                             "msg": f"追價 {chase_pct:.1f}% 超過 {C.ML_WATCH_MAX_CHASE_PCT}% 上限",
+                             "severity": "warn"})
+
+    # ── Flush → V-recovery (Chapter 7) ────────────────────────────────────
+    flush_detected = False
+    flush_depth = 0
+    flush_recovery = 0
+    if len(candles_5m) >= 4:
+        open_px = candles_5m[0]["open"]
+        flush_window = candles_5m[:max(3, C.ML_FLUSH_MAX_MINUTES // 5)]
+        min_low = min(c["low"] for c in flush_window)
+        flush_depth = ((open_px - min_low) / open_px * 100) if open_px > 0 else 0
+        if flush_depth >= C.ML_WATCH_FLUSH_V_MIN_PCT:
+            recovery = (current_price - min_low) / (open_px - min_low) if open_px != min_low else 0
+            flush_recovery = recovery
+            if recovery >= C.ML_WATCH_FLUSH_V_RECOVERY_PCT:
+                flush_detected = True
+                w_score += C.ML_WSCORE_FLUSH_V
+                signals.append(f"🟢 Flush→V 反彈信號 深度 {flush_depth:.1f}% 恢復 {recovery*100:.0f}%")
+                w_breakdown.append({"dim": "Flush V", "pts": C.ML_WSCORE_FLUSH_V,
+                                    "note": f"V 形反彈確認 (深度{flush_depth:.1f}%)"})
+
+    # ── Higher lows intraday (Chapter 7) ──────────────────────────────────
+    hl_count = 0
+    hl_valid = False
+    hl_trend = "flat"
+    if len(candles_5m) >= 6:
+        # Detect swing lows
+        swing_lows = []
+        for i in range(1, len(candles_5m) - 1):
+            if candles_5m[i]["low"] < candles_5m[i-1]["low"] and candles_5m[i]["low"] < candles_5m[i+1]["low"]:
+                swing_lows.append(candles_5m[i]["low"])
+        if len(swing_lows) >= 2:
+            hl_count = sum(1 for i in range(1, len(swing_lows)) if swing_lows[i] > swing_lows[i-1])
+            hl_valid = hl_count >= 2
+            hl_trend = "ascending" if hl_valid else ("mixed" if hl_count > 0 else "descending")
+
+    if hl_valid:
+        w_score += C.ML_WSCORE_HL_CONFIRMED
+        signals.append(f"🟢 更高低點 Higher lows ({hl_count}) — 上升結構")
+        w_breakdown.append({"dim": "低點結構", "pts": C.ML_WSCORE_HL_CONFIRMED, "note": f"{hl_count} 個更高低點"})
+    elif hl_trend == "descending":
+        w_score += C.ML_WSCORE_HL_LOWER
+        signals.append("🔴 低點下移 — 弱勢結構")
+        w_breakdown.append({"dim": "低點結構", "pts": C.ML_WSCORE_HL_LOWER, "note": "低點持續下移"})
+    else:
+        w_breakdown.append({"dim": "低點結構", "pts": 0, "note": "結構不明"})
+
+    # ── AVWAP intraday position (Chapter 6) ───────────────────────────────
+    above_avwap_high = current_price > avwap_high if avwap_high and avwap_high > 0 else None
+    above_avwap_low = current_price > avwap_low if avwap_low and avwap_low > 0 else None
+    avwap_position = "UNKNOWN"
+    if above_avwap_high and above_avwap_low:
+        avwap_position = "ABOVE_BOTH"
+        signals.append(f"🟢 股價在雙 AVWAP 上方 — 趨勢健康")
+    elif above_avwap_low and not above_avwap_high:
+        avwap_position = "BETWEEN"
+        signals.append(f"⚠️ 股價在支撐/阻力 AVWAP 之間 — 等待方向")
+    elif not above_avwap_low and not above_avwap_high:
+        avwap_position = "BELOW_BOTH"
+        signals.append(f"🔴 股價在雙 AVWAP 下方 — 空方主導")
+
+    # ── Market regime from daily analysis (Dim G) ─────────────────────────
+    if daily_dim_g_score >= 0:
+        w_score += C.ML_WSCORE_MKT_BULL
+        w_breakdown.append({"dim": "市場環境", "pts": C.ML_WSCORE_MKT_BULL, "note": "日線市場環境有利"})
+    else:
+        w_score += C.ML_WSCORE_MKT_BEAR
+        w_breakdown.append({"dim": "市場環境", "pts": C.ML_WSCORE_MKT_BEAR, "note": "日線市場環境不利"})
+        if daily_dim_g_score <= -0.5:
+            w_iron_rules.append({"rule": "MARKET_BEARISH",
+                                 "msg": "市場環境嚴重不利 — 建議觀望不入場",
+                                 "severity": "block"})
+
+    # ── Clamp score 0-100 ─────────────────────────────────────────────────
+    w_score = max(0, min(100, w_score + 50))  # center at 50
+
+    # ── Setup advice ──────────────────────────────────────────────────────
+    n_candles = len(candles_5m)
+    if n_candles <= 1:
+        setup_advice = "premarket_plan"
+    elif n_candles <= 3:
+        setup_advice = "early_entry_watch"
+    elif flush_detected:
+        setup_advice = "flush_v_recovery"
+    elif not chase_safe:
+        setup_advice = "avoid_chase"
+    elif orh_broken and above_ema9 and vwap_above:
+        setup_advice = "strong_entry"
+    elif above_ema21 and vwap_above:
+        setup_advice = "mid_entry_breakout"
+    else:
+        setup_advice = "monitoring"
+
+    # ── Signal counts ─────────────────────────────────────────────────────
+    bullish = sum(1 for s in signals if "🟢" in s)
+    bearish = sum(1 for s in signals if "🔴" in s)
+    neutral = sum(1 for s in signals if "⚠️" in s)
+
+    return {
+        "active_signals": signals,
+        "signal_counts": {"total": len(signals), "bullish": bullish, "bearish": bearish, "neutral": neutral},
+        "vwap_status": {"price": round(vwap, 2) if vwap else None, "diff_pct": round(vwap_diff, 2), "above": vwap_above},
+        "ema_status": {"ema9": round(ema9, 2) if ema9 else None, "ema9_diff": round(ema9_diff, 2),
+                       "ema21": round(ema21, 2) if ema21 else None, "ema21_diff": round(ema21_diff, 2),
+                       "above_both": above_ema9 and above_ema21},
+        "orh_status": {"orh": round(orh, 2) if orh else None, "orl": round(orl, 2) if orl else None,
+                       "orh_broken": orh_broken, "orl_broken": orl_broken},
+        "chase_status": {"chase_pct": round(chase_pct, 2), "safe": chase_safe},
+        "flush_v_status": {"detected": flush_detected, "depth_pct": round(flush_depth, 2), "recovery_pct": round(flush_recovery * 100, 1)},
+        "higher_lows": {"count": hl_count, "valid": hl_valid, "trend": hl_trend},
+        "avwap_intraday": {
+            "high": round(avwap_high, 2) if avwap_high else None,
+            "low": round(avwap_low, 2) if avwap_low else None,
+            "above_high": above_avwap_high, "above_low": above_avwap_low,
+            "position": avwap_position},
+        "watch_score": w_score,
+        "watch_breakdown": w_breakdown,
+        "watch_iron_rules": w_iron_rules,
+        "setup_advice": setup_advice,
+    }
+
+
+@app.route("/api/ml/watch_signals/<ticker>")
+def ml_watch_signals(ticker: str):
+    """
+    ML 盯盤模式 — real-time intraday signal bundle for Martin Luk watch mode.
+    Returns JSON: current_price, signals, watch_score, trade_plan, AVWAP levels, etc.
+    """
+    import datetime, time as _time
+    try:
+        ticker = ticker.upper().strip()
+        _data_source = "intraday"
+
+        import yfinance as yf
+        import math as _math
+
+        def _df_to_candles(df) -> list:
+            result = []
+            for ts, row in df.iterrows():
+                t_unix = int(ts.timestamp()) if hasattr(ts, 'timestamp') else int(ts)
+                o, h, l, c, v = row.get('Open'), row.get('High'), row.get('Low'), row.get('Close'), row.get('Volume', 0)
+                if any(x is None or (isinstance(x, float) and (_math.isnan(x) or _math.isinf(x))) for x in [o, h, l, c]):
+                    continue
+                result.append({"time": t_unix, "open": float(o), "high": float(h),
+                               "low": float(l), "close": float(c), "volume": int(v or 0)})
+            return result
+
+        # Fetch 5m candles
+        try:
+            df_5m = yf.Ticker(ticker).history(period="2d", interval="5m", prepost=False)
+            candles_5m = _df_to_candles(df_5m) if not df_5m.empty else []
+        except Exception:
+            candles_5m = []
+
+        # Daily data for AVWAP, EMA, ATR
+        df_d = None
+        avwap_high_val = avwap_low_val = None
+        daily_dim_g = 0.0
+        try:
+            from modules.data_pipeline import (
+                get_historical, get_atr,
+                get_avwap_from_swing_high, get_avwap_from_swing_low,
+            )
+            df_d = get_historical(ticker, period="6mo")
+            if df_d is not None and not df_d.empty:
+                # Compute EMAs on daily data for reference
+                for n in (9, 21, 50, 150):
+                    df_d[f"EMA_{n}"] = df_d["Close"].ewm(span=n, adjust=False).mean()
+
+                # AVWAP from daily swings
+                ah = get_avwap_from_swing_high(df_d)
+                al = get_avwap_from_swing_low(df_d)
+                avwap_high_val = ah.get("avwap_value") if ah else None
+                avwap_low_val = al.get("avwap_value") if al else None
+
+                # Market env for dim G reference — use cached regime from DuckDB
+                # (avoid calling assess() inline which takes 30-60s and blocks
+                #  the entire watch API response)
+                try:
+                    from modules.db import query_market_env_history
+                    _mkt_df = query_market_env_history(days=7)
+                    regime = ""
+                    if _mkt_df is not None and not _mkt_df.empty:
+                        regime = str(_mkt_df.iloc[0].get("regime", ""))
+                    g_map = {
+                        "BULL_CONFIRMED": 0.8, "CONFIRMED_UPTREND": 0.8,
+                        "BULL_UNCONFIRMED": 0.4,
+                        "BOTTOM_FORMING": 0.3, "BULL_EARLY": 0.3,
+                        "TRANSITION": 0.0, "UPTREND_UNDER_PRESSURE": 0.0,
+                        "BEAR_RALLY": -0.5, "CHOPPY": -0.5,
+                        "BEAR_CONFIRMED": -1.5, "MARKET_IN_CORRECTION": -1.5,
+                        "DOWNTREND": -2.0,
+                    }
+                    daily_dim_g = g_map.get(regime, 0.0)
+                except Exception:
+                    daily_dim_g = 0.0
+        except Exception as _e:
+            logging.getLogger(__name__).warning(f"ML watch daily data failed for {ticker}: {_e}")
+
+        # Session extremes from 5m candles
+        hod = lod = orh = orl = None
+        prev_close = None
+        if candles_5m:
+            hod = max(c["high"] for c in candles_5m)
+            lod = min(c["low"] for c in candles_5m)
+            orh_n = max(1, C.ML_WATCH_ORH_WINDOW_MIN // 5)
+            if len(candles_5m) >= orh_n:
+                orh = max(c["high"] for c in candles_5m[:orh_n])
+                orl = min(c["low"] for c in candles_5m[:orh_n])
+        elif df_d is not None and not df_d.empty:
+            _data_source = "fallback_daily"
+            hod = float(df_d["High"].iloc[-1])
+            lod = float(df_d["Low"].iloc[-1])
+
+        if df_d is not None and not df_d.empty and len(df_d) >= 2:
+            prev_close = float(df_d["Close"].iloc[-2])
+
+        # Compute intraday EMA/VWAP from 5m candles
+        ema9_val = ema21_val = vwap_val = 0
+        if candles_5m:
+            closes = [c["close"] for c in candles_5m]
+            k9, k21 = 2.0 / 10, 2.0 / 22
+            if len(closes) >= 9:
+                ema = sum(closes[:9]) / 9
+                for c in closes[9:]:
+                    ema = c * k9 + ema * (1 - k9)
+                ema9_val = ema
+            if len(closes) >= 21:
+                ema = sum(closes[:21]) / 21
+                for c in closes[21:]:
+                    ema = c * k21 + ema * (1 - k21)
+                ema21_val = ema
+            # Session VWAP
+            tp_vol_sum = sum(((c["high"] + c["low"] + c["close"]) / 3) * c["volume"] for c in candles_5m)
+            vol_sum = sum(c["volume"] for c in candles_5m)
+            if vol_sum > 0:
+                vwap_val = tp_vol_sum / vol_sum
+
+        # Run ML signal engine
+        ml_signals = _get_ml_intraday_signals(
+            candles_5m=candles_5m,
+            ema9=ema9_val, ema21=ema21_val, vwap=vwap_val,
+            orh=orh or 0, orl=orl or 0, lod=lod or 0, hod=hod or 0,
+            prev_close=prev_close or 0,
+            avwap_high=avwap_high_val or 0, avwap_low=avwap_low_val or 0,
+            daily_dim_g_score=daily_dim_g,
+        )
+
+        current_price = candles_5m[-1]["close"] if candles_5m else (
+            float(df_d["Close"].iloc[-1]) if df_d is not None and not df_d.empty else None)
+        last_ts = candles_5m[-1]["time"] if candles_5m else None
+
+        # Daily EMA levels for trade plan reference
+        daily_emas = {}
+        if df_d is not None and not df_d.empty:
+            for n in (9, 21, 50, 150):
+                col = f"EMA_{n}"
+                if col in df_d.columns:
+                    daily_emas[f"ema{n}"] = round(float(df_d[col].iloc[-1]), 2)
+
+        return jsonify(_clean({
+            "ok": True,
+            "ticker": ticker,
+            "current_price": current_price,
+            "last_ts": last_ts,
+            "hod": hod, "lod": lod, "orh": orh, "orl": orl,
+            "prev_close": prev_close,
+            "data_source": _data_source,
+            "refresh_ts": int(_time.time()),
+            "daily_emas": daily_emas,
+            "avwap_high": round(avwap_high_val, 2) if avwap_high_val else None,
+            "avwap_low": round(avwap_low_val, 2) if avwap_low_val else None,
+            **ml_signals,
+        }))
+
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "ticker": ticker}), 500
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Intraday Chart — 5分, 15分, 1小時 K線 (Martin Luk 盯盤模式)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4363,11 +5123,361 @@ def api_qm_backtest_log(jid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# IBKR (INTERACTIVE BROKERS) API ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/ibkr/status", methods=["GET"])
+def api_ibkr_status():
+    """Get IBKR connection status and account summary."""
+    if not C.IBKR_ENABLED:
+        return jsonify({
+            "ok": False,
+            "error": "IBKR integration is disabled (IBKR_ENABLED=False)",
+        }), 403
+    
+    try:
+        status = ibkr_client.get_status()
+        return jsonify({"ok": True, "data": status})
+    except Exception as e:
+        logger.error(f"api_ibkr_status error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/account/detail", methods=["GET"])
+def api_account_detail():
+    """
+    Get detailed multi-currency account breakdown from IBKR.
+    Returns cash per currency (USD, HKD, …), stock value, and NAV.
+    If IBKR is disconnected, returns cached NAV as fallback.
+    """
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+
+    try:
+        detail = ibkr_client.get_account_detail()
+        if detail.get("connected"):
+            return jsonify({"ok": True, "data": detail, "source": "live"})
+
+        # Fallback to cache when IBKR is disconnected
+        cached = _load_nav_cache()
+        if cached and cached.get("nav", 0) > 0:
+            return jsonify({
+                "ok": True,
+                "source": "cached",
+                "data": {
+                    "connected": False,
+                    "nav": cached.get("nav", 0),
+                    "cash_by_currency": {},
+                    "stock_value": 0,
+                    "total_cash": cached.get("nav", 0),
+                    "unrealized_pnl": 0,
+                    "account": cached.get("account", ""),
+                    "base_currency": C.ACCOUNT_BASE_CURRENCY,
+                    "note": "IBKR not connected — showing cached NAV only",
+                },
+            })
+
+        return jsonify({"ok": False, "error": detail.get("error", "Not connected")}), 503
+
+    except Exception as e:
+        logger.error(f"api_account_detail error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/account/convert", methods=["POST"])
+def api_account_convert():
+    """
+    Convert currency via IBKR IDEALPRO FOREX.
+    
+    Body: {"from_currency": "HKD", "to_currency": "USD", "amount": 50000}
+    
+    Note: IBKR automatically converts HKD→USD when you buy US stocks
+    (via IB Smart Routing). This endpoint does an explicit conversion
+    via IDEALPRO for better rates/control.
+    """
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+
+    try:
+        body = request.get_json(force=True) or {}
+        from_currency = body.get("from_currency", "").upper()
+        to_currency = body.get("to_currency", "").upper()
+        amount = float(body.get("amount", 0))
+
+        if not from_currency or not to_currency:
+            return jsonify({"ok": False, "error": "from_currency and to_currency required"}), 400
+        if amount <= 0:
+            return jsonify({"ok": False, "error": "amount must be positive"}), 400
+        if from_currency == to_currency:
+            return jsonify({"ok": False, "error": "from and to currency are the same"}), 400
+
+        result = ibkr_client.convert_currency(from_currency, to_currency, amount)
+        if result.get("success"):
+            logger.info(
+                f"✅ FX conversion: {amount:,.2f} {from_currency} → {to_currency} "
+                f"(Order #{result.get('order_id')})"
+            )
+            return jsonify({"ok": True, "data": result})
+        else:
+            return jsonify({"ok": False, "error": result.get("error", "Conversion failed")}), 500
+
+    except Exception as e:
+        logger.error(f"api_account_convert error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/connect", methods=["POST"])
+def api_ibkr_connect():
+    """Initiate IBKR connection."""
+    if not C.IBKR_ENABLED:
+        return jsonify({
+            "ok": False,
+            "error": "IBKR integration is disabled",
+        }), 403
+    
+    try:
+        result = ibkr_client.connect()
+        return jsonify({"ok": result.get("success"), "data": result})
+    except Exception as e:
+        import traceback
+        logger.error(f"api_ibkr_connect error: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/disconnect", methods=["POST"])
+def api_ibkr_disconnect():
+    """Disconnect from IBKR."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        result = ibkr_client.disconnect()
+        return jsonify({"ok": result.get("success"), "data": result})
+    except Exception as e:
+        logger.error(f"api_ibkr_disconnect error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/positions", methods=["GET"])
+def api_ibkr_positions():
+    """
+    Fetch IBKR positions and sync with local positions.json.
+    """
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import position_monitor
+        from modules import db
+        
+        # Get positions from IBKR
+        ibkr_positions = ibkr_client.get_positions()
+        
+        if not ibkr_positions:
+            return jsonify({
+                "ok": True,
+                "data": {"positions": [], "message": "No positions found"},
+            })
+        
+        # Load local positions (using private _load function)
+        local_positions = position_monitor._load()
+        
+        # Sync: update local positions with IBKR data
+        for ibkr_pos in ibkr_positions:
+            ticker = ibkr_pos["ticker"]
+            if ticker in local_positions.get("positions", {}):
+                # Update existing position with IBKR market data
+                local_positions["positions"][ticker].update({
+                    "market_price": ibkr_pos["market_price"],
+                    "unrealized_pnl": ibkr_pos["unrealized_pnl"],
+                    "unrealized_pnl_pct": ibkr_pos["unrealized_pnl_pct"],
+                })
+        
+        # Save synced positions (using private _save function)
+        position_monitor._save(local_positions)
+        
+        # Log to DuckDB
+        for pos in ibkr_positions:
+            db.log_position_action(
+                ticker=pos["ticker"],
+                action="SYNC",
+                price=pos["market_price"],
+                shares=pos["qty"],
+                stop_price=None,
+                pnl_pct=pos["unrealized_pnl_pct"],
+                note=f"IBKR sync: {pos['unrealized_pnl_pct']:.2f}% unrealized PnL"
+            )
+        
+        return jsonify({
+            "ok": True,
+            "data": {
+                "positions": ibkr_positions,
+                "synced_count": len(ibkr_positions),
+            }
+        })
+    except Exception as e:
+        logger.error(f"api_ibkr_positions error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+
+@app.route("/api/ibkr/orders", methods=["GET"])
+def api_ibkr_orders():
+    """Fetch pending (open) orders from IBKR."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        orders = ibkr_client.get_open_orders()
+        return jsonify({"ok": True, "data": {"orders": orders}})
+    except Exception as e:
+        logger.error(f"api_ibkr_orders error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/trades", methods=["GET"])
+def api_ibkr_trades():
+    """Fetch recent execution history from IBKR."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import db
+        
+        days = request.args.get("days", default=7, type=int)
+        executions = ibkr_client.get_executions(days=days)
+        
+        # Also fetch from DuckDB for comparison
+        db_orders = db.query_ibkr_orders(days=days)
+        
+        return jsonify({
+            "ok": True,
+            "data": {
+                "executions": executions,
+                "db_orders": db_orders,
+                "count": len(executions),
+            }
+        })
+    except Exception as e:
+        logger.error(f"api_ibkr_trades error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/order", methods=["POST"])
+def api_ibkr_place_order():
+    """Place an IBKR order (MKT, LMT, STP, TRAIL)."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        from modules import db
+        
+        data = request.get_json() or {}
+        
+        ticker = data.get("ticker", "").strip().upper()
+        action = data.get("action", "").upper()  # BUY or SELL
+        qty = int(data.get("qty", 0))
+        order_type = data.get("order_type", "MKT").upper()
+        
+        if not ticker or not action or qty <= 0:
+            return jsonify({
+                "ok": False,
+                "error": "Missing or invalid ticker, action, or qty",
+            }), 400
+        
+        # Extract order-type-specific parameters
+        limit_price = None
+        aux_price = None
+        trail_pct = None
+        
+        if order_type == "LMT":
+            limit_price = float(data.get("limit_price", 0))
+            if limit_price <= 0:
+                return jsonify({"ok": False, "error": "limit_price required for LMT"}), 400
+        
+        elif order_type == "STP":
+            aux_price = float(data.get("aux_price", 0))
+            if aux_price <= 0:
+                return jsonify({"ok": False, "error": "aux_price required for STP"}), 400
+        
+        elif order_type == "TRAIL":
+            trail_pct = float(data.get("trail_pct", 0))
+            if trail_pct <= 0:
+                return jsonify({"ok": False, "error": "trail_pct required for TRAIL"}), 400
+        
+        # Place order via IBKR client
+        result = ibkr_client.place_order(
+            ticker=ticker,
+            action=action,
+            qty=qty,
+            order_type=order_type,
+            limit_price=limit_price,
+            aux_price=aux_price,
+            trail_pct=trail_pct,
+        )
+        
+        if result.get("success"):
+            order_id = result.get("order_id")
+            # Log to DuckDB
+            db.append_ibkr_order({
+                "order_id": order_id,
+                "order_time": datetime.now().isoformat(),
+                "ticker": ticker,
+                "action": action,
+                "order_type": order_type,
+                "qty": qty,
+                "limit_price": limit_price,
+                "aux_price": aux_price,
+                "trail_pct": trail_pct,
+                "fill_price": None,
+                "status": "Submitted",
+                "commission": None,
+                "pnl": None,
+                "note": data.get("note", ""),
+            })
+        
+        return jsonify({"ok": result.get("success"), "data": result})
+    
+    except Exception as e:
+        logger.error(f"api_ibkr_place_order error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/order/<int:order_id>", methods=["DELETE"])
+def api_ibkr_cancel_order(order_id: int):
+    """Cancel an IBKR order by ID."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        result = ibkr_client.cancel_order(order_id)
+        return jsonify({"ok": result.get("success"), "data": result})
+    except Exception as e:
+        logger.error(f"api_ibkr_cancel_order error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ibkr/quote/<ticker>", methods=["GET"])
+def api_ibkr_quote(ticker: str):
+    """Get real-time quote snapshot for a ticker."""
+    if not C.IBKR_ENABLED:
+        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    
+    try:
+        quote = ibkr_client.get_quote(ticker)
+        return jsonify({"ok": "error" not in quote, "data": quote})
+    except Exception as e:
+        logger.error(f"api_ibkr_quote error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+
     # Ensure data directories exist
     (ROOT / C.DATA_DIR / "price_cache").mkdir(parents=True, exist_ok=True)
     (ROOT / C.REPORTS_DIR).mkdir(parents=True, exist_ok=True)

@@ -166,6 +166,9 @@
               <i class="bi bi-bookmark-star me-2"></i>Watchlist 觀察名單</a></li>
             <li><a class="dropdown-item {% if request.path=='/positions' %}text-info{% endif %}" href="/positions">
               <i class="bi bi-briefcase me-2"></i>Positions 持倉</a></li>
+            <li><hr class="dropdown-divider" style="border-color:#30363d"></li>
+            <li><a class="dropdown-item" href="#" onclick="openAccountModal(); return false;">
+              <i class="bi bi-wallet2 me-2" style="color:#00d4ff"></i>Account 帳戶</a></li>
           </ul>
         </li>
         <!-- ── Market (獨立項) ──────────────────────────────────────── -->
@@ -968,7 +971,7 @@ async function ibkrPlaceOrder() {
       const orderId = r.data?.order_id || 'N/A';
       toast(`✅ 訂單已提交 / Order #${orderId}`, true);
       // Reset form
-      if (tickerEl) tickerEl.value = '';
+      if (tickerEl) ticketEl.value = '';
       if (qtyEl) qtyEl.value = '';
       if (noteEl) noteEl.value = '';
     } else {
@@ -1066,9 +1069,8 @@ function ibkrQuickClosePos(ticker, qty) {
   
   toast(`已預填: 賣出 ${qty} 股 ${ticker} (市價)`, true);
 }
-
-
 </script>
+
 <!-- Quick-Add Watchlist Modal -->
 <div class="modal fade" id="quickAddModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered">
@@ -1356,6 +1358,280 @@ function ibkrQuickClosePos(ticker, qty) {
     </div>
   </div>
 </div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     Account 帳戶 Modal
+     ═══════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="accountModal" tabindex="-1" aria-labelledby="accountModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content" style="background:#161b22; border:1px solid #30363d;">
+      <div class="modal-header" style="border-bottom:1px solid #30363d;">
+        <h5 class="modal-title" id="accountModalLabel">
+          <i class="bi bi-wallet2 me-2" style="color:#00d4ff"></i>Account 帳戶詳情
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="accountModalBody">
+        <!-- Loaded dynamically -->
+        <div class="text-center py-4" id="accountLoadingSpinner">
+          <div class="spinner-border" style="color:var(--accent)" role="status"></div>
+          <div class="mt-2" style="color:#8b949e; font-size:13px;">載入中… Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Account 帳戶 Modal 帳戶頁面功能 ──────────────────────────────────────────
+function openAccountModal() {
+  const modal = new bootstrap.Modal(document.getElementById('accountModal'));
+  modal.show();
+  loadAccountDetail();
+}
+
+async function loadAccountDetail() {
+  const body = document.getElementById('accountModalBody');
+  const spinner = document.getElementById('accountLoadingSpinner');
+  if (spinner) spinner.style.display = 'block';
+
+  try {
+    const r = await fetch('/api/account/detail').then(x => x.json());
+    if (!r.ok) {
+      body.innerHTML = `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle me-2"></i>${r.error || 'Unable to load'}</div>`;
+      return;
+    }
+
+    const d = r.data;
+    const source = r.source === 'live'
+      ? '<span class="badge bg-success">LIVE</span>'
+      : '<span class="badge bg-secondary">CACHED</span>';
+
+    // Format cash rows
+    let cashRows = '';
+    const cashMap = d.cash_by_currency || {};
+    const currencies = Object.keys(cashMap).sort();
+    if (currencies.length > 0) {
+      for (const cur of currencies) {
+        const val = cashMap[cur];
+        if (Math.abs(val) < 0.01) continue;
+        const sym = cur === 'HKD' ? 'HK$' : (cur === 'USD' ? '$' : cur + ' ');
+        const cls = val >= 0 ? 'text-success' : 'text-danger';
+        cashRows += `<tr>
+          <td><span class="badge bg-secondary">${cur}</span></td>
+          <td class="${cls} text-end">${sym}${Math.abs(val).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+          <td style="color:#8b949e; font-size:11px;">${cur === 'HKD' ? '港元現金' : cur === 'USD' ? 'USD Cash' : 'Cash'}</td>
+        </tr>`;
+      }
+    } else {
+      cashRows = '<tr><td colspan="3" class="text-center" style="color:#8b949e">IBKR 未連接 — 無法獲取現金明細<br>Connect IBKR for live breakdown</td></tr>';
+    }
+
+    const nav  = (d.nav  || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const stk  = (d.stock_value || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const pnl  = (d.unrealized_pnl || 0);
+    const pnlCls = pnl >= 0 ? 'text-success' : 'text-danger';
+    const pnlStr = (pnl >= 0 ? '+' : '') + pnl.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const rpnl = (d.realized_pnl || 0);
+    const rpnlCls = rpnl >= 0 ? 'text-success' : 'text-danger';
+    const rpnlStr = (rpnl >= 0 ? '+' : '') + rpnl.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const bp   = (d.buying_power || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const af   = (d.available_funds || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const eliq = (d.excess_liquidity || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const mm   = (d.maint_margin || 0);
+    const mmStr = mm.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const ip   = (d.init_margin || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const gp   = (d.gross_position || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const navNum = (d.nav || 0);
+    const marginPct = navNum > 0 ? Math.min(100, (mm / navNum * 100)).toFixed(1) : '0.0';
+    const marginBarCls = parseFloat(marginPct) > 50 ? 'bg-danger' : parseFloat(marginPct) > 30 ? 'bg-warning' : 'bg-success';
+    const marginColor = parseFloat(marginPct) > 50 ? '#f85149' : parseFloat(marginPct) > 30 ? '#d29922' : '#3fb950';
+    const base = d.base_currency || 'HKD';
+    const baseSym = base === 'HKD' ? 'HK$' : '$';
+
+    body.innerHTML = `
+<div class="mb-3 d-flex align-items-center gap-2">
+  <span style="color:#8b949e; font-size:12px;">帳戶 Account: <strong style="color:#c9d1d9">${d.account || '—'}</strong></span>
+  ${source}
+  ${!d.connected ? '<span class="badge bg-warning text-dark">IBKR Offline</span>' : ''}
+  <span style="color:#8b949e; font-size:11px; margin-left:auto">基礎貨幣 Base: <strong style="color:var(--accent)">${base}</strong></span>
+</div>
+
+<div class="row g-2 mb-2">
+  <div class="col-4">
+    <div class="metric-card">
+      <div class="metric-val" style="font-size:17px;">${baseSym}${nav}</div>
+      <div class="metric-lbl">NAV 淨資產</div>
+    </div>
+  </div>
+  <div class="col-4">
+    <div class="metric-card">
+      <div class="metric-val" style="font-size:17px;">${baseSym}${stk}</div>
+      <div class="metric-lbl">股票 Stocks</div>
+    </div>
+  </div>
+  <div class="col-4">
+    <div class="metric-card">
+      <div class="metric-val ${pnlCls}" style="font-size:17px;">${baseSym}${pnlStr}</div>
+      <div class="metric-lbl">未實現 Unrealized P&L</div>
+    </div>
+  </div>
+</div>
+<div class="row g-2 mb-3">
+  <div class="col-4">
+    <div class="metric-card">
+      <div class="metric-val" style="font-size:17px; color:var(--accent);">${baseSym}${bp}</div>
+      <div class="metric-lbl">購買力 Buying Power</div>
+    </div>
+  </div>
+  <div class="col-4">
+    <div class="metric-card">
+      <div class="metric-val" style="font-size:17px; color:#58a6ff;">${baseSym}${af}</div>
+      <div class="metric-lbl">可用資金 Avail. Funds</div>
+    </div>
+  </div>
+  <div class="col-4">
+    <div class="metric-card">
+      <div class="metric-val ${rpnlCls}" style="font-size:17px;">${baseSym}${rpnlStr}</div>
+      <div class="metric-lbl">已實現 Realized P&L</div>
+    </div>
+  </div>
+</div>
+<div class="mb-3 p-2" style="background:#161b22; border-radius:6px; border:1px solid #30363d;">
+  <div class="d-flex justify-content-between align-items-center mb-1" style="font-size:11px; color:#8b949e;">
+    <span><i class="bi bi-shield-check me-1"></i>保證金使用率 Margin Usage &nbsp;·&nbsp; 維持保證金 MaintMargin: ${baseSym}${mmStr}</span>
+    <strong style="color:${marginColor}">${marginPct}%</strong>
+  </div>
+  <div class="progress" style="height:7px; background:#21262d; border-radius:4px;">
+    <div class="progress-bar ${marginBarCls}" role="progressbar" style="width:${marginPct}%; border-radius:4px;" aria-valuenow="${marginPct}" aria-valuemin="0" aria-valuemax="100"></div>
+  </div>
+  <div class="d-flex justify-content-between mt-1" style="font-size:11px; color:#8b949e;">
+    <span>總持倉 Gross Position: ${baseSym}${gp}</span>
+    <span>初始保證金 Init Margin: ${baseSym}${ip}</span>
+  </div>
+</div>
+
+<h6 style="color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:1px;" class="mb-2">
+  <i class="bi bi-cash-coin me-1"></i>現金明細 / Cash Breakdown
+</h6>
+<table class="table table-sm mb-4">
+  <thead><tr>
+    <th>貨幣 Currency</th>
+    <th class="text-end">金額 Amount</th>
+    <th>說明</th>
+  </tr></thead>
+  <tbody>${cashRows}</tbody>
+</table>
+
+<hr style="border-color:#30363d">
+<h6 style="color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:1px;" class="mb-2">
+  <i class="bi bi-arrow-left-right me-1"></i>貨幣兌換 / Currency Conversion (IBKR IDEALPRO)
+</h6>
+<p style="font-size:12px; color:#8b949e;">
+  ⚠️ 買美股時IBKR會<strong>自動</strong>將港元兌換成美元（IB Smart Routing）。<br>
+  顯式兌換適用於鎖定匯率或兌換大額資金，使用IDEALPRO外匯市場，手續費更低。
+  <br><small>IBKR auto-converts HKD→USD when buying US stocks. Use explicit conversion for better rates on large amounts.</small>
+</p>
+<div class="row g-2">
+  <div class="col-12 col-md-4">
+    <label class="form-label" style="font-size:12px;">From 從</label>
+    <select id="fxFrom" class="form-select form-select-sm" style="background:#0d1117; color:#c9d1d9; border-color:#30363d;">
+      <option value="HKD">HKD 港元</option>
+      <option value="USD">USD 美元</option>
+    </select>
+  </div>
+  <div class="col-12 col-md-4">
+    <label class="form-label" style="font-size:12px;">Amount 金額</label>
+    <input type="number" id="fxAmount" class="form-control form-control-sm"
+           style="background:#0d1117; color:#c9d1d9; border-color:#30363d;"
+           placeholder="e.g. 50000" min="1" step="100">
+  </div>
+  <div class="col-12 col-md-4">
+    <label class="form-label" style="font-size:12px;">To 至</label>
+    <select id="fxTo" class="form-select form-select-sm" style="background:#0d1117; color:#c9d1d9; border-color:#30363d;">
+      <option value="USD">USD 美元</option>
+      <option value="HKD">HKD 港元</option>
+    </select>
+  </div>
+</div>
+<div id="fxPreview" class="mt-2" style="font-size:12px; color:#8b949e;"></div>
+<button class="btn btn-sm btn-accent mt-3" onclick="submitFxConversion()" id="fxSubmitBtn">
+  <i class="bi bi-arrow-left-right me-1"></i>提交兌換 / Submit Conversion
+</button>
+<div id="fxResult" class="mt-2"></div>`;
+
+    // Live preview on amount change
+    document.getElementById('fxAmount').addEventListener('input', updateFxPreview);
+    document.getElementById('fxFrom').addEventListener('change', updateFxPreview);
+    document.getElementById('fxTo').addEventListener('change', updateFxPreview);
+    updateFxPreview();
+
+  } catch(e) {
+    body.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
+  }
+}
+
+function updateFxPreview() {
+  const from = document.getElementById('fxFrom')?.value;
+  const to   = document.getElementById('fxTo')?.value;
+  const amt  = parseFloat(document.getElementById('fxAmount')?.value) || 0;
+  const preview = document.getElementById('fxPreview');
+  if (!preview || !from || !to || amt <= 0) { if(preview) preview.textContent=''; return; }
+
+  const rate = 7.85;  // approximate
+  let result;
+  if (from === 'HKD' && to === 'USD') {
+    result = `≈ $${(amt / rate).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})} USD  (參考匯率 ~${rate})`;
+  } else if (from === 'USD' && to === 'HKD') {
+    result = `≈ HK$${(amt * rate).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}  (參考匯率 ~${rate})`;
+  } else {
+    result = '相同貨幣 Same currency';
+  }
+  preview.textContent = '預計可得 Estimated: ' + result;
+}
+
+async function submitFxConversion() {
+  const from = document.getElementById('fxFrom').value;
+  const to   = document.getElementById('fxTo').value;
+  const amt  = parseFloat(document.getElementById('fxAmount').value);
+  const resultEl = document.getElementById('fxResult');
+  const btn = document.getElementById('fxSubmitBtn');
+
+  if (!amt || amt <= 0) { resultEl.innerHTML = '<span class="text-danger">請輸入金額 Please enter amount</span>'; return; }
+  if (from === to) { resultEl.innerHTML = '<span class="text-danger">貨幣相同 Same currency</span>'; return; }
+
+  const confirmed = confirm(
+    `確認兌換？/ Confirm conversion?\n\n` +
+    `${amt.toLocaleString()} ${from} → ${to}\n\n` +
+    `此操作將在IBKR提交FOREX市場訂單。\nThis places a live FOREX market order on IBKR.`
+  );
+  if (!confirmed) return;
+
+  btn.disabled = true;
+  resultEl.innerHTML = '<span style="color:#8b949e"><span class="check-spinner"></span> 提交中 Submitting…</span>';
+
+  try {
+    const r = await fetch('/api/account/convert', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({from_currency: from, to_currency: to, amount: amt})
+    }).then(x => x.json());
+
+    if (r.ok) {
+      resultEl.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${r.data.message}</span>`;
+      toast(`✅ ${r.data.message}`, true);
+      setTimeout(loadAccountDetail, 1500);  // Refresh balance
+    } else {
+      resultEl.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${r.error}</span>`;
+      toast(`❌ FX Error: ${r.error}`, false);
+    }
+  } catch(e) {
+    resultEl.innerHTML = `<span class="text-danger">Network error: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
 
 {% block extra_js %}{% endblock %}
 </body>
