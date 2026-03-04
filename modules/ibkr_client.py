@@ -21,9 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import trader_config as C
-from ib_insync import IB, Contract, Order, OrderStatus, Execution, Trade
-from ib_insync.order import OrderComboLeg
-from ib_insync.objects import Position
+from ib_insync import IB, Contract, Order, OrderStatus, Execution, Trade  # type: ignore[import-not-found]
+from ib_insync.order import OrderComboLeg  # type: ignore[import-not-found]
+from ib_insync.objects import Position  # type: ignore[import-not-found]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -880,7 +880,7 @@ def place_order(
 
 async def _place_order_async(contract: Contract, order: Order) -> Trade:
     """Async order placement helper."""
-    trade = _ib.placeOrder(contract, order)
+    trade = _ib.placeOrder(contract, order)  # type: ignore[union-attr]
     await trade
     return trade
 
@@ -995,7 +995,7 @@ def get_quote(ticker: str) -> Dict[str, Any]:
 
 async def _get_quote_async(contract: Contract):
     """Async quote fetching helper."""
-    ticker = _ib.reqMktData(contract, "", False, False)
+    ticker = _ib.reqMktData(contract, "", False, False)  # type: ignore[union-attr]
     await ticker
     return ticker
 

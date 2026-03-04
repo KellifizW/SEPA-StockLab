@@ -4,5 +4,12 @@
         "*.parquet": "duckdb.dataFileViewer",
         "*.csv": "duckdb.dataFileViewer",
         "*.tsv": "duckdb.dataFileViewer"
-    }
+    },
+    // Suppress false-positive CSS/JS errors in Jinja2 HTML templates.
+    // VS Code's built-in CSS and JS validators don't understand {{ }} syntax.
+    "css.validate": false,
+    "less.validate": false,
+    "scss.validate": false,
+    "html.validate.scripts": false,
+    "html.validate.styles": false
 }

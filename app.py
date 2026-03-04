@@ -19,9 +19,9 @@ import time
 
 # Force UTF-8 stdout/stderr on Windows (avoids cp950 encode errors for ✓ ✗ → etc.)
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Any
@@ -138,7 +138,7 @@ def _detect_ibkr_account_currency() -> str:
     
     return C.DEFAULT_CURRENCY
 
-def _save_nav_cache(nav: float, buying_power: float = 0, account: str = "", currency: str = None):
+def _save_nav_cache(nav: float, buying_power: float = 0, account: str = "", currency: Optional[str] = None):
     """Save latest IBKR NAV, timestamp, and account currency to cache."""
     try:
         with _nav_lock:
@@ -215,7 +215,7 @@ def _get_account_size() -> tuple:
 _CURRENCY_SETTINGS_FILE = ROOT / C.DATA_DIR / "currency_settings.json"
 _currency_lock = threading.Lock()
 
-def _save_currency_setting(currency: str, usd_hkd_rate: float = None):
+def _save_currency_setting(currency: str, usd_hkd_rate: Optional[float] = None):
     """Save user's preferred currency display setting."""
     try:
         with _currency_lock:
@@ -275,7 +275,7 @@ def _get_account_base_currency() -> str:
     return "USD"
     
 
-def _convert_amount(amount: float, target_currency: str = None) -> tuple:
+def _convert_amount(amount: float, target_currency: Optional[str] = None) -> tuple:
     """
     Convert account amount to target currency.
     Handles cases where account base currency is not USD.
@@ -295,7 +295,7 @@ def _convert_amount(amount: float, target_currency: str = None) -> tuple:
         _, rate = _load_currency_setting()
         logger.info(f"   Using provided target_currency={target_currency}, rate={rate}")
     
-    target_currency = target_currency.upper()
+    target_currency = (target_currency or "USD").upper()
     
     # Get account base currency
     account_base_currency = _get_account_base_currency()
@@ -947,7 +947,7 @@ def api_scan_run():
                 df_passed = scan_result
                 df_all = scan_result
 
-            def _to_rows(df):
+            def _to_rows(df) -> list:
                 import pandas as pd
                 
                 if df is None or not hasattr(df, "to_dict"):
@@ -970,7 +970,7 @@ def api_scan_run():
                             else:
                                 record[col] = val
                         records.append(record)
-                    return _clean(records)
+                    return _clean(records)  # type: ignore[return-value]
                 except Exception as e:
                     logging.error(f"[_to_rows] SEPA conversion failed: {e}", exc_info=True)
                     return []
@@ -1172,7 +1172,7 @@ def api_qm_scan_run():
                 df_passed = result
                 df_all = result
 
-            def _to_rows(df):
+            def _to_rows(df) -> list:
                 import pandas as pd
                 
                 if df is None or not hasattr(df, "to_dict"):
@@ -1195,7 +1195,7 @@ def api_qm_scan_run():
                             else:
                                 record[col] = val
                         records.append(record)
-                    return _clean(records)
+                    return _clean(records)  # type: ignore[return-value]
                 except Exception as e:
                     logging.error(f"[_to_rows] QM conversion failed: {e}", exc_info=True)
                     return []
@@ -1292,7 +1292,7 @@ def api_combined_scan_run():
                 error_msg = str(run_err) if not "DataFrame" in str(type(run_err)) else f"{type(run_err).__name__}: DataFrame-related error during analysis"
                 raise RuntimeError(error_msg) from run_err
 
-            def _to_rows(df):
+            def _to_rows(df) -> list:
                 import pandas as pd
                 import numpy as np
                 
@@ -1316,7 +1316,7 @@ def api_combined_scan_run():
                             else:
                                 record[col] = val
                         records.append(record)
-                    return _clean(records)
+                    return _clean(records)  # type: ignore[return-value]
                 except Exception as e:
                     logging.error(f"[_to_rows] Conversion failed: {e}", exc_info=True)
                     return []
@@ -1402,7 +1402,7 @@ def api_combined_scan_run():
             try:
                 import os
                 if combined_log_file.exists() and hasattr(os, 'sync'):
-                    os.sync()
+                    os.sync()  # type: ignore[attr-defined]
             except Exception as e:
                 logging.warning(f"Could not sync log file: {e}")
 
@@ -1659,7 +1659,7 @@ def api_ml_scan_run():
                 _finish_job(jid, error=f"Internal scan error: invalid result type {type(result).__name__}", log_file="")
                 return
 
-            def _to_rows(df):
+            def _to_rows(df) -> list:
                 import pandas as pd
                 # Early return for non-DataFrames
                 if not isinstance(df, pd.DataFrame):
@@ -1679,7 +1679,7 @@ def api_ml_scan_run():
                             else:
                                 record[col] = val
                         records.append(record)
-                    return _clean(records)
+                    return _clean(records)  # type: ignore[return-value]
                 except Exception as e:
                     logging.error(f"[_to_rows] ML conversion failed: {e}", exc_info=True)
                     return []
@@ -3322,9 +3322,9 @@ def api_db_price_history(ticker: str):
             df_pd = df_pd[df_pd.index >= cutoff].copy()
             # Convert index to date (ensure it's DatetimeIndex first)
             if hasattr(df_pd.index, 'date'):
-                df_pd.index = df_pd.index.date
+                df_pd.index = df_pd.index.date  # type: ignore[assignment]
             elif hasattr(df_pd.index, 'normalize'):
-                df_pd.index = df_pd.index.normalize()
+                df_pd.index = df_pd.index.normalize()  # type: ignore[assignment]
             rows = [
                 {"date": str(idx), "open": round(float(row["Open"]), 4),
                  "high": round(float(row["High"]), 4),
@@ -3448,7 +3448,7 @@ def api_chart_enriched(ticker: str):
 
         for idx, row in df.iterrows():
             try:
-                ts = int(pd.Timestamp(idx).timestamp())
+                ts = int(pd.Timestamp(idx).timestamp())  # type: ignore[arg-type]
             except Exception:
                 continue
             o = _sf(row.get("Open"))
@@ -3461,7 +3461,7 @@ def api_chart_enriched(ticker: str):
 
             candles.append({"time": ts, "open": o, "high": h, "low": lo, "close": c})
             volume.append({"time": ts, "value": v,
-                           "color": "#3fb950" if c >= o else "#f85149"})
+                           "color": "#3fb950" if c >= o else "#f85149"})  # type: ignore[operator]
 
             for series, colname in [
                 (sma50,  "SMA_50"),
@@ -3519,7 +3519,7 @@ def api_chart_enriched(ticker: str):
             bbw_v = None
             if bb_width_pct_raw is not None:
                 try:
-                    bbw_v = _sf(bb_width_pct_raw.loc[idx], 3)
+                    bbw_v = _sf(bb_width_pct_raw.loc[idx], 3)  # type: ignore[call-overload, index]
                 except Exception:
                     bbw_v = None
             if bbw_v is not None:
@@ -3528,15 +3528,15 @@ def api_chart_enriched(ticker: str):
             vr_v = None
             if vol_ratio_raw is not None:
                 try:
-                    vr_v = _sf(vol_ratio_raw.loc[idx], 3)
+                    vr_v = _sf(vol_ratio_raw.loc[idx], 3)  # type: ignore[call-overload, index]
                 except Exception:
                     vr_v = None
             if vr_v is not None:
                 vol_ratio_pts.append({"time": ts, "value": vr_v})
 
-            atr_sig = bool(atr_contracting_series.loc[idx]) if atr_contracting_series is not None and idx in atr_contracting_series.index and not pd.isna(atr_contracting_series.loc[idx]) else False
-            bb_sig = bool(bb_contracting_series.loc[idx]) if bb_contracting_series is not None and idx in bb_contracting_series.index and not pd.isna(bb_contracting_series.loc[idx]) else False
-            vol_sig = bool(vol_dry_series.loc[idx]) if vol_dry_series is not None and idx in vol_dry_series.index and not pd.isna(vol_dry_series.loc[idx]) else False
+            atr_sig = bool(atr_contracting_series.loc[idx]) if atr_contracting_series is not None and idx in atr_contracting_series.index and not pd.isna(atr_contracting_series.loc[idx]) else False  # type: ignore[call-overload, index]
+            bb_sig = bool(bb_contracting_series.loc[idx]) if bb_contracting_series is not None and idx in bb_contracting_series.index and not pd.isna(bb_contracting_series.loc[idx]) else False  # type: ignore[call-overload, index]
+            vol_sig = bool(vol_dry_series.loc[idx]) if vol_dry_series is not None and idx in vol_dry_series.index and not pd.isna(vol_dry_series.loc[idx]) else False  # type: ignore[call-overload, index]
             sig_count = int(atr_sig) + int(bb_sig) + int(vol_sig)
 
             if sig_count >= 2:
@@ -3607,7 +3607,7 @@ def api_chart_weekly(ticker: str):
 
         for idx, row in df.iterrows():
             try:
-                ts = int(pd.Timestamp(idx).timestamp())
+                ts = int(pd.Timestamp(idx).timestamp())  # type: ignore[arg-type]
             except Exception:
                 continue
             o = _sf(row.get("Open"))
@@ -3620,7 +3620,7 @@ def api_chart_weekly(ticker: str):
 
             candles.append({"time": ts, "open": o, "high": h, "low": lo, "close": c})
             volume.append({"time": ts, "value": v,
-                           "color": "#3fb950" if c >= o else "#f85149"})
+                           "color": "#3fb950" if c >= o else "#f85149"})  # type: ignore[operator]
 
             for series, colname in [
                 (ema9w,  "EMA_9"),
@@ -3703,14 +3703,14 @@ def _get_nasdaq_regime_snapshot() -> dict:
         slope_lb = C.QM_NASDAQ_SLOPE_LOOKBACK
 
         df = yf.download(tkr, period="6mo", interval="1d", progress=False, auto_adjust=True)
-        if df.empty or len(df) < slow_p + slope_lb:
+        if df is None or df.empty or len(df) < slow_p + slope_lb:  # type: ignore[union-attr]
             raise ValueError("insufficient data")
 
-        close = df["Close"].squeeze()
-        sma_fast = close.rolling(fast_p).mean().iloc[-1]
-        sma_slow = close.rolling(slow_p).mean().iloc[-1]
-        sma_fast_prev = close.rolling(fast_p).mean().iloc[-(slope_lb + 1)]
-        price = float(close.iloc[-1])
+        close = df["Close"].squeeze()  # type: ignore[index]
+        sma_fast = close.rolling(fast_p).mean().iloc[-1]  # type: ignore[union-attr]
+        sma_slow = close.rolling(slow_p).mean().iloc[-1]  # type: ignore[union-attr]
+        sma_fast_prev = close.rolling(fast_p).mean().iloc[-(slope_lb + 1)]  # type: ignore[union-attr]
+        price = float(close.iloc[-1])  # type: ignore[union-attr]
         sma_fast = float(sma_fast)
         sma_slow = float(sma_slow)
         fast_slope = sma_fast - float(sma_fast_prev)
@@ -4214,7 +4214,7 @@ def qm_watch_signals(ticker: str):
         signals = _get_qm_intraday_signals(
             candles_5m=candles_5m,
             candles_1h=candles_1h,
-            orh=orh, orl=orl, lod=lod, hod=hod,
+            orh=orh, orl=orl, lod=lod, hod=hod,  # type: ignore[arg-type]
             hl_swings=hl_swings,
             prev_close=prev_close or 0.0,
             gap_pct=gap_pct,
@@ -4767,9 +4767,9 @@ def api_chart_intraday(ticker: str):
         et_tz = pytz.timezone('US/Eastern')
         # Ensure index is DatetimeIndex before calling tz_convert
         if hasattr(df.index, 'tz_convert'):
-            df['date_et'] = df.index.tz_convert(et_tz).normalize()
+            df['date_et'] = df.index.tz_convert(et_tz).normalize()  # type: ignore[union-attr]
         else:
-            df['date_et'] = df.index.normalize() if hasattr(df.index, 'normalize') else df.index.date
+            df['date_et'] = df.index.normalize() if hasattr(df.index, 'normalize') else df.index.date  # type: ignore[union-attr, assignment]
         for date in df['date_et'].unique():
             date_mask = (df['date_et'] == date)
             date_df = df[date_mask]
@@ -4788,9 +4788,9 @@ def api_chart_intraday(ticker: str):
                     start_pos = df.index.get_loc(start_idx)
                     
                     df.loc[df['date_et'] == date, 'cumul_tp_vol'] = \
-                        df.loc[df['date_et'] == date, 'tp_x_vol'].cumsum()
+                        df.loc[df['date_et'] == date, 'tp_x_vol'].cumsum()  # type: ignore[union-attr]
                     df.loc[df['date_et'] == date, 'cumul_vol'] = \
-                        df.loc[df['date_et'] == date, 'Volume'].cumsum()
+                        df.loc[df['date_et'] == date, 'Volume'].cumsum()  # type: ignore[union-attr]
         
         df['vwap'] = df['cumul_tp_vol'] / df['cumul_vol'].replace(0, float('nan'))
         # NaN vwap (zero-volume pre-market bars) → excluded from chart via _sf → None
@@ -4816,7 +4816,7 @@ def api_chart_intraday(ticker: str):
         
         for idx, row in df.iterrows():
             try:
-                ts = int(pd.Timestamp(idx).timestamp())
+                ts = int(pd.Timestamp(idx).timestamp())  # type: ignore[arg-type]
             except Exception:
                 continue
             
@@ -4840,7 +4840,7 @@ def api_chart_intraday(ticker: str):
             
             volume.append({
                 "time": ts, "value": v,
-                "color": "#3fb95033" if is_pm else ("#3fb950" if c >= o else "#f85149")
+                "color": "#3fb95033" if is_pm else ("#3fb950" if c >= o else "#f85149")  # type: ignore[operator]
             })
             
             # EMA values
@@ -5304,7 +5304,7 @@ def api_ibkr_positions():
                 action="SYNC",
                 price=pos["market_price"],
                 shares=pos["qty"],
-                stop_price=None,
+                stop_price=None,  # type: ignore[arg-type]
                 pnl_pct=pos["unrealized_pnl_pct"],
                 note=f"IBKR sync: {pos['unrealized_pnl_pct']:.2f}% unrealized PnL"
             )
