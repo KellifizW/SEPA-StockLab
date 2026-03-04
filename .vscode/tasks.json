@@ -1,0 +1,60 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Kill Flask App",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}\\scripts\\kill_app.ps1",
+                "-Force"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "focus": true,
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "none",
+            "detail": "Kill all Flask/Python processes for SEPA-StockLab (port 5000 + app.py/start_web.py)"
+        },
+        {
+            "label": "Start Flask App",
+            "type": "shell",
+            "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+            "args": ["${workspaceFolder}\\start_web.py"],
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": false,
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": [],
+            "group": "none",
+            "detail": "Start the SEPA-StockLab Flask server at http://localhost:5000"
+        },
+        {
+            "label": "Restart Flask App",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "& '${workspaceFolder}\\scripts\\kill_app.ps1' -Force; Start-Sleep -Seconds 1; Write-Host 'Starting Flask...'; & '${workspaceFolder}\\.venv\\Scripts\\python.exe' '${workspaceFolder}\\start_web.py'"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true,
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": [],
+            "group": "none",
+            "detail": "Kill existing Flask processes then restart the server"
+        }
+    ]
+}
