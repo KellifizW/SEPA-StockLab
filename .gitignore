@@ -9,6 +9,10 @@ credentials/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
+env/
+ENV/
 
 # 執行時快取與資料
 data/price_cache/

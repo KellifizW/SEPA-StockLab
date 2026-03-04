@@ -7,6 +7,7 @@ is not installed.
 
 import logging
 from datetime import datetime
+from typing import Optional
 from flask import Blueprint, request, jsonify
 
 import trader_config as C
@@ -17,9 +18,34 @@ logger = logging.getLogger(__name__)
 
 
 def _client():
-    """Lazy-import the ibkr_client *module* (module-level functions)."""
-    from modules import ibkr_client
-    return ibkr_client
+    """Lazy-import the ibkr_client *module* (module-level functions).
+    
+    Raises ImportError if ib_insync is not installed.
+    """
+    try:
+        from modules import ibkr_client
+        return ibkr_client
+    except ImportError as e:
+        logger.error(f"Failed to import ibkr_client: {e}")
+        raise ImportError(
+            f"IBKR module not available. Please install: pip install ib_insync. Error: {e}"
+        ) from e
+
+
+def _check_ib_available() -> tuple[bool, Optional[str]]:
+    """Check if IBKR is available and enabled.
+    
+    Returns:
+        (success: bool, error_message: Optional[str])
+    """
+    if not C.IBKR_ENABLED:
+        return False, "IBKR integration is disabled (IBKR_ENABLED=False)"
+    
+    try:
+        _client()
+        return True, None
+    except ImportError as e:
+        return False, str(e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -29,42 +55,42 @@ def _client():
 @bp.route("/api/ibkr/status", methods=["GET"])
 def api_ibkr_status():
     """Get IBKR connection status and account summary."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False,
-                        "error": "IBKR integration is disabled (IBKR_ENABLED=False)"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503  # Service Unavailable
     try:
         status = _client().get_status()
         return jsonify({"ok": True, "data": status})
     except Exception as exc:
-        logger.error("api_ibkr_status error: %s", exc)
+        logger.error("api_ibkr_status error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/api/ibkr/connect", methods=["POST"])
 def api_ibkr_connect():
     """Initiate IBKR connection."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503  # Service Unavailable
     try:
         result = _client().connect()
         return jsonify({"ok": result.get("success"), "data": result})
     except Exception as exc:
-        import traceback
-        logger.error("api_ibkr_connect error: %s", exc)
-        logger.error("Traceback: %s", traceback.format_exc())
+        logger.error("api_ibkr_connect error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/api/ibkr/disconnect", methods=["POST"])
 def api_ibkr_disconnect():
     """Disconnect from IBKR."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503  # Service Unavailable
     try:
         result = _client().disconnect()
         return jsonify({"ok": result.get("success"), "data": result})
     except Exception as exc:
-        logger.error("api_ibkr_disconnect error: %s", exc)
+        logger.error("api_ibkr_disconnect error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -75,8 +101,9 @@ def api_ibkr_disconnect():
 @bp.route("/api/account/detail", methods=["GET"])
 def api_account_detail():
     """Get detailed multi-currency account breakdown from IBKR."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         detail = _client().get_account_detail()
         if detail.get("connected"):
@@ -101,15 +128,16 @@ def api_account_detail():
         return jsonify({"ok": False,
                         "error": detail.get("error", "Not connected")}), 503
     except Exception as exc:
-        logger.error("api_account_detail error: %s", exc)
+        logger.error("api_account_detail error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/api/account/convert", methods=["POST"])
 def api_account_convert():
     """Convert currency via IBKR IDEALPRO FOREX."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         body = request.get_json(force=True) or {}
         from_currency = body.get("from_currency", "").upper()
@@ -135,7 +163,7 @@ def api_account_convert():
             return jsonify({"ok": False,
                             "error": result.get("error", "Conversion failed")}), 500
     except Exception as exc:
-        logger.error("api_account_convert error: %s", exc)
+        logger.error("api_account_convert error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -146,8 +174,9 @@ def api_account_convert():
 @bp.route("/api/ibkr/positions", methods=["GET"])
 def api_ibkr_positions():
     """Fetch IBKR positions and sync with local positions."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         from modules import position_monitor, db
 
@@ -180,28 +209,30 @@ def api_ibkr_positions():
                         "data": {"positions": ibkr_positions,
                                  "synced_count": len(ibkr_positions)}})
     except Exception as exc:
-        logger.error("api_ibkr_positions error: %s", exc)
+        logger.error("api_ibkr_positions error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/api/ibkr/orders", methods=["GET"])
 def api_ibkr_orders():
     """Fetch pending (open) orders from IBKR."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         orders = _client().get_open_orders()
         return jsonify({"ok": True, "data": {"orders": orders}})
     except Exception as exc:
-        logger.error("api_ibkr_orders error: %s", exc)
+        logger.error("api_ibkr_orders error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/api/ibkr/trades", methods=["GET"])
 def api_ibkr_trades():
     """Fetch recent execution history from IBKR."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         from modules import db
         days = request.args.get("days", default=7, type=int)
@@ -212,7 +243,7 @@ def api_ibkr_trades():
                                  "db_orders": db_orders,
                                  "count": len(executions)}})
     except Exception as exc:
-        logger.error("api_ibkr_trades error: %s", exc)
+        logger.error("api_ibkr_trades error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -223,8 +254,9 @@ def api_ibkr_trades():
 @bp.route("/api/ibkr/order", methods=["POST"])
 def api_ibkr_place_order():
     """Place an IBKR order (MKT, LMT, STP, TRAIL)."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         from modules import db
 
@@ -274,31 +306,33 @@ def api_ibkr_place_order():
 
         return jsonify({"ok": result.get("success"), "data": result})
     except Exception as exc:
-        logger.error("api_ibkr_place_order error: %s", exc)
+        logger.error("api_ibkr_place_order error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/api/ibkr/order/<int:order_id>", methods=["DELETE"])
 def api_ibkr_cancel_order(order_id: int):
     """Cancel an IBKR order by ID."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         result = _client().cancel_order(order_id)
         return jsonify({"ok": result.get("success"), "data": result})
     except Exception as exc:
-        logger.error("api_ibkr_cancel_order error: %s", exc)
+        logger.error("api_ibkr_cancel_order error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/api/ibkr/quote/<ticker>", methods=["GET"])
 def api_ibkr_quote(ticker: str):
     """Get real-time quote snapshot for a ticker."""
-    if not C.IBKR_ENABLED:
-        return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 403
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
     try:
         quote = _client().get_quote(ticker)
         return jsonify({"ok": "error" not in quote, "data": quote})
     except Exception as exc:
-        logger.error("api_ibkr_quote error: %s", exc)
+        logger.error("api_ibkr_quote error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
