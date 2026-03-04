@@ -5,10 +5,10 @@
       "shares": 7.0,
       "qty": 7.0,
       "avg_cost": 64.51314285,
-      "market_price": 63.8546028,
-      "market_value": 446.98,
-      "unrealized_pnl": -4.61,
-      "unrealized_pnl_pct": -1.03136605664683,
+      "market_price": 63.69187925,
+      "market_value": 445.84,
+      "unrealized_pnl": -5.75,
+      "unrealized_pnl_pct": -1.2897003409294816,
       "source": "ibkr_sync"
     },
     "SPY": {
@@ -16,10 +16,10 @@
       "shares": 1.0,
       "qty": 1.0,
       "avg_cost": 683.01,
-      "market_price": 686.0800171,
-      "market_value": 686.08,
-      "unrealized_pnl": 3.07,
-      "unrealized_pnl_pct": 0.4474696828358209,
+      "market_price": 685.72998045,
+      "market_value": 685.73,
+      "unrealized_pnl": 2.72,
+      "unrealized_pnl_pct": 0.39665757659720297,
       "source": "ibkr_sync"
     }
   },

@@ -369,6 +369,10 @@ def get_status() -> Dict[str, Any]:
             unrealized_pnl = float(acct_vals.get("UnrealizedPnL", 0))
             cash = float(acct_vals.get("CashBalance", 0))
             
+            # Fallback logic: if buying_power is 0, use cash or nav (解決購買力為 0 的問題)
+            if buying_power <= 0:
+                buying_power = cash if cash > 0 else nav
+            
             return {
                 "state": _connection_state,
                 "connected": True,
