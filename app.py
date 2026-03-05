@@ -2871,62 +2871,6 @@ def _verify_tg_init_data(init_data: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-@app.route("/tg/app")
-def tg_app_shell():
-    """
-    Telegram Mini App 殼層 HTML。
-    初始化 Telegram WebApp SDK，準備加載分析頁面。
-    
-    URL 將包含 initData 參數：
-    /tg/app?initData=...&ticker=NVDA
-    
-    開發者模式：localhost 請求自動通過認證，用於本地測試
-    """
-    init_data = request.args.get("initData", "")
-    ticker = request.args.get("ticker", "NVDA")  # Default to NVDA for testing
-    
-    # 檢查是否為 localhost（開發者模式）
-    is_localhost = request.remote_addr in ("127.0.0.1", "localhost")
-    
-    if is_localhost and not init_data:
-        # 開發者模式：跳過認證，使用測試數據
-        logger.info(f"[TG_APP] 開發者模式已啟用 (localhost)")
-        user = {
-            "id": 400598958,
-            "is_bot": False,
-            "first_name": "Developer",
-            "last_name": "Test",
-            "language_code": "zh-Hant"
-        }
-        chat_id = 400598958
-        init_data = "dev_mode_test"
-    else:
-        # 生產模式：驗證簽名
-        verify_result = _verify_tg_init_data(init_data)
-        if not verify_result["ok"]:
-            logger.warning(f"[TG_APP] Init data verification failed: {verify_result.get('error')}")
-            return render_template("tg_app_error.html", 
-                                   error=verify_result.get("error", "Authentication failed")), 401
-        
-        user = verify_result.get("user", {})
-        chat_id = verify_result.get("chat_id")
-    
-    # 檢查用戶是否在白名單中
-    try:
-        from modules.telegram_bot import _is_approved
-        if not _is_approved(chat_id):
-            logger.warning(f"[TG_APP] Unapproved chat_id: {chat_id}")
-            return render_template("tg_app_error.html", 
-                                   error="You are not approved to use this bot"), 403
-    except Exception as e:
-        logger.warning(f"[TG_APP] Approval check failed: {e}")
-        # 繼續進行（允許未來的動態批准）
-    
-    return render_template("tg_app_enhanced.html", 
-                           user=user, chat_id=chat_id, ticker=ticker,
-                           init_data=init_data)
-
-
 @app.route("/api/tg/init", methods=["POST"])
 def api_tg_init():
     """

@@ -921,7 +921,7 @@ TG_APPROVAL_ENABLED   = True                                    # 啟用新用�
 
 # Telegram Mini App  (WebApp 界面 — 需要 HTTPS 公開 URL)
 TG_MINI_APP_ENABLED   = True                                    # ✅ 已啟用
-TG_MINI_APP_BASE_URL  = os.getenv("TG_MINI_APP_BASE_URL", "http://localhost:5000")  # Mini App 根 URL
+TG_MINI_APP_BASE_URL  = os.getenv("TG_MINI_APP_BASE_URL", "https://kathaleen-cephalalgic-leonida.ngrok-free.dev")  # Mini App 根 URL (ngrok tunnel)
 TG_MINI_APP_SHOW_BUTTON = True                                  # 在分析結果中顯示 "打開 Mini App" 按鈕
 
 # ─────────────────────────────────────────────────────────────────────────────
