@@ -72,15 +72,15 @@ if (-not $Force) {
 }
 
 # ── 6. Kill ──────────────────────────────────────────────────────────────────
-foreach ($pid in $pids_to_kill) {
-    $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+foreach ($procId in $pids_to_kill) {
+    $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
     if ($proc) {
         try {
-            Stop-Process -Id $pid -Force -ErrorAction Stop
-            Write-Host "  ✅ Killed PID $pid ($($proc.ProcessName))" -ForegroundColor Green
+            Stop-Process -Id $procId -Force -ErrorAction Stop
+            Write-Host "  ✅ Killed PID $procId ($($proc.ProcessName))" -ForegroundColor Green
             $killed++
         } catch {
-            Write-Host "  ❌ Failed to kill PID $pid : $_" -ForegroundColor Red
+            Write-Host "  ❌ Failed to kill PID $procId : $_" -ForegroundColor Red
         }
     }
 }

@@ -1270,20 +1270,28 @@ def pos_save(data: dict) -> bool:
 
     open_records = []
     for ticker, info in data.get("positions", {}).items():
+        # IBKR-synced positions use entry_price/avg_cost instead of buy_price
+        buy_price = _to_float(info.get("buy_price") or info.get("entry_price") or info.get("avg_cost"))
+        shares = _to_int(info.get("shares") or info.get("qty"))
+        stop_loss = _to_float(info.get("stop_loss"))
+        # Skip records with no valid buy_price — can't satisfy NOT NULL constraint
+        if buy_price is None:
+            logger.debug("[DB] pos_save: skipping %s — no buy_price", ticker)
+            continue
         open_records.append({
             "ticker": ticker.upper(),
-            "buy_price": _to_float(info.get("buy_price")),
-            "shares": _to_int(info.get("shares")),
-            "stop_loss": _to_float(info.get("stop_loss")),
-            "stop_pct": _to_float(info.get("stop_pct")),
-            "target": _to_float(info.get("target")),
-            "rr": _to_float(info.get("rr")),
-            "risk_dollar": _to_float(info.get("risk_dollar")),
+            "buy_price": buy_price,
+            "shares": shares if shares is not None else 0,
+            "stop_loss": stop_loss if stop_loss is not None else round(buy_price * 0.93, 2),
+            "stop_pct": _to_float(info.get("stop_pct")) or 0.0,
+            "target": _to_float(info.get("target")) or 0.0,
+            "rr": _to_float(info.get("rr")) or 0.0,
+            "risk_dollar": _to_float(info.get("risk_dollar")) or 0.0,
             "entry_date": info.get("entry_date"),
             "last_stop_update": info.get("last_stop_update"),
             "trailing_stop": _to_float(info.get("trailing_stop")),
-            "pnl_pct": _to_float(info.get("pnl_pct")),
-            "strategy": info.get("strategy", ""),
+            "pnl_pct": _to_float(info.get("pnl_pct") or info.get("unrealized_pnl_pct")),
+            "strategy": info.get("strategy", info.get("source", "")),
             "note": info.get("note", ""),
         })
 
@@ -1305,21 +1313,28 @@ def pos_save(data: dict) -> bool:
 
     _init_schema_once()
     with _lock:
+        conn = None
         try:
             conn = _get_conn()
             
-            # Save open positions
+            # Save open positions — use explicit column names to avoid schema mismatch
             conn.execute("DELETE FROM open_positions")
             if open_records:
                 df = pd.DataFrame(open_records)
-                conn.execute("INSERT INTO open_positions SELECT * FROM df")
+                # Explicitly specify columns to avoid mismatch if table has extra columns
+                conn.execute("""
+                    INSERT INTO open_positions 
+                    (ticker, buy_price, shares, stop_loss, stop_pct, target, rr, risk_dollar, 
+                     entry_date, last_stop_update, trailing_stop, pnl_pct, strategy, note)
+                    SELECT ticker, buy_price, shares, stop_loss, stop_pct, target, rr, risk_dollar, 
+                           entry_date, last_stop_update, trailing_stop, pnl_pct, strategy, note FROM df
+                """)
             
             # Save closed positions (append-only, don't delete)
             if closed_records:
                 df = pd.DataFrame(closed_records)
                 conn.execute("INSERT INTO closed_positions SELECT * FROM df")
             
-            conn.close()
             logger.info("[DB] pos_save: saved %d open, %d closed", len(open_records), len(closed_records))
             
             # JSON backup (Phase 2 safety)
@@ -1336,6 +1351,13 @@ def pos_save(data: dict) -> bool:
             except Exception as exc2:
                 logger.error("[DB] pos_save: JSON fallback failed — %s", exc2)
             return False
+        finally:
+            # Ensure connection is always closed properly
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

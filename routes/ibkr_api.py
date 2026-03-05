@@ -370,13 +370,29 @@ def api_ibkr_trades():
         return jsonify({"ok": False, "error": error_msg}), 503
     try:
         from modules import db
+        import time
         days = request.args.get("days", default=7, type=int)
         
         # Auto-connect if not already connected
         client = _client()
         if not client.is_ibkr_connected():
             logger.info("IBKR not connected, attempting to reconnect...")
-            client.connect()
+            result = client.connect()
+            if not result.get("success"):
+                logger.warning(f"Reconnection failed: {result.get('message')}")
+                # Fetch from DB only if IBKR connection failed
+                try:
+                    db_orders = db.query_ibkr_orders(days=days)
+                except Exception as db_exc:
+                    logger.warning("db.query_ibkr_orders failed: %s", db_exc)
+                    db_orders = []
+                return jsonify({
+                    "ok": True,
+                    "data": {"executions": [], "db_orders": db_orders, "count": 0},
+                    "warning": f"IBKR disconnected: {result.get('message')}"
+                })
+            # Wait a moment for connection to stabilize
+            time.sleep(0.5)
         
         executions = client.get_executions(days=days)
         # Wrap db call separately so a DB error never blocks the trade history response

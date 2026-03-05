@@ -16,10 +16,10 @@
       "shares": 1.0,
       "qty": 1.0,
       "avg_cost": 683.01,
-      "market_price": 683.8671875,
-      "market_value": 683.87,
-      "unrealized_pnl": 0.86,
-      "unrealized_pnl_pct": 0.1257548949361721,
+      "market_price": 683.79370115,
+      "market_value": 683.79,
+      "unrealized_pnl": 0.78,
+      "unrealized_pnl_pct": 0.11407010924406617,
       "source": "ibkr_sync"
     }
   },

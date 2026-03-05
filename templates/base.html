@@ -778,6 +778,12 @@ async function updateIbkrStatus() {
       }
       if (connBtn) connBtn.classList.add('d-none');
       if (disconnBtn) disconnBtn.classList.remove('d-none');
+      
+      // If currently viewing history tab, auto-refresh it when connected
+      const historyTab = document.getElementById('ibkrTabHistory');
+      if (historyTab && historyTab.classList.contains('active')) {
+        ibkrLoadHistory().catch(() => {});
+      }
     } else {
       if (subtitle) subtitle.textContent = '✗ 離線 / Disconnected';
       if (connBtn) connBtn.classList.remove('d-none');
@@ -1067,43 +1073,58 @@ async function ibkrLoadHistory() {
     
     const r = await response.json();
     const executions = r.data?.executions || [];
-    
-    if (!executions || executions.length === 0) {
+    const dbOrders = r.data?.db_orders || [];
+
+    // Merge live IBKR executions + DB order records
+    // executions: {exec_id, time, ticker, action, qty, price, commission}
+    // dbOrders:   {order_id, order_time, ticker, action, qty, fill_price, status, commission, order_type}
+    const allItems = [];
+    for (const e of executions) {
+      allItems.push({ time: e.time, ticker: e.ticker || e.symbol, action: (e.action||'').toUpperCase(),
+        qty: e.qty || e.shares, price: e.price, commission: e.commission,
+        label: e.exec_id ? `ID: ${e.exec_id}` : '', status: 'Filled', source: 'ibkr' });
+    }
+    for (const o of dbOrders) {
+      // Avoid duplicates — skip db order if we already have a live execution for it
+      const isDup = executions.some(e => e.ticker === o.ticker && Math.abs(e.qty - o.qty) < 0.01);
+      if (isDup) continue;
+      allItems.push({ time: o.order_time, ticker: o.ticker, action: (o.action||'').toUpperCase(),
+        qty: o.qty, price: o.fill_price, commission: o.commission,
+        label: `單號: ${o.order_id} | ${o.order_type}`, status: o.status, source: 'db' });
+    }
+
+    if (allItems.length === 0) {
       listDiv.innerHTML = '<div style="text-align:center; color:#8b949e; padding:20px 8px; font-size:12px;">-- 無交易記錄 / No trades --</div>';
       return;
     }
-    
+
+    // Sort newest first
+    allItems.sort((a, b) => new Date(b.time) - new Date(a.time));
+
     let html = '';
-    for (const exec of executions) {
-      // API returns: action, exec_id, qty, ticker, price, commission, time
-      const action = (exec.action || exec.side || '').toUpperCase();
-      const isLong = action === 'BUY' || action === 'BOT';
+    for (const item of allItems) {
+      const isLong = item.action === 'BUY' || item.action === 'BOT';
       const sideClass = isLong ? 'score-high' : 'score-low';
       const sideText = isLong ? '買入' : '賣出';
-      const commStr = exec.commission ? ` | 佣金: $${Number(exec.commission).toFixed(2)}` : '';
-      const timeStr = exec.time ? new Date(exec.time).toLocaleString('zh-HK') : 'N/A';
-      const qty = exec.qty || exec.shares || 0;
-      const ticker = exec.ticker || exec.symbol || 'N/A';
-      const execId = exec.exec_id || exec.execId || 'N/A';
-      
+      const commStr = item.commission ? ` | 佣金: $${Number(item.commission).toFixed(2)}` : '';
+      const timeStr = item.time ? new Date(item.time).toLocaleString('zh-HK') : 'N/A';
+      const priceStr = item.price ? `@ $${Number(item.price).toFixed(2)}` : '(市價待成交)';
+      const statusColor = item.status === 'Filled' ? '#3fb950' : item.status === 'Cancelled' ? '#f85149' : '#e3b341';
+      const borderColor = item.source === 'ibkr' ? '#1f6feb' : '#30363d';
       html += `
-        <div style="background:#1c2128; border:1px solid #30363d; border-radius:6px; padding:10px; margin-bottom:8px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+        <div style="background:#1c2128; border:1px solid ${borderColor}; border-radius:6px; padding:10px; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
             <div>
-              <strong style="color:#c9d1d9; font-size:13px;">${ticker}</strong>
-              <div class="${sideClass}" style="font-size:12px; font-weight:600; margin-top:2px;">${sideText} ${qty} @ $${Number(exec.price).toFixed(2)}</div>
+              <strong style="color:#c9d1d9; font-size:13px;">${item.ticker}</strong>
+              <span style="font-size:10px; color:${statusColor}; margin-left:6px; font-weight:600;">${item.status}</span>
+              <div class="${sideClass}" style="font-size:12px; font-weight:600; margin-top:2px;">${sideText} ${item.qty} ${priceStr}</div>
             </div>
-            <div style="text-align:right; font-size:11px; color:#8b949e;">
-              成交: ${timeStr}
-            </div>
+            <div style="text-align:right; font-size:11px; color:#8b949e;">${timeStr}</div>
           </div>
-          <div style="font-size:11px; color:#8b949e;">
-            執行ID: ${execId}${commStr}
-          </div>
-        </div>
-      `;
+          <div style="font-size:11px; color:#8b949e;">${item.label}${commStr}</div>
+        </div>`;
     }
-    
+
     if (listDiv) listDiv.innerHTML = html || '<div style="text-align:center; color:#8b949e; padding:20px 8px;">-- 無數據 / No data --</div>';
   } catch(e) {
     const listDiv = document.getElementById('ibkrHistoryList');

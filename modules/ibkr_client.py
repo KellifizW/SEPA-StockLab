@@ -32,7 +32,7 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-from ib_insync import IB, Contract, Order, OrderStatus, Execution, Trade  # type: ignore[import-not-found]
+from ib_insync import IB, Contract, Order, OrderStatus, Execution, Trade, ExecutionFilter  # type: ignore[import-not-found]
 from ib_insync.order import OrderComboLeg  # type: ignore[import-not-found]
 from ib_insync.objects import Position  # type: ignore[import-not-found]
 
@@ -217,6 +217,13 @@ def connect() -> Dict[str, Any]:
             
             # NOTE: Do NOT call reqPositions() here - it triggers event loop errors
             # Position sync will be handled on-demand in get_positions()
+            
+            # Sync historical fills to DB (runs in background to avoid blocking)
+            threading.Thread(
+                target=_sync_historical_fills,
+                daemon=True,
+                name="ibkr_sync_fills"
+            ).start()
             
             _connection_state = "CONNECTED"
             _connection_failed_count = 0
@@ -799,6 +806,66 @@ def get_positions() -> List[Dict[str, Any]]:
             return []
 
 
+def _sync_historical_fills():
+    """
+    Sync all fills from current IBKR session to DuckDB for persistent history.
+    Called once after connection succeeds. Runs in background thread.
+    
+    This compensates for IB Gateway forgetting fills after restart.
+    Fills synced here will appear in trade history even after Gateway is restarted.
+    """
+    try:
+        time.sleep(1)  # Allow connection to fully stabilize
+        
+        from modules import db
+        
+        # Scan all current trades and extract fills
+        with _ib_lock:
+            if _connection_state != "CONNECTED" or not _ib:
+                _logger.debug("_sync_historical_fills: not connected")
+                return
+            
+            trades = list(_ib.trades())
+            _logger.debug(f"_sync_historical_fills: scanning {len(trades)} trades")
+            
+            synced = 0
+            for trade in trades:
+                for fill in getattr(trade, 'fills', []):
+                    try:
+                        exec_obj = fill.execution
+                        comm = (float(fill.commissionReport.commission) 
+                               if fill.commissionReport else None)
+                        
+                        db.append_ibkr_order({
+                            "order_id": getattr(exec_obj, 'orderId', 0),
+                            "order_time": str(exec_obj.time),
+                            "ticker": trade.contract.symbol.upper(),
+                            "action": exec_obj.side,
+                            "order_type": "MKT",  # best guess from fill
+                            "qty": int(exec_obj.shares),
+                            "limit_price": None,
+                            "aux_price": None,
+                            "trail_pct": None,
+                            "fill_price": float(exec_obj.price),
+                            "status": "Filled",
+                            "commission": comm,
+                            "pnl": None,
+                            "note": "Synced from IB Gateway",
+                        })
+                        synced += 1
+                    except Exception as _e:
+                        _logger.warning(f"Failed to sync fill: {_e}")
+            
+            if synced > 0:
+                _logger.info(
+                    f"{_GREEN}✓ Synced {synced} fills to DuckDB for persistent history{_RESET}"
+                )
+    except ImportError:
+        _logger.debug("_sync_historical_fills: db module unavailable")
+    except Exception as e:
+        _logger.warning(f"_sync_historical_fills error: {e}")
+
+
 def get_executions(days: int = 7) -> List[Dict[str, Any]]:
     """
     Fetch recent execution history (filled orders).
@@ -832,66 +899,70 @@ def get_executions(days: int = 7) -> List[Dict[str, Any]]:
             return []
         
         try:
-            # Method 1: Try standard trades() API first
-            executions = []
-            _logger.debug("Attempting to fetch trades via ib_insync...")
-            # Use UTC-aware cutoff to match IBKR's timezone-aware fill times
+            # reqExecutionsAsync() eagerly calls startReq() which creates asyncio.Future()
+            # before yielding — so it CANNOT be called from a Flask worker thread.
+            # Wrap it in an async def so the entire call (Future creation + await) runs
+            # inside the background event loop thread via _run_async().
+            _logger.debug("Requesting executions from IBKR server via reqExecutionsAsync()...")
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            
-            trade_list = list(_ib.trades())
-            
-            if trade_list:
-                _logger.debug(f"✓ Found {len(trade_list)} trades via standard API")
-                for trade in trade_list:
-                    for fill in trade.fills:
-                        fill_time = fill.execution.time
-                        # Normalize to UTC-aware if naive
-                        if fill_time.tzinfo is None:
-                            fill_time = fill_time.replace(tzinfo=timezone.utc)
-                        if fill_time < cutoff:
-                            continue
-                        
-                        executions.append({
-                            "exec_id": fill.execution.execId,
-                            "time": fill_time.isoformat(),
-                            "ticker": trade.contract.symbol,
+
+            async def _fetch_fills():
+                return await _ib.reqExecutionsAsync(ExecutionFilter())
+
+            fills = _run_async(_fetch_fills())
+            _logger.debug(f"reqExecutionsAsync returned {len(fills)} fills")
+
+            executions = []
+            try:
+                from modules import db
+            except Exception:
+                db = None
+
+            for fill in fills:
+                fill_time = fill.execution.time
+                # Normalize to UTC-aware if naive
+                if fill_time.tzinfo is None:
+                    fill_time = fill_time.replace(tzinfo=timezone.utc)
+                if fill_time < cutoff:
+                    continue
+
+                exec_dict = {
+                    "exec_id": fill.execution.execId,
+                    "time": fill_time.isoformat(),
+                    "ticker": fill.contract.symbol,
+                    "action": fill.execution.side,
+                    "qty": fill.execution.shares,
+                    "price": float(fill.execution.price),
+                    "commission": float(fill.commissionReport.commission)
+                    if fill.commissionReport
+                    else 0,
+                }
+                executions.append(exec_dict)
+
+                # Sync fill to DB for persistent history (survives Gateway restart)
+                if db:
+                    try:
+                        db.append_ibkr_order({
+                            "order_id": getattr(fill.execution, 'orderId', 0),
+                            "order_time": fill_time.isoformat(),
+                            "ticker": fill.contract.symbol.upper(),
                             "action": fill.execution.side,
-                            "qty": fill.execution.shares,
-                            "price": float(fill.execution.price),
+                            "order_type": "MKT",  # bestguess from fill (no order type in Execution)
+                            "qty": int(fill.execution.shares),
+                            "limit_price": None,
+                            "aux_price": None,
+                            "trail_pct": None,
+                            "fill_price": float(fill.execution.price),
+                            "status": "Filled",
                             "commission": float(fill.commissionReport.commission)
-                            if fill.commissionReport
-                            else 0,
+                            if fill.commissionReport else None,
+                            "pnl": None,
+                            "note": "",
                         })
-            else:
-                # Method 2: If standard API empty, request from server
-                _logger.debug("Standard API returned empty, requesting from IBKR server...")
-                _ib.reqPositions()  # Position request may trigger trade sync
-                time.sleep(0.8)
-                
-                trade_list = list(_ib.trades())
-                _logger.debug(f"After reqPositions: {len(trade_list)} trades")
-                
-                for trade in trade_list:
-                    for fill in trade.fills:
-                        fill_time = fill.execution.time
-                        if fill_time.tzinfo is None:
-                            fill_time = fill_time.replace(tzinfo=timezone.utc)
-                        if fill_time < cutoff:
-                            continue
-                        
-                        executions.append({
-                            "exec_id": fill.execution.execId,
-                            "time": fill_time.isoformat(),
-                            "ticker": trade.contract.symbol,
-                            "action": fill.execution.side,
-                            "qty": fill.execution.shares,
-                            "price": float(fill.execution.price),
-                            "commission": float(fill.commissionReport.commission)
-                            if fill.commissionReport
-                            else 0,
-                        })
-            
-            _logger.info(f"{_GREEN}✓ Fetched {len(executions)} executions (last {days} days){_RESET}")
+                    except Exception as _exc:
+                        _logger.warning(f"Failed to sync fill {fill.execution.execId} to DB: {_exc}")
+
+            _logger.info(f"{_GREEN}✓ Fetched {len(executions)} executions + synced to DB (last {days} days){_RESET}")
             return sorted(executions, key=lambda x: x["time"], reverse=True)
             
         except Exception as e:
@@ -1035,20 +1106,52 @@ def place_order(
             
             # Place order
             trade = _run_async(_place_order_async(contract, order))
+            order_id = trade.order.orderId
             
             _logger.info(
                 f"{_GREEN}✓ Order placed: {action} {qty} {ticker} "
-                f"({order_type}) - Order ID: {trade.order.orderId}{_RESET}"
+                f"({order_type}) - Order ID: {order_id}{_RESET}"
             )
-            
+
+            # Subscribe to fill event — runs on the background event loop.
+            # Updates DB with actual fill price + commission when IB confirms fill.
+            def _on_fill(trade_obj, fill):
+                try:
+                    from modules import db
+                    comm = float(fill.commissionReport.commission) if fill.commissionReport else None
+                    db.append_ibkr_order({
+                        "order_id": order_id,
+                        "order_time": fill.execution.time.isoformat(),
+                        "ticker": ticker.upper(),
+                        "action": action,
+                        "order_type": order_type,
+                        "qty": int(fill.execution.shares),
+                        "limit_price": limit_price,
+                        "aux_price": aux_price,
+                        "trail_pct": trail_pct,
+                        "fill_price": float(fill.execution.price),
+                        "status": "Filled",
+                        "commission": comm,
+                        "pnl": None,
+                        "note": "",
+                    })
+                    _logger.info(
+                        f"{_GREEN}✓ Fill recorded: order {order_id} {action} {qty} {ticker} "
+                        f"@ ${fill.execution.price:.2f}{_RESET}"
+                    )
+                except Exception as _e:
+                    _logger.warning(f"Fill callback error for order {order_id}: {_e}")
+
+            trade.fillEvent += _on_fill
+
             return {
                 "success": True,
-                "order_id": trade.order.orderId,
+                "order_id": order_id,
                 "ticker": ticker,
                 "action": action,
                 "qty": qty,
                 "order_type": order_type,
-                "message": f"Order {trade.order.orderId} submitted",
+                "message": f"Order {order_id} submitted",
             }
             
         except Exception as e:
