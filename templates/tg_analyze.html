@@ -12,7 +12,7 @@
             --bg-primary: #0d1117;
             --bg-secondary: #161b22;
             --border: #30363d;
-            --text: #c9d1d9;
+            --text: #e8eaf6;
             --accent: #58a6ff;
             --success: #3fb950;
             --danger: #f85149;
@@ -52,7 +52,7 @@
         
         .header-meta {
             font-size: 0.85rem;
-            color: #8b949e;
+            color: #b0b0b0;
         }
         
         .content {
@@ -251,12 +251,20 @@
                         <span class="stat-value" id="baseTicker">-</span>
                     </div>
                     <div class="stat-row">
+                        <span class="stat-label">公司名稱</span>
+                        <span class="stat-value" id="baseCompany" style="font-size: 0.9rem;">-</span>
+                    </div>
+                    <div class="stat-row">
                         <span class="stat-label">當前價格</span>
                         <span class="stat-value" id="basePrice">-</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">評分</span>
                         <span class="stat-value" id="baseScore">-</span>
+                    </div>
+                    <div class="stat-row" id="rsRankRow" style="display:none;">
+                        <span class="stat-label">RS 排名</span>
+                        <span class="stat-value" id="rsRank">-</span>
                     </div>
                 </div>
             </div>
@@ -271,6 +279,12 @@
             <div id="sepaBasisCard" class="card" style="display: none;">
                 <div class="card-header">💡 分析基礎</div>
                 <div class="card-body" id="sepaBasisContent"></div>
+            </div>
+            
+            <!-- Trade Plan (QM/ML) -->
+            <div id="tradePlanCard" class="card" style="display: none;">
+                <div class="card-header">🎯 交易計劃</div>
+                <div class="card-body" id="tradePlanContent"></div>
             </div>
             
             <!-- Chart -->
@@ -361,8 +375,15 @@
             
             // Basic info
             document.getElementById('baseTicker').textContent = r.ticker || '-';
+            document.getElementById('baseCompany').textContent = r.company || '-';
             document.getElementById('basePrice').textContent = `$${(r.price || 0).toFixed(2)}`;
             document.getElementById('baseScore').textContent = `${(r.sepa_score || 0).toFixed(1)}/100`;
+            
+            // RS Rank
+            if (r.rs_rank) {
+                document.getElementById('rsRankRow').style.display = 'block';
+                document.getElementById('rsRank').textContent = `${(r.rs_rank || 0).toFixed(0)}%`;
+            }
             
             // SEPA basis
             const basisCard = document.getElementById('sepaBasisCard');
@@ -400,6 +421,7 @@
             
             // Basic info
             document.getElementById('baseTicker').textContent = r.ticker || '-';
+            document.getElementById('baseCompany').textContent = r.company || '-';
             document.getElementById('basePrice').textContent = `$${(r.close || 0).toFixed(2)}`;
             document.getElementById('baseScore').textContent = `${(r.star_rating || 0).toFixed(1)}/5 ★`;
             
@@ -430,6 +452,22 @@
             if (dimHtml) {
                 dimCard.style.display = 'block';
                 dimContent.innerHTML = dimHtml;
+            }
+            
+            // Trade plan
+            const tradePlanCard = document.getElementById('tradePlanCard');
+            const tradePlanContent = document.getElementById('tradePlanContent');
+            if (r.trade_plan) {
+                tradePlanCard.style.display = 'block';
+                let planHtml = '';
+                if (typeof r.trade_plan === 'object') {
+                    for (const [key, val] of Object.entries(r.trade_plan)) {
+                        planHtml += `<div class="stat-row"><span class="stat-label">${key}</span><span class="stat-value">${val}</span></div>`;
+                    }
+                } else {
+                    planHtml = `<div class="stat-row"><span>${r.trade_plan}</span></div>`;
+                }
+                tradePlanContent.innerHTML = planHtml;
             }
             
             // Additional info
@@ -471,6 +509,7 @@
             
             // Basic info
             document.getElementById('baseTicker').textContent = r.ticker || '-';
+            document.getElementById('baseCompany').textContent = r.company || '-';
             document.getElementById('basePrice').textContent = `$${(r.close || 0).toFixed(2)}`;
             document.getElementById('baseScore').textContent = `${(r.star_rating || 0).toFixed(1)}/7 ★`;
             
@@ -502,6 +541,22 @@
             if (dimHtml) {
                 dimCard.style.display = 'block';
                 dimContent.innerHTML = dimHtml;
+            }
+            
+            // Trade plan
+            const tradePlanCard = document.getElementById('tradePlanCard');
+            const tradePlanContent = document.getElementById('tradePlanContent');
+            if (r.trade_plan) {
+                tradePlanCard.style.display = 'block';
+                let planHtml = '';
+                if (typeof r.trade_plan === 'object') {
+                    for (const [key, val] of Object.entries(r.trade_plan)) {
+                        planHtml += `<div class="stat-row"><span class="stat-label">${key}</span><span class="stat-value">${val}</span></div>`;
+                    }
+                } else {
+                    planHtml = `<div class="stat-row"><span>${r.trade_plan}</span></div>`;
+                }
+                tradePlanContent.innerHTML = planHtml;
             }
             
             // Additional info

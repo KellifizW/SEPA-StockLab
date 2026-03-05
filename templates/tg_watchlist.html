@@ -11,7 +11,7 @@
             --bg-primary: #0d1117;
             --bg-secondary: #161b22;
             --border: #30363d;
-            --text: #c9d1d9;
+            --text: #e8eaf6;
             --accent: #58a6ff;
         }
         body {
@@ -91,7 +91,7 @@
         .empty {
             text-align: center;
             padding: 2rem;
-            color: #8b949e;
+            color: #b0b0b0;
         }
     </style>
 </head>
@@ -136,7 +136,7 @@
                     return `
                         <div class="card" onclick="navigate('${item.ticker}')">
                             <div class="card-ticker">${item.ticker}</div>
-                            <div style="font-size: 0.85rem; color: #8b949e;">${item.added_date || 'N/A'}</div>
+                            <div style="font-size: 0.85rem; color: #b0b0b0;">${item.added_date || 'N/A'}</div>
                             <div class="card-grade ${gradeClass}">${item.grade || 'C'} 級</div>
                         </div>
                     `;

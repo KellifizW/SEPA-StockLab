@@ -344,6 +344,108 @@ def get_rs_rank(ticker: str, force_refresh: bool = False) -> float:
     return float(row["RS_Rank"].iloc[0])
 
 
+def _compute_approx_rs_rank(ticker: str) -> float:
+    """
+    Compute a rough RS percentile rank for a single ticker using a ~100-stock reference set.
+    This avoids downloading the full universe when no RS cache is available.
+    Ticker is always included in the reference set so it ranks against real market peers.
+    Returns float 1-99, or RS_NOT_RANKED on failure.
+    """
+    # Representative reference set covering all major sectors (~100 large/mid caps)
+    REFERENCE_TICKERS = [
+        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
+        "BRK-B", "LLY", "JPM", "V", "UNH", "XOM", "MA", "JNJ", "PG",
+        "HD", "MRK", "ABBV", "CVX", "COST", "KO", "PEP", "ADBE", "WMT",
+        "ACN", "AMD", "MCD", "CRM", "BAC", "TMO", "ORCL", "CSCO", "NFLX",
+        "DIS", "TXN", "ABT", "NEE", "LIN", "QCOM", "DHR", "PM", "INTU",
+        "NOW", "ISRG", "GE", "RTX", "CAT", "HON", "SPGI", "BLK", "AXP",
+        "GS", "SCHW", "PLD", "AMT", "CI", "SYK", "ZTS", "MO", "USB",
+        "DE", "ETN", "AON", "ICE", "CME", "MCO", "EQIX", "SHW", "MMC",
+        "ITW", "APD", "NSC", "WM", "GD", "EW", "HCA", "REGN", "BIIB",
+        "GILD", "MRNA", "VRTX", "DXCM", "IDXX", "ELV", "HUM", "MTD",
+        "RMD", "BSX", "IQV", "BDX", "TSCO", "ODFL", "FAST", "ROST",
+        "RCL", "MAR", "HLT", "ABNB", "UBER", "LYFT", "SNOW", "PLTR",
+        "CRWD", "PANW", "ZS", "DDOG", "MDB", "NET", "ANET", "SMCI",
+        ticker,  # Always include the target ticker
+    ]
+    reference = list(dict.fromkeys(REFERENCE_TICKERS))  # deduplicate, preserve order
+
+    try:
+        logger.info("[RS] Downloading 1-year history for %d-stock reference set (lightweight RS for %s)...",
+                    len(reference), ticker)
+        raw = yf.download(
+            tickers=reference,
+            period="1y",
+            interval="1d",
+            auto_adjust=True,
+            threads=False,
+            progress=False,
+        )
+        if raw is None or raw.empty:
+            return RS_NOT_RANKED
+
+        closes = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
+        closes = closes.dropna(axis=1, how="all")
+        closes = closes.loc[:, closes.count() >= 63]
+
+        if ticker not in closes.columns:
+            return RS_NOT_RANKED
+
+        rs_raw = _calculate_returns(closes)
+        rs_raw = rs_raw.dropna()
+
+        if ticker not in rs_raw.index:
+            return RS_NOT_RANKED
+
+        rs_rank = rs_raw.rank(pct=True) * 100
+        rs_rank = rs_rank.clip(1, 99).round(1)
+        rank = float(rs_rank[ticker])
+        logger.info("[RS] Approximate RS rank for %s: %.1f (vs %d-stock reference set)", ticker, rank, len(closes.columns) - 1)
+        return rank
+    except Exception as exc:
+        logger.warning("[RS] Approximate RS failed for %s: %s", ticker, exc)
+        return RS_NOT_RANKED
+
+
+def get_rs_rank_lightweight(ticker: str) -> float:
+    """
+    Get RS rank for a single ticker WITHOUT triggering a full universe rebuild.
+
+    Used by single-stock analysis (stock_analyzer, qm_analyzer, ml_analyzer) to avoid
+    downloading ~8000 tickers just to score one stock.
+
+    Lookup priority:
+    1. In-memory cache (_rs_df) — already loaded, instant
+    2. Any existing rs_cache.csv (today's or stale — acceptable for individual analysis)
+    3. Approximate RS computed from ticker vs ~100-stock reference set (fast, ~5s)
+    """
+    global _rs_df
+
+    # 1. Already in memory
+    if not _rs_df.empty:
+        row = _rs_df[_rs_df["Ticker"].str.upper() == ticker.upper()]
+        if not row.empty:
+            return float(row["RS_Rank"].iloc[0])
+
+    # 2. Any existing cache file (today's → fresh; older → stale but acceptable)
+    if RS_CACHE_FILE.exists():
+        try:
+            df_cache = pd.read_csv(RS_CACHE_FILE)
+            if len(df_cache) > 10 and "Ticker" in df_cache.columns:
+                _rs_df = df_cache  # load into memory for subsequent calls in this session
+                row = df_cache[df_cache["Ticker"].str.upper() == ticker.upper()]
+                if not row.empty:
+                    cache_date = df_cache["CacheDate"].iloc[0] if "CacheDate" in df_cache.columns else "unknown"
+                    logger.info("[RS] Using cached RS rank for %s from %s (stale ok for single-stock analysis)", ticker, cache_date)
+                    return float(row["RS_Rank"].iloc[0])
+        except Exception as e:
+            logger.debug("[RS] Cache read failed: %s", e)
+
+    # 3. No cache or ticker missing — compute approximate RS from a small reference set
+    logger.info("[RS] No RS cache available for %s — using lightweight reference set computation", ticker)
+    return _compute_approx_rs_rank(ticker)
+
+
 def get_rs_top(percentile: float = 80.0,
                force_refresh: bool = False) -> pd.DataFrame:
     """

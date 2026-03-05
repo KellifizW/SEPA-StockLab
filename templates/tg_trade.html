@@ -1,244 +1,341 @@
-<!DOCTYPE html>
-<html lang="en">
+﻿<!DOCTYPE html>
+<html lang="zh-Hant">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Add Trade - StockLab Mini App</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <title>新增交易 - StockLab</title>
+    <script src="https://unpkg.com/@dotlottie/player-component@latest/dist/dotlottie-player.js" type="module"></script>
     <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
         :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --border-color: #30363d;
-            --text-primary: #c9d1d9;
-            --text-secondary: #8b949e;
-            --accent: #58a6ff;
-            --success: #3fb950;
-            --danger: #f85149;
+            --bg: #0a0e1a;
+            --surface: rgba(255,255,255,0.05);
+            --surface-hover: rgba(255,255,255,0.09);
+            --border: rgba(255,255,255,0.08);
+            --text: #e8eaf6;
+            --text-dim: rgba(232,234,246,0.50);
+            --accent: #4fc3f7;
+            --purple: #7c4dff;
+            --green: #69f0ae;
+            --gold: #ffd54f;
+            --red: #ff5252;
         }
-        
+
         body {
-            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
-            color: var(--text-primary);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
             min-height: 100vh;
-            padding: 10px;
-            margin: 0;
+            overflow-x: hidden;
         }
-        
-        .container-fluid {
-            max-width: 100%;
-            padding: 0;
+
+        body::before {
+            content: '';
+            position: fixed; inset: 0;
+            background: radial-gradient(ellipse 70% 40% at 10% 0%, rgba(124,77,255,0.10) 0%, transparent 60%), radial-gradient(ellipse 50% 35% at 90% 100%, rgba(79,195,247,0.07) 0%, transparent 60%);
+            pointer-events: none; z-index: 0;
         }
-        
+
+        .header {
+            position: relative; z-index: 10;
+            display: flex; align-items: center; gap: 12px;
+            padding: 16px 16px 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        .back-btn {
+            width: 32px; height: 32px; border-radius: 8px;
+            background: var(--surface); border: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: center;
+            color: var(--accent); font-size: 16px; cursor: pointer;
+            text-decoration: none; flex-shrink: 0;
+            transition: background 0.2s;
+        }
+        .back-btn:active { background: var(--surface-hover); }
+        .header-title { font-size: 17px; font-weight: 700; }
+        .header-subtitle { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+
+        .content { position: relative; z-index: 5; padding: 12px 12px 90px; }
+
+        .section-label {
+            font-size: 10px; color: var(--text-dim);
+            text-transform: uppercase; letter-spacing: 1.5px;
+            margin: 14px 0 7px 2px;
+        }
+
         .card {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            margin-bottom: 15px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 14px; overflow: hidden;
+            margin-bottom: 10px; animation: slide-up 0.35s ease both;
         }
-        
-        .card-header {
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border-color);
-            padding: 15px;
+        .card-body { padding: 12px 14px; }
+
+        .search-row { display: flex; gap: 8px; }
+        .search-input {
+            flex: 1; background: rgba(255,255,255,0.06);
+            border: 1px solid var(--border); border-radius: 9px;
+            color: var(--text); padding: 10px 12px;
+            font-size: 16px; font-weight: 700;
+            letter-spacing: 2px; text-transform: uppercase;
+            outline: none; transition: border-color 0.2s, box-shadow 0.2s;
         }
-        
-        .card-title {
-            margin: 0;
-            color: var(--text-primary);
-            font-size: 16px;
-            font-weight: 600;
+        .search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,195,247,0.12); }
+        .search-input::placeholder { color: rgba(255,255,255,0.18); font-weight: 400; letter-spacing: 0; }
+
+        .btn-quote {
+            background: linear-gradient(135deg, #7c4dff, #4fc3f7);
+            border: none; border-radius: 9px; color: #fff;
+            padding: 10px 16px; font-size: 12px; font-weight: 700;
+            cursor: pointer; transition: box-shadow 0.2s, transform 0.15s;
+            white-space: nowrap;
         }
-        
-        .form-label {
-            color: var(--text-secondary);
-            font-size: 12px;
-            font-weight: 500;
-            margin-bottom: 6px;
+        .btn-quote:active { transform: scale(0.93); }
+        .btn-quote:disabled { opacity: 0.5; cursor: default; }
+
+        .lottie-container {
+            display: flex; flex-direction: column; align-items: center;
+            padding: 10px 0; gap: 4px;
         }
-        
-        .form-control, .form-select {
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 10px 12px;
-            font-size: 14px;
-            border-radius: 6px;
+        .lottie-container span { font-size: 11px; color: var(--text-dim); }
+
+        .quote-snap {
+            background: rgba(255,255,255,0.04); border-radius: 10px;
+            border: 1px solid var(--border); padding: 12px; margin-top: 10px;
+        }
+        .quote-top { display: flex; align-items: baseline; gap: 10px; }
+        .quote-ticker { font-size: 18px; font-weight: 800; color: var(--accent); }
+        .quote-price { font-size: 24px; font-weight: 700; }
+        .quote-chg { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 12px; }
+        .chg-up { color: var(--green); background: rgba(105,240,174,0.12); }
+        .chg-down { color: var(--red); background: rgba(255,82,82,0.12); }
+        .quote-stats {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px;
+        }
+        .q-stat { text-align: center; }
+        .q-stat-lbl { font-size: 9px; color: var(--text-dim); margin-bottom: 1px; }
+        .q-stat-val { font-size: 12px; font-weight: 600; }
+        .quote-lock-row { display: flex; gap: 8px; margin-top: 10px; }
+        .btn-lock {
+            flex: 1; background: linear-gradient(135deg, #69f0ae, #00bcd4);
+            border: none; border-radius: 9px; color: #0a0e1a;
+            padding: 10px; font-size: 12px; font-weight: 800;
+            cursor: pointer; transition: transform 0.15s;
+        }
+        .btn-lock:active { transform: scale(0.95); }
+        .btn-requery {
+            background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+            border-radius: 9px; color: var(--text-dim);
+            padding: 10px 14px; font-size: 11px; font-weight: 600;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .btn-requery:active { transform: scale(0.95); }
+
+        .order-type-row {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
             margin-bottom: 12px;
         }
-        
-        .form-control:focus, .form-select:focus {
-            background: var(--bg-primary);
-            border-color: var(--accent);
-            color: var(--text-primary);
-            box-shadow: 0 0 0 0.2rem rgba(88, 166, 255, 0.25);
+        .order-btn {
+            padding: 8px 4px; text-align: center; border-radius: 8px;
+            border: 1px solid var(--border); background: rgba(255,255,255,0.03);
+            color: var(--text-dim); font-size: 11px; font-weight: 600;
+            cursor: pointer; transition: all 0.18s;
         }
-        
-        .btn {
-            padding: 10px 16px;
-            font-size: 14px;
-            font-weight: 500;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s;
+        .order-btn.active {
+            border-color: var(--accent); color: var(--accent);
+            background: rgba(79,195,247,0.10);
         }
-        
-        .btn-primary {
-            background: var(--accent);
-            color: #0d1117;
+
+        .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+        .field-grid.full { grid-template-columns: 1fr; }
+        .field { display: flex; flex-direction: column; gap: 4px; }
+        .field label { font-size: 10px; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; }
+
+        .field input, .field select, .field textarea {
+            background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text);
+            padding: 9px 10px; font-size: 14px; font-family: inherit;
+            outline: none; transition: border-color 0.2s, box-shadow 0.2s;
         }
-        
-        .btn-primary:hover {
-            background: #79c0ff;
-            color: #0d1117;
+        .field input:focus, .field select:focus, .field textarea:focus {
+            border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,195,247,0.10);
         }
-        
-        .btn-danger {
-            background: var(--danger);
-            color: white;
+        .field input::placeholder { color: rgba(255,255,255,0.20); }
+        .field select option { background: #0a0e1a; }
+        .field textarea { resize: none; }
+        .field-hint { font-size: 9px; color: var(--text-dim); margin-top: 1px; }
+
+        .summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+        .sum-item { background: rgba(255,255,255,0.04); border-radius: 8px; padding: 8px 10px; border: 1px solid var(--border); }
+        .sum-lbl { font-size: 9px; color: var(--text-dim); margin-bottom: 2px; }
+        .sum-val { font-size: 14px; font-weight: 700; }
+
+        .btn-submit {
+            width: 100%; padding: 14px;
+            background: linear-gradient(135deg, #4fc3f7, #7c4dff);
+            border: none; border-radius: 12px; color: #fff;
+            font-size: 15px; font-weight: 800; cursor: pointer;
+            transition: box-shadow 0.2s, transform 0.15s;
+            box-shadow: 0 4px 20px rgba(79,195,247,0.25);
+            letter-spacing: 0.5px;
         }
-        
-        .btn-danger:hover {
-            background: #f55c5c;
+        .btn-submit:active { transform: scale(0.97); }
+        .btn-submit:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+
+        .toast {
+            position: fixed; bottom: 80px; left: 12px; right: 12px;
+            padding: 12px 16px; border-radius: 12px; font-size: 13px;
+            font-weight: 600; z-index: 200; opacity: 0;
+            transition: opacity 0.3s; pointer-events: none;
         }
-        
-        .status {
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 15px;
-            font-size: 13px;
-            display: none;
+        .toast.show { opacity: 1; }
+        .toast.success { background: rgba(105,240,174,0.15); border: 1px solid rgba(105,240,174,0.35); color: var(--green); }
+        .toast.error { background: rgba(255,82,82,0.15); border: 1px solid rgba(255,82,82,0.35); color: var(--red); }
+
+        .bottom-nav {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: rgba(10,14,26,0.95); backdrop-filter: blur(20px);
+            border-top: 1px solid var(--border);
+            display: flex; overflow-x: auto; overflow-y: hidden;
+            padding: 6px 4px 14px; z-index: 50; scrollbar-width: none;
         }
-        
-        .status.success {
-            background: rgba(63, 185, 80, 0.1);
-            color: #3fb950;
-            border: 1px solid rgba(63, 185, 80, 0.3);
+        .bottom-nav::-webkit-scrollbar { display: none; }
+        .nav-item {
+            display: flex; flex-direction: column; align-items: center; gap: 2px;
+            cursor: pointer; padding: 4px 10px; border-radius: 8px; transition: all 0.2s;
+            text-decoration: none; color: var(--text-dim);
+            -webkit-tap-highlight-color: transparent;
+            flex-shrink: 0; min-width: 52px;
         }
-        
-        .status.error {
-            background: rgba(248, 81, 73, 0.1);
-            color: #f85149;
-            border: 1px solid rgba(248, 81, 73, 0.3);
-        }
-        
-        .row-fields {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-        
-        .row-fields.full {
-            grid-template-columns: 1fr;
-        }
-        
-        .input-group-text {
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            color: var(--text-secondary);
-            font-size: 12px;
-        }
-        
-        .back-link {
-            color: var(--accent);
-            text-decoration: none;
-            font-size: 13px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-bottom: 15px;
-        }
-        
-        .back-link:hover {
-            color: #79c0ff;
-        }
-        
-        #loadingSpinner {
-            display: none;
-        }
-        
-        .spinner-border {
-            color: var(--accent);
-        }
-        
-        @media (max-width: 480px) {
-            body {
-                padding: 8px;
-            }
-            
-            .row-fields {
-                grid-template-columns: 1fr;
-            }
-        }
+        .nav-item:active { transform: scale(0.88); }
+        .nav-item:hover, .nav-item.active { color: var(--accent); }
+        .nav-icon { font-size: 18px; line-height: 1; }
+        .nav-label { font-size: 9px; font-weight: 600; white-space: nowrap; }
+        .nav-item.trade { color: var(--gold); }
+        .nav-item.trade:hover, .nav-item.trade:active { color: #ffe082; }
+
+        @keyframes slide-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
-    <div class="container-fluid">
-        <!-- Back Link -->
-        <a href="javascript:history.back()" class="back-link">
-            <span>←</span> Back
-        </a>
-        
-        <!-- Title Card -->
+
+    <div class="toast" id="toast"></div>
+
+    <div class="header">
+        <a class="back-btn" onclick="go('/tg/menu')"></a>
+        <div>
+            <div class="header-title">新增交易</div>
+            <div class="header-subtitle" id="headerLockedTicker">請輸入股票代碼進行快速分析</div>
+        </div>
+    </div>
+
+    <div class="content">
+
+        <div class="section-label">報價查詢</div>
         <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">📊 Add Trade</h2>
+            <div class="card-body">
+                <div class="search-row">
+                    <input class="search-input" id="tickerInput" placeholder="NVDA" maxlength="6" autocomplete="off" spellcheck="false">
+                    <button class="btn-quote" id="btnQuote" onclick="fetchQuote()"> 報價</button>
+                </div>
+
+                <div class="lottie-container" id="quoteLoading" style="display:none">
+                    <dotlottie-player src="/assets/loading.lottie" autoplay loop style="width:72px;height:72px;"></dotlottie-player>
+                    <span>正在獲取報價...</span>
+                </div>
+
+                <div class="quote-snap" id="quoteSnap" style="display:none">
+                    <div class="quote-top">
+                        <span class="quote-ticker" id="snapTicker">-</span>
+                        <span class="quote-price" id="snapPrice">-</span>
+                        <span class="quote-chg" id="snapChg">-</span>
+                    </div>
+                    <div class="quote-stats">
+                        <div class="q-stat">
+                            <div class="q-stat-lbl">高</div>
+                            <div class="q-stat-val" id="snapHigh">-</div>
+                        </div>
+                        <div class="q-stat">
+                            <div class="q-stat-lbl">低</div>
+                            <div class="q-stat-val" id="snapLow">-</div>
+                        </div>
+                        <div class="q-stat">
+                            <div class="q-stat-lbl">成交</div>
+                            <div class="q-stat-val" id="snapVol">-</div>
+                        </div>
+                    </div>
+                    <div class="quote-lock-row">
+                        <button class="btn-lock" onclick="lockQuote()"> 確認，填寫訂單</button>
+                        <button class="btn-requery" onclick="clearQuote()">重新查詢</button>
+                    </div>
+                </div>
             </div>
         </div>
-        
-        <!-- Status Messages -->
-        <div id="statusMsg" class="status"></div>
-        
-        <!-- Trade Form Card -->
-        <div class="card">
-            <div class="card-body" style="padding: 15px;">
-                <form id="tradeForm" onsubmit="submitTrade(event)">
-                    <!-- Ticker -->
-                    <div class="row-fields full">
-                        <div>
-                            <label for="ticker" class="form-label">Ticker</label>
-                            <input type="text" class="form-control" id="ticker" placeholder="e.g., NVDA" 
-                                   maxlength="10" required style="text-transform: uppercase;">
+
+        <div id="tradeSection" style="display:none">
+
+            <div class="section-label">訂單類型</div>
+            <div class="card">
+                <div class="card-body">
+                    <div class="order-type-row">
+                        <div class="order-btn active" onclick="setOrderType('MARKET', this)">
+                            <div>MKT</div><div style="font-size:9px;opacity:0.7;margin-top:2px">市價</div>
+                        </div>
+                        <div class="order-btn" onclick="setOrderType('LIMIT', this)">
+                            <div>LMT</div><div style="font-size:9px;opacity:0.7;margin-top:2px">限價</div>
+                        </div>
+                        <div class="order-btn" onclick="setOrderType('STP_LMT', this)">
+                            <div>STP LMT</div><div style="font-size:9px;opacity:0.7;margin-top:2px">停損限</div>
                         </div>
                     </div>
-                    
-                    <!-- Buy Price & Shares -->
-                    <div class="row-fields">
-                        <div>
-                            <label for="buyPrice" class="form-label">Buy Price ($)</label>
-                            <input type="number" class="form-control" id="buyPrice" placeholder="100.50" 
-                                   step="0.01" min="1" required>
-                        </div>
-                        <div>
-                            <label for="shares" class="form-label">Shares</label>
-                            <input type="number" class="form-control" id="shares" placeholder="100" 
-                                   step="1" min="1" required>
+
+                    <div id="orderMKT">
+                        <div class="field">
+                            <label>進場價 (市價)</label>
+                            <input type="number" id="entryPrice" placeholder="系統將使用報價" step="0.01" oninput="calcSummary()">
+                            <div class="field-hint">市價單以最接近的成交價執行</div>
                         </div>
                     </div>
-                    
-                    <!-- Stop Loss & Target -->
-                    <div class="row-fields">
-                        <div>
-                            <label for="stopLoss" class="form-label">Stop Loss ($)</label>
-                            <input type="number" class="form-control" id="stopLoss" placeholder="95.00" 
-                                   step="0.01" min="0">
-                        </div>
-                        <div>
-                            <label for="target" class="form-label">Target ($)</label>
-                            <input type="number" class="form-control" id="target" placeholder="120.00" 
-                                   step="0.01" min="0">
+                    <div id="orderLMT" style="display:none">
+                        <div class="field">
+                            <label>限價 (Limit Price)</label>
+                            <input type="number" id="limitPrice" placeholder="指定成交價格" step="0.01" oninput="syncEntry(); calcSummary()">
+                            <div class="field-hint">系統將等待至少這個價格的成交</div>
                         </div>
                     </div>
-                    
-                    <!-- Strategy & Note -->
-                    <div class="row-fields">
-                        <div>
-                            <label for="strategy" class="form-label">Strategy</label>
-                            <select class="form-select" id="strategy">
+                    <div id="orderSTP_LMT" style="display:none">
+                        <div class="field-grid" style="margin-bottom:0">
+                            <div class="field">
+                                <label>停損點 (Stop)</label>
+                                <input type="number" id="stopTrigger" placeholder="觸發價格" step="0.01">
+                            </div>
+                            <div class="field">
+                                <label>限價 (Limit)</label>
+                                <input type="number" id="stpLimitPrice" placeholder="限價價格" step="0.01" oninput="syncEntry(); calcSummary()">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section-label">倉位設定</div>
+            <div class="card">
+                <div class="card-body">
+                    <div class="field-grid" style="margin-bottom:12px">
+                        <div class="field">
+                            <label>股數 Shares <span style="color:var(--red)">*</span></label>
+                            <input type="number" id="sharesInput" placeholder="100" min="1" step="1" oninput="calcSummary()">
+                        </div>
+                        <div class="field">
+                            <label>停損價 Stop Loss <span style="color:var(--red)">*</span></label>
+                            <input type="number" id="stopInput" placeholder="停損價格" step="0.01" oninput="calcSummary()">
+                        </div>
+                        <div class="field">
+                            <label>獲利目標 Target</label>
+                            <input type="number" id="targetInput" placeholder="獲利價格" step="0.01" oninput="calcSummary()">
+                        </div>
+                        <div class="field">
+                            <label>策略 Strategy</label>
+                            <select id="strategySelect">
                                 <option value="SEPA">SEPA (Minervini)</option>
                                 <option value="QM">QM (Qullamaggie)</option>
                                 <option value="ML">ML (Martin Luk)</option>
@@ -246,180 +343,289 @@
                             </select>
                         </div>
                     </div>
-                    
-                    <!-- Note -->
-                    <div class="row-fields full">
-                        <div>
-                            <label for="note" class="form-label">Note (Optional)</label>
-                            <textarea class="form-control" id="note" placeholder="e.g., VCP breakout, strong technicals..." 
-                                      rows="2" maxlength="200"></textarea>
+                    <div class="field field-grid full">
+                        <label>備註 Note</label>
+                        <textarea id="noteInput" placeholder="例如 VCP breakout，長期持倉心得.." rows="2" maxlength="200"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section-label">倉位總結</div>
+            <div class="card">
+                <div class="card-body">
+                    <div class="summary-grid">
+                        <div class="sum-item">
+                            <div class="sum-lbl">倉位大小</div>
+                            <div class="sum-val" id="sumSize" style="color:var(--accent)">-</div>
+                        </div>
+                        <div class="sum-item">
+                            <div class="sum-lbl">停損幅度</div>
+                            <div class="sum-val" id="sumStopPct" style="color:var(--red)">-</div>
+                        </div>
+                        <div class="sum-item">
+                            <div class="sum-lbl">風險金額</div>
+                            <div class="sum-val" id="sumRiskAmt" style="color:var(--gold)">-</div>
+                        </div>
+                        <div class="sum-item">
+                            <div class="sum-lbl">風險比 R:R</div>
+                            <div class="sum-val" id="sumRR" style="color:var(--green)">-</div>
                         </div>
                     </div>
-                    
-                    <!-- Position Summary -->
-                    <div style="background: var(--bg-primary); border: 1px solid var(--border-color); 
-                                border-radius: 6px; padding: 10px; margin: 15px 0; font-size: 12px;">
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Position Summary:</div>
-                        <div>Position Size: <span id="posSizeDisplay" style="color: var(--accent);">$0.00</span></div>
-                        <div>Stop Loss: <span id="stopPctDisplay" style="color: #f85149;">0%</span></div>
-                        <div>Risk/Reward: <span id="rrDisplay" style="color: #3fb950;">0:1</span></div>
-                    </div>
-                    
-                    <!-- Buttons -->
-                    <div style="display: flex; gap: 8px; padding: 0; margin-top: 15px;">
-                        <button type="submit" class="btn btn-primary" style="flex: 1;">
-                            <span id="submitText">✅ Add Trade</span>
-                            <span id="loadingSpinner" style="display: none;">
-                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                            </span>
-                        </button>
-                        <button type="reset" class="btn btn-danger" style="flex: 1;">Clear</button>
-                    </div>
-                </form>
+                </div>
             </div>
+
+            <button class="btn-submit" id="btnSubmit" onclick="submitTrade()">
+                 確認新增交易
+            </button>
         </div>
-        
-        <!-- Help Card -->
-        <div class="card" style="margin-bottom: 20px;">
-            <div class="card-header">
-                <p class="card-title" style="margin: 0;">💡 Tips</p>
-            </div>
-            <div class="card-body" style="padding: 15px; font-size: 12px; color: var(--text-secondary);">
-                <ul style="margin: 0; padding-left: 16px;">
-                    <li>Fill in all required fields</li>
-                    <li>Stop Loss should be below Buy Price</li>
-                    <li>Target should be above Buy Price</li>
-                    <li>Risk/Reward ratio should be at least 2:1</li>
-                </ul>
-            </div>
-        </div>
+
     </div>
-    
+
+    <nav class="bottom-nav">
+        <a class="nav-item" onclick="go('/tg/menu')">
+            <span class="nav-icon"></span>
+            <span class="nav-label">主頁</span>
+        </a>
+        <a class="nav-item" onclick="navScan('Combined')">
+            <span class="nav-icon"></span>
+            <span class="nav-label">組合</span>
+        </a>
+        <a class="nav-item" onclick="navScan('SEPA')">
+            <span class="nav-icon">S</span>
+            <span class="nav-label">SEPA</span>
+        </a>
+        <a class="nav-item" onclick="navScan('QM')">
+            <span class="nav-icon">Q</span>
+            <span class="nav-label">QM</span>
+        </a>
+        <a class="nav-item" onclick="navScan('ML')">
+            <span class="nav-icon">M</span>
+            <span class="nav-label">ML</span>
+        </a>
+        <a class="nav-item" onclick="go('/tg/menu/account')">
+            <span class="nav-icon"></span>
+            <span class="nav-label">帳戶</span>
+        </a>
+        <a class="nav-item trade active">
+            <span class="nav-icon"></span>
+            <span class="nav-label">交易</span>
+        </a>
+    </nav>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
-        let Telegram = window.Telegram;
-        
-        // Auto-uppercase ticker input
-        document.getElementById('ticker').addEventListener('input', function() {
+        const tg = window.Telegram?.WebApp;
+        if (tg) { tg.expand(); tg.ready(); if (tg.setHeaderColor) tg.setHeaderColor('#0a0e1a'); }
+
+        let _lockedTicker = null;
+        let _lockedPrice = null;
+        let _orderType = 'MARKET';
+
+        const _urlTicker = '{{ ticker }}';
+        if (_urlTicker) document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('tickerInput').value = _urlTicker;
+        });
+
+        document.getElementById('tickerInput').addEventListener('input', function() {
             this.value = this.value.toUpperCase();
         });
+
+        function go(url) { window.location.href = url; }
         
-        // Calculate position summary on values change
-        ['buyPrice', 'shares', 'stopLoss', 'target'].forEach(id => {
-            document.getElementById(id).addEventListener('change', updateSummary);
-        });
-        
-        function updateSummary() {
-            const buyPrice = parseFloat(document.getElementById('buyPrice').value) || 0;
-            const shares = parseInt(document.getElementById('shares').value) || 0;
-            const stopLoss = parseFloat(document.getElementById('stopLoss').value) || 0;
-            const target = parseFloat(document.getElementById('target').value) || 0;
+        async function navScan(name) {
+            const apiMap = {
+                'Combined': '/api/combined/scan/run',
+                'SEPA': '/api/scan/run',
+                'QM': '/api/qm/scan/run',
+                'ML': '/api/ml/scan/run'
+            };
+            const apiUrl = apiMap[name];
+            if (!apiUrl) return;
             
-            const posSize = buyPrice * shares;
-            document.getElementById('posSizeDisplay').textContent = `$${posSize.toFixed(2)}`;
-            
-            if (buyPrice > 0 && stopLoss > 0) {
-                const stopPct = ((buyPrice - stopLoss) / buyPrice * 100).toFixed(1);
-                document.getElementById('stopPctDisplay').textContent = `${stopPct}%`;
-            }
-            
-            if (buyPrice > 0 && stopLoss > 0 && target > 0) {
-                const risk = buyPrice - stopLoss;
-                const reward = target - buyPrice;
-                const rr = (reward / risk).toFixed(2);
-                document.getElementById('rrDisplay').textContent = `${rr}:1`;
+            showToast(`${name} 掃描啟動中...`, 'success');
+            try {
+                const r = await fetch(apiUrl, {method: 'POST'}).then(r => r.json());
+                if (!r.ok) {
+                    showToast(`掃描失敗: ${r.error || '未知錯誤'}`, 'error');
+                    return;
+                }
+                showToast(`${name} 掃描已啟動，背景執行中...`, 'success');
+            } catch(e) {
+                showToast(`掃描啟動失敗: ${e.message}`, 'error');
             }
         }
-        
-        function submitTrade(event) {
-            event.preventDefault();
-            
-            const ticker = document.getElementById('ticker').value.trim().toUpperCase();
-            const buyPrice = parseFloat(document.getElementById('buyPrice').value);
-            const shares = parseInt(document.getElementById('shares').value);
-            const stopLoss = parseFloat(document.getElementById('stopLoss').value) || null;
-            const target = parseFloat(document.getElementById('target').value) || null;
-            const strategy = document.getElementById('strategy').value;
-            const note = document.getElementById('note').value.trim();
-            
-            // Validation
-            if (!ticker || !buyPrice || !shares) {
-                showStatus('Please fill in all required fields', 'error');
-                return;
+
+        async function fetchQuote() {
+            const ticker = document.getElementById('tickerInput').value.toUpperCase().trim();
+            if (!ticker) { showToast('請輸入股票代碼', 'error'); return; }
+            document.getElementById('quoteSnap').style.display = 'none';
+            document.getElementById('quoteLoading').style.display = 'flex';
+            document.getElementById('btnQuote').disabled = true;
+            try {
+                const d = await fetch(`/api/tg/quote/${ticker}`).then(r => r.json());
+                document.getElementById('quoteLoading').style.display = 'none';
+                document.getElementById('btnQuote').disabled = false;
+                if (!d.ok) { showToast(d.error || '報價查詢失敗', 'error'); return; }
+                document.getElementById('snapTicker').textContent = d.ticker;
+                document.getElementById('snapPrice').textContent = `$${d.price.toFixed(2)}`;
+                const chgEl = document.getElementById('snapChg');
+                const up = d.change >= 0;
+                chgEl.textContent = `${up?'+':''}${d.change.toFixed(2)} (${up?'+':''}${d.change_pct.toFixed(2)}%)`;
+                chgEl.className = `quote-chg ${up ? 'chg-up' : 'chg-down'}`;
+                document.getElementById('snapHigh').textContent = `$${d.high.toFixed(2)}`;
+                document.getElementById('snapLow').textContent = `$${d.low.toFixed(2)}`;
+                document.getElementById('snapVol').textContent = fmtVol(d.volume);
+                document.getElementById('quoteSnap').style.display = 'block';
+                document.getElementById('quoteSnap').dataset.price = d.price;
+                document.getElementById('quoteSnap').dataset.ticker = d.ticker;
+            } catch(e) {
+                document.getElementById('quoteLoading').style.display = 'none';
+                document.getElementById('btnQuote').disabled = false;
+                showToast('網路錯誤: ' + e.message, 'error');
             }
-            
-            if (stopLoss && buyPrice <= stopLoss) {
-                showStatus('Stop Loss must be below Buy Price', 'error');
-                return;
+        }
+
+        function lockQuote() {
+            const ds = document.getElementById('quoteSnap').dataset;
+            _lockedTicker = ds.ticker;
+            _lockedPrice = parseFloat(ds.price);
+            document.getElementById('entryPrice').value = _lockedPrice.toFixed(2);
+            document.getElementById('limitPrice').value = _lockedPrice.toFixed(2);
+            document.getElementById('stpLimitPrice').value = (_lockedPrice * 1.001).toFixed(2);
+            document.getElementById('tradeSection').style.display = 'block';
+            document.getElementById('tradeSection').scrollIntoView({behavior:'smooth'});
+            document.getElementById('headerLockedTicker').textContent = `${_lockedTicker} @ $${_lockedPrice.toFixed(2)}`;
+            calcSummary();
+        }
+
+        function clearQuote() {
+            document.getElementById('quoteSnap').style.display = 'none';
+            document.getElementById('tradeSection').style.display = 'none';
+            document.getElementById('tickerInput').focus();
+            _lockedTicker = null;
+            _lockedPrice = null;
+            document.getElementById('headerLockedTicker').textContent = '請輸入股票代碼進行快速分析';
+        }
+
+        function setOrderType(type, el) {
+            _orderType = type;
+            document.querySelectorAll('.order-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            document.getElementById('orderMKT').style.display = type === 'MARKET' ? 'block' : 'none';
+            document.getElementById('orderLMT').style.display = type === 'LIMIT' ? 'block' : 'none';
+            document.getElementById('orderSTP_LMT').style.display = type === 'STP_LMT' ? 'block' : 'none';
+            syncEntry();
+            calcSummary();
+        }
+
+        function syncEntry() {
+            let price = null;
+            if (_orderType === 'LIMIT') price = parseFloat(document.getElementById('limitPrice').value) || _lockedPrice;
+            if (_orderType === 'STP_LMT') price = parseFloat(document.getElementById('stpLimitPrice').value) || _lockedPrice;
+            if (_orderType === 'MARKET') price = parseFloat(document.getElementById('entryPrice').value) || _lockedPrice;
+            document.getElementById('entryPrice').value = price ? price.toFixed(2) : '';
+        }
+
+        function calcSummary() {
+            let entry = parseFloat(document.getElementById('entryPrice').value) || 0;
+            const shares = parseInt(document.getElementById('sharesInput').value) || 0;
+            const stop = parseFloat(document.getElementById('stopInput').value) || 0;
+            const target = parseFloat(document.getElementById('targetInput').value) || 0;
+
+            if (_orderType === 'LIMIT') entry = parseFloat(document.getElementById('limitPrice').value) || entry;
+            if (_orderType === 'STP_LMT') entry = parseFloat(document.getElementById('stpLimitPrice').value) || entry;
+
+            const posSize = entry * shares;
+            document.getElementById('sumSize').textContent = posSize > 0 ? `$${posSize.toFixed(0)}` : '-';
+
+            if (entry > 0 && stop > 0) {
+                const stopPct = (entry - stop) / entry * 100;
+                const riskAmt = (entry - stop) * shares;
+                document.getElementById('sumStopPct').textContent = `-${stopPct.toFixed(1)}%`;
+                document.getElementById('sumRiskAmt').textContent = `$${riskAmt.toFixed(0)}`;
+                if (target > entry) {
+                    const rr = (target - entry) / (entry - stop);
+                    const rrEl = document.getElementById('sumRR');
+                    rrEl.textContent = `${rr.toFixed(1)}:1`;
+                    rrEl.style.color = rr >= 2 ? 'var(--green)' : rr >= 1.5 ? 'var(--gold)' : 'var(--red)';
+                } else {
+                    document.getElementById('sumRR').textContent = '-';
+                }
+            } else {
+                document.getElementById('sumStopPct').textContent = '-';
+                document.getElementById('sumRiskAmt').textContent = '-';
+                document.getElementById('sumRR').textContent = '-';
             }
-            
-            if (target && buyPrice >= target) {
-                showStatus('Target must be above Buy Price', 'error');
-                return;
-            }
-            
-            // Show loading
-            document.getElementById('loadingSpinner').style.display = 'inline';
-            document.getElementById('submitText').style.display = 'none';
-            
-            // Submit trade
-            fetch('/api/quick-add-position', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    ticker: ticker,
-                    buy_price: buyPrice,
-                    shares: shares,
-                    stop_loss: stopLoss,
-                    target: target,
-                    strategy: strategy,
-                    note: note
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('loadingSpinner').style.display = 'none';
-                document.getElementById('submitText').style.display = 'inline';
-                
-                if (data.ok) {
-                    showStatus(`✅ Trade added! ${ticker} @ $${buyPrice} (${shares} shares)`, 'success');
-                    document.getElementById('tradeForm').reset();
-                    updateSummary();
-                    
-                    // Notify Telegram
-                    if (Telegram?.WebApp?.showPopup) {
-                        Telegram.WebApp.showPopup({
-                            title: 'Success',
-                            message: `Trade for ${ticker} added successfully!`,
+        }
+
+        async function submitTrade() {
+            const ticker = _lockedTicker;
+            let entry = parseFloat(document.getElementById('entryPrice').value) || 0;
+            const shares = parseInt(document.getElementById('sharesInput').value) || 0;
+            const stop = parseFloat(document.getElementById('stopInput').value) || 0;
+            const target = parseFloat(document.getElementById('targetInput').value) || null;
+            const strategy = document.getElementById('strategySelect').value;
+            const note = document.getElementById('noteInput').value.trim();
+
+            if (_orderType === 'LIMIT') entry = parseFloat(document.getElementById('limitPrice').value) || entry;
+            if (_orderType === 'STP_LMT') entry = parseFloat(document.getElementById('stpLimitPrice').value) || entry;
+
+            if (!ticker) { showToast('請先鎖定股票報價', 'error'); return; }
+            if (!entry) { showToast('請輸入進場價', 'error'); return; }
+            if (!shares) { showToast('請輸入股數', 'error'); return; }
+            if (!stop) { showToast('停損價必填', 'error'); return; }
+            if (stop >= entry) { showToast('停損價應低於進場價', 'error'); return; }
+            if (target && target <= entry) { showToast('獲利目標應高於進場價', 'error'); return; }
+
+            const btn = document.getElementById('btnSubmit');
+            btn.disabled = true;
+            btn.textContent = '傳送中..';
+            try {
+                const r = await fetch('/api/quick-add-position', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        ticker, buy_price: entry, shares, stop_loss: stop,
+                        target: target || null, strategy, note,
+                        order_type: _orderType
+                    })
+                }).then(x => x.json());
+
+                if (r.ok) {
+                    showToast(`新增 ${ticker} 交易成功`, 'success');
+                    if (tg?.showPopup) {
+                        tg.showPopup({
+                            title: '交易已新增',
+                            message: `${ticker} @ $${entry.toFixed(2)}  ${shares} 股\n停損 $${stop.toFixed(2)}`,
                             buttons: [{type: 'ok'}]
                         });
                     }
+                    setTimeout(() => go('/tg/menu'), 2000);
                 } else {
-                    showStatus(data.error || 'Failed to add trade', 'error');
+                    showToast(r.error || '交易新增失敗', 'error');
+                    btn.disabled = false;
+                    btn.textContent = ' 確認新增交易';
                 }
-            })
-            .catch(e => {
-                document.getElementById('loadingSpinner').style.display = 'none';
-                document.getElementById('submitText').style.display = 'inline';
-                showStatus('Error: ' + e.message, 'error');
-            });
-        }
-        
-        function showStatus(msg, type) {
-            const el = document.getElementById('statusMsg');
-            el.textContent = msg;
-            el.className = `status ${type}`;
-            el.style.display = 'block';
-            
-            if (type === 'success') {
-                setTimeout(() => { el.style.display = 'none'; }, 4000);
+            } catch(e) {
+                showToast('網路錯誤: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.textContent = ' 確認新增交易';
             }
         }
-        
-        // Initialize Telegram WebApp
-        if (Telegram?.WebApp) {
-            Telegram.WebApp.ready();
-            Telegram.WebApp.expand();
-            Telegram.WebApp.setHeaderColor('#0d1117');
+
+        function fmtVol(v) {
+            if (!v) return '-';
+            if (v >= 1e6) return (v/1e6).toFixed(1) + 'M';
+            if (v >= 1e3) return (v/1e3).toFixed(0) + 'K';
+            return v.toString();
+        }
+
+        function showToast(msg, type) {
+            const el = document.getElementById('toast');
+            el.textContent = msg;
+            el.className = `toast ${type} show`;
+            clearTimeout(el._t);
+            el._t = setTimeout(() => el.classList.remove('show'), 3500);
         }
     </script>
 </body>

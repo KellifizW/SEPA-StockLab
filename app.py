@@ -3138,7 +3138,47 @@ def tg_trade_page():
     Telegram Mini App 交易入場頁面
     用於快速添加持倉
     """
-    return render_template("tg_trade.html")
+    ticker = request.args.get("ticker", "").upper().strip()
+    return render_template("tg_trade.html", ticker=ticker)
+
+
+@app.route("/assets/<path:filename>")
+def serve_tma_assets(filename):
+    """Serve TMA Lottie animation assets from the assets/ folder."""
+    import os as _os
+    from flask import send_from_directory as _sfd
+    assets_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "assets")
+    return _sfd(assets_dir, filename)
+
+
+@app.route("/api/tg/quote/<ticker>")
+def api_tg_quote(ticker: str):
+    """Quick price quote snapshot for TMA trade form — uses yfinance history."""
+    ticker = ticker.upper().strip()
+    try:
+        import yfinance as yf
+        df = yf.Ticker(ticker).history(period="2d", auto_adjust=True)
+        if df is None or df.empty:
+            return jsonify({"ok": False, "error": f"找不到 {ticker} 報價"}), 404
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) >= 2 else last
+        close   = round(float(last["Close"]), 2)
+        p_close = round(float(prev["Close"]), 2)
+        chg     = round(close - p_close, 2)
+        chg_pct = round(chg / p_close * 100, 2) if p_close > 0 else 0.0
+        return jsonify({
+            "ok":         True,
+            "ticker":     ticker,
+            "price":      close,
+            "change":     chg,
+            "change_pct": chg_pct,
+            "high":       round(float(last["High"]), 2),
+            "low":        round(float(last["Low"]),  2),
+            "volume":     int(last["Volume"]),
+        })
+    except Exception as e:
+        logger.error("[TG-QUOTE] %s: %s", ticker, e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
