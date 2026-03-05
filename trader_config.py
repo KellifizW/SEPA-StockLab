@@ -943,6 +943,43 @@ TG_MINI_APP_BASE_URL  = os.getenv("TG_MINI_APP_BASE_URL", "https://kathaleen-cep
 TG_MINI_APP_SHOW_BUTTON = True                                  # 在分析結果中顯示 "打開 Mini App" 按鈕
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUTO-TRADE — Automated Buy Execution Engine (QM + ML strategy switching)
+# Reference: modules/auto_trader.py
+# ─────────────────────────────────────────────────────────────────────────────
+AUTO_TRADE_ENABLED           = False   # 主開關 — 必須手動開啟，安全第一
+AUTO_TRADE_DRY_RUN           = True    # True = 模擬模式 (只記錄不下單，即使 ENABLED=True)
+AUTO_TRADE_MAX_BUYS_PER_DAY  = 3       # 每日最多自動買入數
+AUTO_TRADE_MIN_STAR_QM       = 3.5     # QM 複盤模式最低星級門檻
+AUTO_TRADE_MIN_STAR_ML       = 3.5     # ML 複盤模式最低星級門檻
+AUTO_TRADE_MIN_WATCH_SCORE   = 70      # 盯盤模式最低信心分 (0-100)
+AUTO_TRADE_MAX_CANDIDATES    = 10      # 每策略最多進入深度分析的候選人數
+AUTO_TRADE_ORDER_TYPE        = "LMT"   # 下單方式: "LMT" (限價) | "MKT" (市價)
+AUTO_TRADE_LMT_BUFFER_PCT   = 0.1     # 限價單在當前價基礎上加的緩衝%
+AUTO_TRADE_ATTACH_STOP       = True    # 自動附帶 Day1 止損單
+AUTO_TRADE_POLL_INTERVAL_SEC = 300     # 盯盤模式輪詢間隔 (5分鐘 = 300秒)
+AUTO_TRADE_COOLDOWN_SEC      = 86400   # 同一 ticker 冷卻時間 (86400=一整天)
+
+# ── Strategy Gate: 哪些市場環境允許啟用 QM / ML ─────────────────────────────
+AUTO_QM_REGIMES_ENABLED = [
+    "BULL_CONFIRMED", "BULL_UNCONFIRMED", "TRANSITION", "BOTTOM_FORMING",
+]
+AUTO_ML_REGIMES_ENABLED = [
+    "BULL_CONFIRMED", "BULL_UNCONFIRMED", "TRANSITION",
+    "UPTREND_UNDER_PRESSURE", "BOTTOM_FORMING", "CHOPPY",
+]
+# Size multiplier per regime (QM: breakout — more aggressive in bull)
+AUTO_QM_SIZE_MULTIPLIERS = {
+    "BULL_CONFIRMED": 1.0, "BULL_UNCONFIRMED": 0.8,
+    "TRANSITION": 0.5, "BOTTOM_FORMING": 0.3,
+}
+# Size multiplier per regime (ML: pullback — usable in wider conditions)
+AUTO_ML_SIZE_MULTIPLIERS = {
+    "BULL_CONFIRMED": 1.0, "BULL_UNCONFIRMED": 0.9,
+    "TRANSITION": 0.7, "UPTREND_UNDER_PRESSURE": 0.5,
+    "BOTTOM_FORMING": 0.3, "CHOPPY": 0.25,
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # RUNTIME SETTINGS (persisted to data/settings.json)
 # ─────────────────────────────────────────────────────────────────────────────
 SETTINGS_FILE = "data/settings.json"   # Runtime-overridable settings (account size, etc.)

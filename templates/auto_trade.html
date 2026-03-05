@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+{% block title %}Auto-Trade 自動交易{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+  <div class="row g-3">
+
+    <!-- ── Header ─────────────────────────────────────────────── -->
+    <div class="col-12 d-flex align-items-center justify-content-between">
+      <h4 class="mb-0">
+        <i class="bi bi-robot me-2" style="color:var(--accent)"></i>
+        Auto-Trade 自動交易
+      </h4>
+      <div class="d-flex gap-2 align-items-center">
+        <span id="atStatusBadge" class="badge bg-secondary">Stopped 已停止</span>
+        <span id="atCycleNum" class="text-muted" style="font-size:12px"></span>
+      </div>
+    </div>
+
+    <!-- ── Control Panel ──────────────────────────────────────── -->
+    <div class="col-md-4">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center">
+          <i class="bi bi-gear-fill me-2"></i>Control Panel 控制面板
+        </div>
+        <div class="card-body">
+          <!-- Engine switch -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="atDryRunToggle" checked>
+              <label class="form-check-label" for="atDryRunToggle">
+                DRY-RUN 模擬模式 <small class="text-muted">(不實際下單)</small>
+              </label>
+            </div>
+          </div>
+
+          <div class="d-flex gap-2 mb-3">
+            <button class="btn btn-accent flex-fill" id="btnStart" onclick="atStart()">
+              <i class="bi bi-play-fill me-1"></i>Start 啟動
+            </button>
+            <button class="btn btn-outline-danger flex-fill" id="btnStop" onclick="atStop()" disabled>
+              <i class="bi bi-stop-fill me-1"></i>Stop 停止
+            </button>
+          </div>
+
+          <hr class="border-secondary">
+
+          <!-- Config display -->
+          <div id="atConfigDisplay" style="font-size:12px">
+            <table class="table table-sm mb-0">
+              <tbody>
+                <tr><td class="text-muted">QM Min Star</td><td id="cfgMinStarQM">—</td></tr>
+                <tr><td class="text-muted">ML Min Star</td><td id="cfgMinStarML">—</td></tr>
+                <tr><td class="text-muted">Min Watch Score</td><td id="cfgMinWatch">—</td></tr>
+                <tr><td class="text-muted">Max Buys/Day</td><td id="cfgMaxBuys">—</td></tr>
+                <tr><td class="text-muted">Poll Interval</td><td id="cfgPollSec">—</td></tr>
+                <tr><td class="text-muted">Order Type</td><td id="cfgOrderType">—</td></tr>
+                <tr><td class="text-muted">Attach Stop</td><td id="cfgAttachStop">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Live Status Metrics ────────────────────────────────── -->
+    <div class="col-md-8">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center">
+          <i class="bi bi-activity me-2"></i>Live Status 即時狀態
+        </div>
+        <div class="card-body">
+          <div class="row g-2 mb-3">
+            <div class="col-3">
+              <div class="metric-card">
+                <div class="metric-val" id="metBuysToday">0</div>
+                <div class="metric-lbl">Buys Today 今日買入</div>
+              </div>
+            </div>
+            <div class="col-3">
+              <div class="metric-card">
+                <div class="metric-val" id="metCycle">0</div>
+                <div class="metric-lbl">Cycle 輪次</div>
+              </div>
+            </div>
+            <div class="col-3">
+              <div class="metric-card">
+                <div class="metric-val" id="metCandidates">0</div>
+                <div class="metric-lbl">Candidates 候選</div>
+              </div>
+            </div>
+            <div class="col-3">
+              <div class="metric-card">
+                <div class="metric-val" id="metLastCycle">—</div>
+                <div class="metric-lbl">Last Cycle 上次</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Candidates table -->
+          <div style="max-height:250px;overflow-y:auto">
+            <table class="table table-sm table-hover mb-0" id="candidatesTable">
+              <thead>
+                <tr>
+                  <th>Ticker</th>
+                  <th>Strategy</th>
+                  <th>Stars ★</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="candidatesBody">
+                <tr><td colspan="4" class="text-muted text-center">等待啟動 Waiting…</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Error display -->
+          <div id="atError" class="alert alert-danger mt-2 d-none" style="font-size:12px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Execution History ──────────────────────────────────── -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-journal-text me-2"></i>Execution History 執行紀錄</span>
+          <div class="d-flex gap-2 align-items-center">
+            <select id="histDays" class="form-select form-select-sm" style="width:auto" onchange="loadHistory()">
+              <option value="1">Today 今天</option>
+              <option value="7" selected>7 days</option>
+              <option value="30">30 days</option>
+            </select>
+            <button class="btn btn-sm btn-outline-secondary" onclick="loadHistory()">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+        </div>
+        <div class="card-body p-0" style="max-height:400px;overflow-y:auto">
+          <table class="table table-sm table-hover mb-0" id="historyTable">
+            <thead style="position:sticky;top:0;background:#1c2128;z-index:1">
+              <tr>
+                <th>Time 時間</th>
+                <th>Ticker</th>
+                <th>Strategy</th>
+                <th>Stars ★</th>
+                <th>Watch</th>
+                <th>Regime</th>
+                <th>Action</th>
+                <th>Reason 原因</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Mode</th>
+              </tr>
+            </thead>
+            <tbody id="historyBody">
+              <tr><td colspan="11" class="text-muted text-center">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- row -->
+</div><!-- container -->
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let _pollTimer = null;
+
+function atStart() {
+  const dryRun = document.getElementById('atDryRunToggle').checked;
+  fetch('/api/auto-trade/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({dry_run: dryRun})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = false;
+      _startPolling();
+      _toast(d.message, 'ok');
+    } else {
+      _toast(d.message, 'err');
+    }
+  })
+  .catch(e => _toast('Start failed: ' + e, 'err'));
+}
+
+function atStop() {
+  fetch('/api/auto-trade/stop', {method: 'POST'})
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      document.getElementById('btnStart').disabled = false;
+      document.getElementById('btnStop').disabled = true;
+      _stopPolling();
+      _toast(d.message, 'ok');
+    } else {
+      _toast(d.message, 'err');
+    }
+  })
+  .catch(e => _toast('Stop failed: ' + e, 'err'));
+}
+
+function _startPolling() {
+  _pollStatus();
+  _pollTimer = setInterval(_pollStatus, 5000);
+}
+
+function _stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+function _pollStatus() {
+  fetch('/api/auto-trade/status')
+  .then(r => r.json())
+  .then(s => {
+    // Badge
+    const badge = document.getElementById('atStatusBadge');
+    if (s.running) {
+      badge.textContent = s.dry_run ? 'DRY-RUN 模擬中' : 'LIVE 實盤中';
+      badge.className = s.dry_run ? 'badge bg-warning text-dark' : 'badge bg-danger';
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = false;
+    } else {
+      badge.textContent = 'Stopped 已停止';
+      badge.className = 'badge bg-secondary';
+      document.getElementById('btnStart').disabled = false;
+      document.getElementById('btnStop').disabled = true;
+    }
+
+    // Metrics
+    document.getElementById('metBuysToday').textContent = s.buys_today || 0;
+    document.getElementById('metCycle').textContent = s.cycle || 0;
+    document.getElementById('metCandidates').textContent = (s.candidates || []).length;
+    if (s.last_cycle_at) {
+      const t = new Date(s.last_cycle_at);
+      document.getElementById('metLastCycle').textContent =
+        t.toLocaleTimeString('en-US', {hour12: false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      document.getElementById('metLastCycle').style.fontSize = '16px';
+    }
+
+    // Config
+    const cfg = s.config || {};
+    document.getElementById('cfgMinStarQM').textContent = cfg.min_star_qm || '—';
+    document.getElementById('cfgMinStarML').textContent = cfg.min_star_ml || '—';
+    document.getElementById('cfgMinWatch').textContent = cfg.min_watch_score || '—';
+    document.getElementById('cfgMaxBuys').textContent = cfg.max_buys_per_day || '—';
+    document.getElementById('cfgPollSec').textContent = (cfg.poll_interval_sec || 300) + 's';
+    document.getElementById('cfgOrderType').textContent = cfg.order_type || '—';
+    document.getElementById('cfgAttachStop').textContent = cfg.attach_stop ? 'Yes' : 'No';
+
+    // Candidates
+    const body = document.getElementById('candidatesBody');
+    const cands = s.candidates || [];
+    if (cands.length === 0) {
+      body.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No candidates</td></tr>';
+    } else {
+      body.innerHTML = cands.map(c => {
+        const cls = c.action === 'BUY' ? 'score-high' : c.action === 'BLOCKED' ? 'score-low' : '';
+        return `<tr>
+          <td><strong>${_esc(c.ticker)}</strong></td>
+          <td>${_esc(c.strategy)}</td>
+          <td>${(c.stars||0).toFixed(1)}</td>
+          <td class="${cls}">${_esc(c.action)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Error
+    const errDiv = document.getElementById('atError');
+    if (s.error) {
+      errDiv.textContent = s.error;
+      errDiv.classList.remove('d-none');
+    } else {
+      errDiv.classList.add('d-none');
+    }
+  })
+  .catch(() => {});
+}
+
+function loadHistory() {
+  const days = document.getElementById('histDays').value;
+  fetch(`/api/auto-trade/history?days=${days}`)
+  .then(r => r.json())
+  .then(d => {
+    const body = document.getElementById('historyBody');
+    const rows = d.rows || [];
+    if (rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="11" class="text-muted text-center">No records 無紀錄</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(r => {
+      const t = r.trade_time ? new Date(r.trade_time).toLocaleString('en-US', {
+        month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false
+      }) : '—';
+      const actionCls = r.action === 'BUY' ? 'score-high' :
+                        r.action === 'BLOCKED' ? 'score-low' : 'text-muted';
+      return `<tr>
+        <td style="font-size:11px">${_esc(t)}</td>
+        <td><strong>${_esc(r.ticker)}</strong></td>
+        <td>${_esc(r.strategy)}</td>
+        <td>${(r.stars||0).toFixed(1)}</td>
+        <td>${r.watch_score||'—'}</td>
+        <td style="font-size:11px">${_esc(r.regime)}</td>
+        <td class="${actionCls}"><strong>${_esc(r.action)}</strong></td>
+        <td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${_esc(r.reason)}">${_esc(r.reason)}</td>
+        <td>${r.qty||'—'}</td>
+        <td>${r.limit_price ? '$'+Number(r.limit_price).toFixed(2) : '—'}</td>
+        <td>${r.dry_run ? '<span class="badge bg-warning text-dark">DRY</span>' :
+                          '<span class="badge bg-danger">LIVE</span>'}</td>
+      </tr>`;
+    }).join('');
+  })
+  .catch(e => {
+    document.getElementById('historyBody').innerHTML =
+      `<tr><td colspan="11" class="text-danger text-center">Error: ${_esc(String(e))}</td></tr>`;
+  });
+}
+
+function _esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function _toast(msg, type) {
+  const c = document.getElementById('toast-container');
+  if (!c) return;
+  const el = document.createElement('div');
+  el.className = `toast-msg ${type}`;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+  _pollStatus();
+  loadHistory();
+  // If already running, start polling
+  fetch('/api/auto-trade/status').then(r => r.json()).then(s => {
+    if (s.running) _startPolling();
+  }).catch(() => {});
+});
+</script>
+{% endblock %}

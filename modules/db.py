@@ -288,6 +288,35 @@ def _ensure_schema(conn):
         ON ml_scan_history (ticker, scan_date)
     """)
 
+    # ── Auto-Trade log ─────────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS auto_trade_log (
+            id              INTEGER PRIMARY KEY,
+            trade_date      DATE NOT NULL,
+            trade_time      TIMESTAMP NOT NULL,
+            ticker          VARCHAR NOT NULL,
+            strategy        VARCHAR,              -- QM or ML
+            stars           DOUBLE,
+            watch_score     INTEGER,
+            regime          VARCHAR,
+            action          VARCHAR,              -- BUY, SKIP, BLOCKED
+            reason          VARCHAR,
+            order_type      VARCHAR,
+            qty             INTEGER,
+            limit_price     DOUBLE,
+            stop_price      DOUBLE,
+            order_id        INTEGER,
+            dry_run         BOOLEAN DEFAULT TRUE,
+            iron_rules      VARCHAR,              -- JSON list of triggered iron rules
+            dim_summary     VARCHAR               -- JSON summary of dimension scores
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_auto_trade_log_date
+        ON auto_trade_log (trade_date, ticker)
+    """)
+
 
 def _init_schema_once():
     """Create DuckDB schema exactly once per process (double-checked locking, thread-safe)."""
@@ -1550,4 +1579,74 @@ def query_ibkr_orders(days: int = 30) -> list:
             ]
         except Exception as exc:
             logger.error("[DB] query_ibkr_orders failed: %s", exc)
+            return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-Trade Log
+# ─────────────────────────────────────────────────────────────────────────────
+
+def append_auto_trade(entry: dict) -> bool:
+    """Append a single auto-trade log entry."""
+    _init_schema_once()
+    import json as _json
+    with _lock:
+        try:
+            conn = _get_conn()
+            conn.execute("""
+                INSERT INTO auto_trade_log
+                    (trade_date, trade_time, ticker, strategy, stars,
+                     watch_score, regime, action, reason, order_type,
+                     qty, limit_price, stop_price, order_id, dry_run,
+                     iron_rules, dim_summary)
+                VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?)
+            """, [
+                entry.get("trade_date"),
+                entry.get("trade_time"),
+                entry.get("ticker", ""),
+                entry.get("strategy", ""),
+                _to_float(entry.get("stars")),
+                _to_int(entry.get("watch_score")),
+                entry.get("regime", ""),
+                entry.get("action", ""),
+                entry.get("reason", ""),
+                entry.get("order_type", ""),
+                _to_int(entry.get("qty")),
+                _to_float(entry.get("limit_price")),
+                _to_float(entry.get("stop_price")),
+                _to_int(entry.get("order_id")),
+                entry.get("dry_run", True),
+                _json.dumps(entry.get("iron_rules", []), ensure_ascii=False),
+                _json.dumps(entry.get("dim_summary", {}), ensure_ascii=False),
+            ])
+            conn.close()
+            return True
+        except Exception as exc:
+            logger.error("[DB] append_auto_trade failed: %s", exc)
+            return False
+
+
+def query_auto_trade_log(days: int = 30) -> list:
+    """Query auto-trade log entries within the last N days."""
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            rows = conn.execute(f"""
+                SELECT trade_date, trade_time, ticker, strategy, stars,
+                       watch_score, regime, action, reason, order_type,
+                       qty, limit_price, stop_price, order_id, dry_run,
+                       iron_rules, dim_summary
+                FROM auto_trade_log
+                WHERE trade_date >= CURRENT_DATE - INTERVAL {days} DAY
+                ORDER BY trade_time DESC
+            """).fetchall()
+            conn.close()
+            cols = ["trade_date", "trade_time", "ticker", "strategy", "stars",
+                    "watch_score", "regime", "action", "reason", "order_type",
+                    "qty", "limit_price", "stop_price", "order_id", "dry_run",
+                    "iron_rules", "dim_summary"]
+            return [dict(zip(cols, row)) for row in rows]
+        except Exception as exc:
+            logger.error("[DB] query_auto_trade_log failed: %s", exc)
             return []

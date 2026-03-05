@@ -147,6 +147,11 @@ def page_qm_backtest():
     return render_template("qm_backtest.html")
 
 
+@bp.route("/auto-trade")
+def page_auto_trade():
+    return render_template("auto_trade.html")
+
+
 # ─── Serve latest HTML report inline ─────────────────────────────────────────
 
 @bp.route("/latest-report")
