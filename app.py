@@ -249,8 +249,10 @@ _COMBINED_LAST_FILE = ROOT / C.DATA_DIR / "combined_last_scan.json"
 
 
 def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
-                        sepa_csv="", qm_csv=""):
+                        sepa_csv="", qm_csv="", ml_rows=None, ml_csv=""):
     """Persist last combined scan summary for dashboard display."""
+    if ml_rows is None:
+        ml_rows = []
     try:
         # Compute a ≥4-star filtered count to match the default display filter
         # in combined_scan.html (minStar default = 4)
@@ -259,17 +261,26 @@ def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
             1 for r in qm_rows
             if float(r.get("qm_star") or r.get("stars") or 0) >= _default_star
         )
+        _default_ml_star = 3.0
+        ml_count_3star = sum(
+            1 for r in ml_rows
+            if float(r.get("ml_star") or r.get("stars") or 0) >= _default_ml_star
+        )
         data = {
             "saved_at":      datetime.now().isoformat(),
             "sepa_count":    len(sepa_rows),
             "qm_count":      len(qm_rows),        # raw total
             "qm_count_4star": qm_count_4star,     # filtered at ≥4★ (default)
+            "ml_count":      len(ml_rows),
+            "ml_count_3star": ml_count_3star,
             "sepa_rows":     sepa_rows[:20],   # top 20 sufficient for dashboard
             "qm_rows":       qm_rows[:20],
+            "ml_rows":       ml_rows[:20],
             "market_env":    market_env,
             "timing":        timing,
             "sepa_csv":      sepa_csv,
             "qm_csv":        qm_csv,
+            "ml_csv":        ml_csv,
         }
         _COMBINED_LAST_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
@@ -286,24 +297,25 @@ def _load_combined_last() -> dict:
     return {}
 
 
-def _save_combined_scan_csv(sepa_df, qm_df, scan_ts=None) -> tuple:
+def _save_combined_scan_csv(sepa_df, qm_df, ml_df=None, scan_ts=None) -> tuple:
     """
     Save combined scan results to scan_results/ folder.
-    Creates two timestamped CSV files per run:
+    Creates three timestamped CSV files per run:
       scan_results/combined_sepa_YYYYMMDD_HHMMSS.csv  — SEPA passed stocks
       scan_results/combined_qm_YYYYMMDD_HHMMSS.csv    — QM passed stocks
+      scan_results/combined_ml_YYYYMMDD_HHMMSS.csv    — ML passed stocks
 
-    Returns (sepa_path, qm_path) as relative path strings for display.
+    Returns (sepa_path, qm_path, ml_path) as relative path strings for display.
     """
     from datetime import datetime as _dt
-    sepa_path = qm_path = ""
+    sepa_path = qm_path = ml_path = ""
     try:
         out_dir = ROOT / "scan_results"
         out_dir.mkdir(parents=True, exist_ok=True)
         ts_str = (scan_ts or _dt.now()).strftime("%Y%m%d_%H%M%S")
         keep = getattr(C, "QM_SCAN_RESULTS_KEEP", 30)
 
-        for label, df in [("combined_sepa", sepa_df), ("combined_qm", qm_df)]:
+        for label, df in [("combined_sepa", sepa_df), ("combined_qm", qm_df), ("combined_ml", ml_df)]:
             fpath = out_dir / f"{label}_{ts_str}.csv"
             if df is not None and hasattr(df, "to_csv") and not df.empty:
                 df.to_csv(fpath, index=False)
@@ -313,8 +325,10 @@ def _save_combined_scan_csv(sepa_df, qm_df, scan_ts=None) -> tuple:
                 logging.info("[Combined Scan] No data for %s — wrote empty placeholder", fpath.name)
             if label == "combined_sepa":
                 sepa_path = f"scan_results/{fpath.name}"
-            else:
+            elif label == "combined_qm":
                 qm_path = f"scan_results/{fpath.name}"
+            else:
+                ml_path = f"scan_results/{fpath.name}"
             # Rotate: keep only most recent N files of this label type
             existing = sorted(out_dir.glob(f"{label}_*.csv"), reverse=True)
             for old in existing[keep:]:
@@ -324,7 +338,7 @@ def _save_combined_scan_csv(sepa_df, qm_df, scan_ts=None) -> tuple:
                     pass
     except Exception as exc:
         logging.warning("Could not save combined scan CSVs: %s", exc)
-    return sepa_path, qm_path
+    return sepa_path, qm_path, ml_path
 
 
 def _new_job() -> str:
@@ -1012,7 +1026,8 @@ def api_combined_scan_run():
     
     # Attach to combined_scanner and related modules
     _COMBINED_LOGGERS = [
-        "modules.combined_scanner", "modules.screener", "modules.qm_screener", 
+        "modules.combined_scanner", "modules.screener", "modules.qm_screener",
+        "modules.ml_screener",
         "modules.data_pipeline", "modules.rs_ranking", "modules.market_env", 
         "modules.qm_analyzer"
     ]
@@ -1035,7 +1050,7 @@ def api_combined_scan_run():
 
             logging.info(f"[COMBINED SCAN {jid}] Calling run_combined_scan()...")
             try:
-                sepa_result, qm_result = run_combined_scan(
+                sepa_result, qm_result, ml_result = run_combined_scan(
                     refresh_rs=refresh_rs,
                     stage1_source=stage1_source,
                     verbose=False,
@@ -1066,8 +1081,9 @@ def api_combined_scan_run():
                     for idx, row in df.iterrows():
                         record = {}
                         for col, val in row.items():
-                            # Skip DataFrame/Series/complex objects
-                            if isinstance(val, (pd.DataFrame, pd.Series, dict, list)):
+                            # Skip only DataFrame/Series — allow dict/list for nested fields
+                            # (e.g., decision_tree, setup_info) which _clean() will handle
+                            if isinstance(val, (pd.DataFrame, pd.Series)):
                                 continue
                             # Convert NaN/None to None
                             if pd.isna(val):
@@ -1091,24 +1107,29 @@ def api_combined_scan_run():
             qm_all_rows    = _to_rows(qm_all_source)
             market_env     = sepa_result.get("market_env", {})
             timing         = sepa_result.get("timing", {})
+            ml_rows        = _to_rows(ml_result.get("passed"))
+            ml_all_rows    = _to_rows(ml_result.get("all"))
             qm_was_blocked = qm_result.get("blocked", False)
-            logging.info(f"[COMBINED SCAN {jid}] Converted results: SEPA {len(sepa_rows)} passed, QM {len(qm_rows)} passed, blocked={qm_was_blocked}")
+            ml_was_blocked = ml_result.get("blocked", False)
+            logging.info(f"[COMBINED SCAN {jid}] Converted results: SEPA {len(sepa_rows)} passed, QM {len(qm_rows)} passed (blocked={qm_was_blocked}), ML {len(ml_rows)} passed (blocked={ml_was_blocked})")
 
             # ── Save results to scan_results/ ───────────────────────────────
             from datetime import datetime as _dt_now
             _scan_ts = _dt_now.now()
             logging.info(f"[COMBINED SCAN {jid}] Saving CSV results...")
-            sepa_csv_path, qm_csv_path = _save_combined_scan_csv(
+            sepa_csv_path, qm_csv_path, ml_csv_path = _save_combined_scan_csv(
                 sepa_result.get("passed"),
                 qm_result.get("passed"),
+                ml_df=ml_result.get("passed"),
                 scan_ts=_scan_ts
             )
-            logging.info(f"[COMBINED SCAN {jid}] CSV saved: {sepa_csv_path}, {qm_csv_path}")
+            logging.info(f"[COMBINED SCAN {jid}] CSV saved: {sepa_csv_path}, {qm_csv_path}, {ml_csv_path}")
 
             # ── Persist combined summary for combined dashboard ──────────
             logging.info(f"[COMBINED SCAN {jid}] Saving combined summary...")
             _save_combined_last(sepa_rows, qm_rows, market_env, timing,
-                                sepa_csv_path, qm_csv_path)
+                                sepa_csv_path, qm_csv_path, ml_rows=ml_rows,
+                                ml_csv=ml_csv_path)
 
             # ── Mirror results to individual scan endpoints ──────────────
             # This makes /api/scan/last and /api/qm/scan/last reflect the
@@ -1117,6 +1138,8 @@ def api_combined_scan_run():
             _save_last_scan(sepa_rows, all_rows=sepa_all_rows)
             if not qm_was_blocked:
                 _save_qm_last_scan(qm_rows, all_rows=qm_all_rows)
+            if not ml_was_blocked:
+                _save_ml_last_scan(ml_rows, all_rows=ml_all_rows)
 
             result = {
                 "sepa": {
@@ -1128,10 +1151,16 @@ def api_combined_scan_run():
                     "count": len(qm_rows),
                     "blocked": qm_was_blocked,
                 },
+                "ml": {
+                    "passed": ml_rows,
+                    "count": len(ml_rows),
+                    "blocked": ml_was_blocked,
+                },
                 "market": market_env,
                 "timing": timing,
                 "sepa_csv": sepa_csv_path,
                 "qm_csv":   qm_csv_path,
+                "ml_csv":   ml_csv_path,
             }
 
             log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""

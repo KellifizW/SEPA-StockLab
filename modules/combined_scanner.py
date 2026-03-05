@@ -116,7 +116,8 @@ def _cancelled() -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _prefilter_dollar_volume(sepa_tickers: list, qm_tickers: list,
-                              verbose: bool = True) -> tuple[list, list]:
+                              ml_tickers: list | None = None,
+                              verbose: bool = True) -> tuple[list, list, list]:
     """
     Stage 1.5A — Pre-filter using NASDAQ FTP cached close × avg_vol data.
 
@@ -131,23 +132,29 @@ def _prefilter_dollar_volume(sepa_tickers: list, qm_tickers: list,
       - SEPA: dollar_vol ≥ SEPA_MIN_DOLLAR_VOL ($2M default)
               Minervini requires institutional participation; very low dollar
               volume stocks lack institutional interest.
+      - ML: dollar_vol ≥ ML_MIN_DOLLAR_VOLUME ($5M default)
+            Martin Luk requires institutional-level liquidity.
 
     Returns:
-        (filtered_sepa_tickers, filtered_qm_tickers)
+        (filtered_sepa_tickers, filtered_qm_tickers, filtered_ml_tickers)
     """
+    if ml_tickers is None:
+        ml_tickers = []
+
     try:
         from modules.nasdaq_universe import get_cached_ticker_data
         cache = get_cached_ticker_data()
     except Exception as exc:
         logger.warning("[Stage 1.5A] Could not load NASDAQ FTP cache: %s", exc)
-        return sepa_tickers, qm_tickers
+        return sepa_tickers, qm_tickers, ml_tickers
 
     if not cache:
         logger.info("[Stage 1.5A] No cached data available — skipping dollar volume pre-filter")
-        return sepa_tickers, qm_tickers
+        return sepa_tickers, qm_tickers, ml_tickers
 
     qm_min_dv   = getattr(C, "QM_SCAN_MIN_DOLLAR_VOL", 5_000_000)
     sepa_min_dv  = getattr(C, "SEPA_MIN_DOLLAR_VOL", 2_000_000)
+    ml_min_dv    = getattr(C, "ML_MIN_DOLLAR_VOLUME", 5_000_000)
 
     def _dollar_vol(ticker: str) -> float:
         row = cache.get(ticker)
@@ -157,26 +164,31 @@ def _prefilter_dollar_volume(sepa_tickers: list, qm_tickers: list,
 
     sepa_before = len(sepa_tickers)
     qm_before   = len(qm_tickers)
+    ml_before   = len(ml_tickers)
 
     sepa_filtered = [t for t in sepa_tickers if _dollar_vol(t) >= sepa_min_dv]
     qm_filtered   = [t for t in qm_tickers   if _dollar_vol(t) >= qm_min_dv]
+    ml_filtered   = [t for t in ml_tickers    if _dollar_vol(t) >= ml_min_dv]
 
     sepa_removed = sepa_before - len(sepa_filtered)
     qm_removed   = qm_before  - len(qm_filtered)
+    ml_removed   = ml_before   - len(ml_filtered)
 
-    if verbose and (sepa_removed or qm_removed):
+    if verbose and (sepa_removed or qm_removed or ml_removed):
         logger.info(
             "[Stage 1.5A] Dollar volume pre-filter: "
-            "SEPA %d→%d (−%d, min $%.0fM) | QM %d→%d (−%d, min $%.0fM)",
+            "SEPA %d→%d (−%d, min $%.0fM) | QM %d→%d (−%d, min $%.0fM) | ML %d→%d (−%d, min $%.0fM)",
             sepa_before, len(sepa_filtered), sepa_removed, sepa_min_dv / 1e6,
             qm_before, len(qm_filtered), qm_removed, qm_min_dv / 1e6,
+            ml_before, len(ml_filtered), ml_removed, ml_min_dv / 1e6,
         )
-    return sepa_filtered, qm_filtered
+    return sepa_filtered, qm_filtered, ml_filtered
 
 
 def _prefilter_technical(sepa_tickers: list, qm_tickers: list,
-                          enriched_map: dict,
-                          verbose: bool = True) -> tuple[list, list]:
+                          ml_tickers: list | None = None,
+                          enriched_map: dict = None,
+                          verbose: bool = True) -> tuple[list, list, list]:
     """
     Stage 1.5B — Fast technical pre-screen using enriched OHLCV data.
 
@@ -195,10 +207,19 @@ def _prefilter_technical(sepa_tickers: list, qm_tickers: list,
       • 1M momentum > 0 (all QM momentum thresholds are positive)
       • Price > SMA50 (Supplement 14: hard penalty, effectively a gate)
 
+    ML pre-screen (will fail ML Stage 2 gate if any of these fail):
+      • Price > EMA50 (MartinLukCore Ch3: not in breakdown)
+      • EMA21 or EMA50 must be rising (at least one)
+
     Returns:
-        (filtered_sepa_tickers, filtered_qm_tickers)
+        (filtered_sepa_tickers, filtered_qm_tickers, filtered_ml_tickers)
     """
     import numpy as np
+
+    if ml_tickers is None:
+        ml_tickers = []
+    if enriched_map is None:
+        enriched_map = {}
 
     def _safe_float(series_or_val, idx=-1) -> float | None:
         """Safely extract a float from a Series or scalar."""
@@ -272,23 +293,55 @@ def _prefilter_technical(sepa_tickers: list, qm_tickers: list,
 
         return True
 
+    def _passes_ml(ticker: str) -> bool:
+        """ML pre-screen: Price > EMA50, at least EMA21 or EMA50 rising."""
+        df = enriched_map.get(ticker)
+        if df is None or df.empty or len(df) < 50:
+            return False
+        last = df.iloc[-1]
+        close = _safe_float(last.get("Close"))
+        if close is None:
+            return False
+
+        # Price must be above EMA50 (Not in breakdown — MartinLukCore Ch3)
+        ema50 = _safe_float(last.get("EMA_50"))
+        if ema50 and close < ema50:
+            return False
+
+        # At least EMA21 or EMA50 must be rising (compared to 5 bars ago)
+        ema21_curr = _safe_float(last.get("EMA_21"))
+        ema21_prev = _safe_float(df["EMA_21"].iloc[-6]) if "EMA_21" in df.columns and len(df) > 5 else None
+        ema50_curr = _safe_float(last.get("EMA_50"))
+        ema50_prev = _safe_float(df["EMA_50"].iloc[-6]) if "EMA_50" in df.columns and len(df) > 5 else None
+        ema21_rising = ema21_prev is not None and ema21_curr is not None and ema21_curr > ema21_prev
+        ema50_rising = ema50_prev is not None and ema50_curr is not None and ema50_curr > ema50_prev
+        if not (ema21_rising or ema50_rising):
+            return False
+
+        return True
+
     sepa_before = len(sepa_tickers)
     qm_before   = len(qm_tickers)
+    ml_before   = len(ml_tickers)
 
     sepa_filtered = [t for t in sepa_tickers if _passes_sepa(t)]
     qm_filtered   = [t for t in qm_tickers   if _passes_qm(t)]
+    ml_filtered   = [t for t in ml_tickers    if _passes_ml(t)]
 
     sepa_removed = sepa_before - len(sepa_filtered)
     qm_removed   = qm_before  - len(qm_filtered)
+    ml_removed   = ml_before   - len(ml_filtered)
 
     if verbose:
         logger.info(
             "[Stage 1.5B] Technical pre-screen: "
-            "SEPA %d→%d (−%d, SMA alignment) | QM %d→%d (−%d, ADR/momentum/SMA50)",
+            "SEPA %d→%d (−%d, SMA alignment) | QM %d→%d (−%d, ADR/momentum/SMA50) | "
+            "ML %d→%d (−%d, EMA structure)",
             sepa_before, len(sepa_filtered), sepa_removed,
             qm_before, len(qm_filtered), qm_removed,
+            ml_before, len(ml_filtered), ml_removed,
         )
-    return sepa_filtered, qm_filtered
+    return sepa_filtered, qm_filtered, ml_filtered
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -301,12 +354,14 @@ def run_combined_scan(custom_filters: dict | None = None,
                       stage1_source: str | None = None,
                       min_star: float | None = None,
                       top_n: int | None = None,
-                      strict_rs: bool = False) -> Tuple[dict, dict]:
+                      strict_rs: bool = False,
+                      include_ml: bool = True,
+                      ml_min_star: float | None = None) -> Tuple[dict, dict, dict]:
     """
-    Run both SEPA and QM scans with shared Stage 0-3 infrastructure.
+    Run SEPA, QM, and ML scans with shared Stage 0-3 infrastructure.
 
-    Stage 1 runs SEPA and QM coarse filters IN PARALLEL, then unions the
-    results so each method operates on its correct candidate universe.
+    Stage 1 runs SEPA, QM, and ML coarse filters IN PARALLEL, then unions
+    the results so each method operates on its correct candidate universe.
     Stage 2 batch download happens ONCE on the union.  Stage 2-3 analysis
     for each method then runs in parallel threads.
 
@@ -319,14 +374,16 @@ def run_combined_scan(custom_filters: dict | None = None,
     min_star       : QM minimum star rating for df_passed (default: C.QM_SCAN_MIN_STAR=3.0)
     top_n          : QM result cap (default: C.QM_SCAN_TOP_N)
     strict_rs      : QM strict RS≥90 filter (Supplement 35)
+    include_ml     : include Martin Luk scan in combined scan
+    ml_min_star    : ML minimum star rating for df_passed (default: C.ML_COMBINED_MIN_STAR=3.0)
 
-    Returns: (sepa_result, qm_result) where each is a dict with:
+    Returns: (sepa_result, qm_result, ml_result) where each is a dict with:
       - 'passed': DataFrame of passed candidates
       - 'all': DataFrame of all Stage 2 candidates
       - 'market_env': market environment assessment
       - 'timing': dict with stage timings
       - 'error': error message if any
-      - 'blocked': True if QM was blocked by bear market gate
+      - 'blocked': True if strategy was blocked by bear market gate
     """
     _t_combined_start = _time.perf_counter()
     
@@ -336,8 +393,10 @@ def run_combined_scan(custom_filters: dict | None = None,
     _progress("Starting combined scan...", 0, "Initialising")
     _combined_cancel.clear()
     
+    _empty3 = ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+    
     print("\n" + "=" * 70)
-    print("  COMBINED SEPA + QM SCAN  —  Unified Daily Review")
+    print("  COMBINED SEPA + QM + ML SCAN  —  Unified Daily Review")
     print("=" * 70)
     
     # ── STAGE 0: Market environment ────────────────────────────────────────
@@ -361,8 +420,21 @@ def run_combined_scan(custom_filters: dict | None = None,
             logger.warning("[Combined] QM blocked — bear market regime: %s", regime)
             if verbose:
                 print(f"[QM] BLOCKED — bear market regime ({regime}), SEPA scan continues")
+
+    # ── ML bear market gate (mirrors run_ml_scan's ML_BLOCK_IN_BEAR logic) ─
+    ml_blocked = False
+    if not include_ml:
+        ml_blocked = True
+        logger.info("[Combined] ML excluded by include_ml=False")
+    elif getattr(C, "ML_BLOCK_IN_BEAR", True):
+        regime = market_env.get("regime", "")
+        if regime == "DOWNTREND":
+            ml_blocked = True
+            logger.warning("[Combined] ML blocked — bear market regime: %s", regime)
+            if verbose:
+                print(f"[ML] BLOCKED — bear market regime ({regime})")
     
-    # ── STAGE 0B: RS Rankings (loaded once for both methods) ───────────────
+    # ── STAGE 0B: RS Rankings (loaded once for all methods) ────────────────
     _progress("Stage 0 -- RS Rankings", 5, "Building / loading RS cache…")
     _t0b = _time.perf_counter()
     try:
@@ -372,13 +444,14 @@ def run_combined_scan(custom_filters: dict | None = None,
     logger.info("[Timing] RS load: %.1fs", _elapsed(_t0b))
     
     if _cancelled():
-        return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+        return _empty3
     
-    # ── STAGE 1: Dual parallel coarse filters → union ticker universe ───────
-    # SEPA uses stricter fundamental filters; QM uses price+volume only.
-    # Running both in parallel then taking the union ensures each method
-    # operates on its correct candidate universe without limiting the other.
-    _progress("Stage 1 -- Dual Coarse Filter", 8, "Running SEPA + QM Stage 1 in parallel…")
+    # ── STAGE 1: Triple parallel coarse filters → union ticker universe ───
+    # SEPA uses stricter fundamental filters; QM uses price+volume only;
+    # ML uses the widest net (price ≥ $5, vol ≥ 300K).
+    # Running all three in parallel then taking the union ensures each method
+    # operates on its correct candidate universe without limiting the others.
+    _progress("Stage 1 -- Triple Coarse Filter", 8, "Running SEPA + QM + ML Stage 1 in parallel…")
     _t1 = _time.perf_counter()
 
     from modules.screener import run_stage1
@@ -386,67 +459,91 @@ def run_combined_scan(custom_filters: dict | None = None,
 
     sepa_s1_tickers: list = []
     qm_s1_tickers: list = []
+    ml_s1_tickers: list = []
     _s1_sepa_error = None
     _s1_qm_error = None
+    _s1_ml_error = None
 
     def _fetch_sepa_s1():
         nonlocal sepa_s1_tickers, _s1_sepa_error
         try:
-            _log_detail("Stage 1 -- Dual Coarse Filter", "SEPA Stage 1 starting")
+            _log_detail("Stage 1 -- Triple Coarse Filter", "SEPA Stage 1 starting")
             sepa_s1_tickers = run_stage1(custom_filters, verbose=verbose,
                                          stage1_source=stage1_source)
             logger.info("[Combined S1] SEPA: %d candidates", len(sepa_s1_tickers))
-            _log_detail("Stage 1 -- Dual Coarse Filter", f"SEPA Stage 1 completed: {len(sepa_s1_tickers)} candidates")
+            _log_detail("Stage 1 -- Triple Coarse Filter", f"SEPA Stage 1 completed: {len(sepa_s1_tickers)} candidates")
         except Exception as exc:
             _s1_sepa_error = str(exc)
             logger.error("[Combined S1] SEPA Stage 1 failed: %s", exc)
-            _log_detail("Stage 1 -- Dual Coarse Filter", f"SEPA Stage 1 error: {type(exc).__name__}")
+            _log_detail("Stage 1 -- Triple Coarse Filter", f"SEPA Stage 1 error: {type(exc).__name__}")
 
     def _fetch_qm_s1():
         nonlocal qm_s1_tickers, _s1_qm_error
         if qm_blocked:
             logger.info("[Combined S1] QM Stage 1 skipped (bear market blocked)")
-            _log_detail("Stage 1 -- Dual Coarse Filter", "QM Stage 1 skipped (bear market)")
+            _log_detail("Stage 1 -- Triple Coarse Filter", "QM Stage 1 skipped (bear market)")
             return
         try:
-            _log_detail("Stage 1 -- Dual Coarse Filter", "QM Stage 1 starting")
+            _log_detail("Stage 1 -- Triple Coarse Filter", "QM Stage 1 starting")
             qm_s1_tickers = run_qm_stage1(verbose=verbose,
                                            stage1_source=stage1_source)
             logger.info("[Combined S1] QM: %d candidates", len(qm_s1_tickers))
-            _log_detail("Stage 1 -- Dual Coarse Filter", f"QM Stage 1 completed: {len(qm_s1_tickers)} candidates")
+            _log_detail("Stage 1 -- Triple Coarse Filter", f"QM Stage 1 completed: {len(qm_s1_tickers)} candidates")
         except Exception as exc:
             _s1_qm_error = str(exc)
             logger.error("[Combined S1] QM Stage 1 failed: %s", exc)
-            _log_detail("Stage 1 -- Dual Coarse Filter", f"QM Stage 1 error: {type(exc).__name__}")
+            _log_detail("Stage 1 -- Triple Coarse Filter", f"QM Stage 1 error: {type(exc).__name__}")
 
-    with ThreadPoolExecutor(max_workers=2) as _s1_pool:
+    def _fetch_ml_s1():
+        nonlocal ml_s1_tickers, _s1_ml_error
+        if ml_blocked:
+            logger.info("[Combined S1] ML Stage 1 skipped (blocked)")
+            _log_detail("Stage 1 -- Triple Coarse Filter", "ML Stage 1 skipped (blocked)")
+            return
+        try:
+            from modules.ml_screener import run_ml_stage1
+            _log_detail("Stage 1 -- Triple Coarse Filter", "ML Stage 1 starting")
+            ml_s1_tickers = run_ml_stage1(verbose=verbose,
+                                          stage1_source=stage1_source)
+            logger.info("[Combined S1] ML: %d candidates", len(ml_s1_tickers))
+            _log_detail("Stage 1 -- Triple Coarse Filter", f"ML Stage 1 completed: {len(ml_s1_tickers)} candidates")
+        except Exception as exc:
+            _s1_ml_error = str(exc)
+            logger.error("[Combined S1] ML Stage 1 failed: %s", exc)
+            _log_detail("Stage 1 -- Triple Coarse Filter", f"ML Stage 1 error: {type(exc).__name__}")
+
+    with ThreadPoolExecutor(max_workers=3) as _s1_pool:
         _sf = _s1_pool.submit(_fetch_sepa_s1)
         _qf = _s1_pool.submit(_fetch_qm_s1)
+        _mf = _s1_pool.submit(_fetch_ml_s1)
         _sf.result(timeout=1200)
         _qf.result(timeout=1200)
+        _mf.result(timeout=1200)
 
     if _s1_sepa_error and not sepa_s1_tickers:
         logger.error("[Combined] SEPA Stage 1 failed with no results — aborting")
-        return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+        return _empty3
 
-    # Union: QM gets its full universe; SEPA extras beyond QM also included
-    union_set = set(sepa_s1_tickers) | set(qm_s1_tickers)
+    # Union: each method gets its full universe; union is used for batch download
+    union_set = set(sepa_s1_tickers) | set(qm_s1_tickers) | set(ml_s1_tickers)
     s1_tickers = list(union_set)
 
-    logger.info("[Timing] Stage 1: %.1fs | SEPA=%d QM=%d Union=%d",
-                _elapsed(_t1), len(sepa_s1_tickers), len(qm_s1_tickers), len(s1_tickers))
+    logger.info("[Timing] Stage 1: %.1fs | SEPA=%d QM=%d ML=%d Union=%d",
+                _elapsed(_t1), len(sepa_s1_tickers), len(qm_s1_tickers),
+                len(ml_s1_tickers), len(s1_tickers))
     if verbose:
         print(f"[Stage 1] SEPA={len(sepa_s1_tickers)} | QM={len(qm_s1_tickers)} "
-              f"| Union={len(s1_tickers)} unique tickers")
+              f"| ML={len(ml_s1_tickers)} | Union={len(s1_tickers)} unique tickers")
 
-    _log_detail("Stage 1 -- Dual Coarse Filter", f"Union: {len(sepa_s1_tickers)} SEPA + {len(qm_s1_tickers)} QM = {len(s1_tickers)} total")
-    _progress("Stage 1 -- Dual Coarse Filter", 20, f"{len(s1_tickers)} union candidates")
+    _log_detail("Stage 1 -- Triple Coarse Filter",
+                f"Union: {len(sepa_s1_tickers)} SEPA + {len(qm_s1_tickers)} QM + {len(ml_s1_tickers)} ML = {len(s1_tickers)} total")
+    _progress("Stage 1 -- Triple Coarse Filter", 20, f"{len(s1_tickers)} union candidates")
 
     if _cancelled():
-        return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+        return _empty3
     if not s1_tickers:
-        print("[ERROR] Stage 1 returned no tickers from either method")
-        return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+        print("[ERROR] Stage 1 returned no tickers from any method")
+        return _empty3
 
     # ── STAGE 1.5A: Dollar volume pre-filter (before batch download) ─────
     # Use NASDAQ FTP cache data (close × avg_vol) to eliminate stocks with
@@ -457,10 +554,11 @@ def run_combined_scan(custom_filters: dict | None = None,
 
     sepa_pre = list(sepa_s1_tickers)  # Keep original lists for timing report
     qm_pre   = list(qm_s1_tickers)
-    sepa_pre, qm_pre = _prefilter_dollar_volume(sepa_pre, qm_pre, verbose=verbose)
+    ml_pre   = list(ml_s1_tickers)
+    sepa_pre, qm_pre, ml_pre = _prefilter_dollar_volume(sepa_pre, qm_pre, ml_pre, verbose=verbose)
 
     # Recompute the union with filtered lists — this is what gets batch-downloaded
-    union_filtered = set(sepa_pre) | set(qm_pre)
+    union_filtered = set(sepa_pre) | set(qm_pre) | set(ml_pre)
     s1_tickers_filtered = list(union_filtered)
 
     s15a_removed = len(s1_tickers) - len(s1_tickers_filtered)
@@ -502,16 +600,16 @@ def run_combined_scan(custom_filters: dict | None = None,
         )
     except Exception as e:
         logger.error("[Combined] Batch download failed: %s", e)
-        return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+        return _empty3
     
     logger.info("[Timing] Batch download: %.1fs -> %d enriched records",
                 _elapsed(_t2_dl), len(enriched_map))
     
     if _cancelled():
-        return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+        return _empty3
     if not enriched_map:
         print("[ERROR] Batch download returned no data")
-        return ({"passed": pd.DataFrame()}, {"passed": pd.DataFrame()})
+        return _empty3
 
     # ── STAGE 1.5B: Technical pre-screen (after batch download) ──────────
     # Use the enriched OHLCV data (SMA50/150/200, ATR, momentum) to
@@ -520,46 +618,51 @@ def run_combined_scan(custom_filters: dict | None = None,
     _progress("Stage 1.5B -- Technical Screen", 47, "Quick technical pre-screen…")
     _t15b = _time.perf_counter()
 
-    sepa_screened, qm_screened = _prefilter_technical(
-        sepa_pre, qm_pre, enriched_map, verbose=verbose
+    sepa_screened, qm_screened, ml_screened = _prefilter_technical(
+        sepa_pre, qm_pre, ml_pre, enriched_map, verbose=verbose
     )
 
     s15b_sepa_removed = len(sepa_pre) - len(sepa_screened)
     s15b_qm_removed   = len(qm_pre)  - len(qm_screened)
-    total_pre_screened = len(set(sepa_screened) | set(qm_screened))
+    s15b_ml_removed   = len(ml_pre)   - len(ml_screened)
+    total_pre_screened = len(set(sepa_screened) | set(qm_screened) | set(ml_screened))
 
     logger.info(
         "[Stage 1.5B] Technical pre-screen in %.1fs: "
-        "SEPA %d→%d (−%d) | QM %d→%d (−%d) | analysis set=%d",
+        "SEPA %d→%d (−%d) | QM %d→%d (−%d) | ML %d→%d (−%d) | analysis set=%d",
         _elapsed(_t15b),
         len(sepa_pre), len(sepa_screened), s15b_sepa_removed,
         len(qm_pre), len(qm_screened), s15b_qm_removed,
+        len(ml_pre), len(ml_screened), s15b_ml_removed,
         total_pre_screened,
     )
     if verbose:
         print(f"[Stage 1.5B] Technical screen: "
               f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | "
               f"QM {len(qm_pre)}→{len(qm_screened)} | "
+              f"ML {len(ml_pre)}→{len(ml_screened)} | "
               f"Analysis set: {total_pre_screened}")
 
     _log_detail("Stage 1.5B -- Technical Screen",
-                f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | QM {len(qm_pre)}→{len(qm_screened)}")
+                f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | QM {len(qm_pre)}→{len(qm_screened)} | ML {len(ml_pre)}→{len(ml_screened)}")
     _progress("Stage 1.5B -- Technical Screen", 48,
               f"Analysis set: {total_pre_screened} tickers")
 
-    # ── STAGE 2-3: Run SEPA and QM in parallel threads ────────────────────
+    # ── STAGE 2-3: Run SEPA, QM, and ML in parallel threads ──────────────
     # Each strategy receives ONLY its own pre-screened ticker list, not the
-    # full union.  This avoids wasted TT validation on QM-only tickers and
+    # full union.  This avoids wasted TT validation on QM/ML-only tickers and
     # wasted QM gate checks on SEPA-only tickers.
-    _progress("Stage 2-3 -- Parallel Analysis", 50, "Running SEPA and QM analyses…")
+    _progress("Stage 2-3 -- Parallel Analysis", 50, "Running SEPA, QM, and ML analyses…")
     _log_detail("Stage 2-3 -- Parallel Analysis",
-                f"Starting parallel: SEPA={len(sepa_screened)} QM={len(qm_screened)}")
+                f"Starting parallel: SEPA={len(sepa_screened)} QM={len(qm_screened)} ML={len(ml_screened)}")
     _t_parallel = _time.perf_counter()
     
     sepa_result = None
     qm_result = None
+    ml_result = None
     sepa_error = None
     qm_error = None
+    ml_error = None
     
     def _run_sepa():
         nonlocal sepa_result, sepa_error
@@ -727,11 +830,125 @@ def run_combined_scan(custom_filters: dict | None = None,
             qm_error = str(e)
             qm_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
     
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    def _run_ml():
+        nonlocal ml_result, ml_error
+
+        # Bear market / disabled gate — skip entire ML analysis
+        if ml_blocked:
+            ml_result = {"passed": pd.DataFrame(), "all": pd.DataFrame(),
+                         "blocked": True}
+            return
+
+        try:
+            from modules.ml_screener import run_ml_stage2, run_ml_stage3
+
+            logger.info("[Combined ML] Starting Stage 2 with %d tickers", len(ml_screened))
+            _log_detail("Stage 2-3 -- Parallel Analysis", "ML: Stage 2 (EMA + ADR + Momentum) starting", indent=False)
+
+            # ⭐ Key optimisation: pass only the ML subset of enriched_map
+            # so run_ml_stage2 skips batch_download_and_enrich entirely.
+            ml_enriched = {t: enriched_map[t] for t in ml_screened if t in enriched_map}
+
+            # Build channel_map via triple-scanner (mirrors independent ml_scan flow)
+            ml_screened_with_channels = list(ml_screened)  # Start with existing screened tickers
+            channel_map = {t: "" for t in ml_screened}  # Default empty
+            try:
+                from modules.ml_scanner_channels import run_triple_scan
+                _log_detail("Stage 2-3 -- Parallel Analysis", "ML: Running 3-channel identification", indent=False)
+                triple = run_triple_scan(ml_screened, include_gaps=True, include_gainers=True, include_leaders=True)
+                
+                # Log the triple scan results
+                summary = triple.get("summary", {})
+                logger.info("[Combined ML TripleScan] GAP=%d GAINER=%d LEADER=%d total_unique=%d",
+                            summary.get("gap_count", 0), summary.get("gainer_count", 0),
+                            summary.get("leader_count", 0), summary.get("total_unique", 0))
+                
+                # Inject new candidates from triple scan + annotate existing ones
+                # (mirrors independent ml_scan behavior exactly)
+                existing = set(ml_screened)
+                added = 0
+                for item in triple.get("merged", []):
+                    ticker = item["ticker"]
+                    ch = item.get("channel", "")
+                    if ticker not in existing:
+                        # Inject as new candidate
+                        ml_screened_with_channels.append(ticker)
+                        channel_map[ticker] = ch
+                        existing.add(ticker)
+                        added += 1
+                        logger.debug("[Combined ML TripleScan] Injected: %s [%s]", ticker, ch)
+                    else:
+                        # Annotate existing candidate
+                        channel_map[ticker] = ch
+                        logger.debug("[Combined ML TripleScan] Annotated: %s [%s]", ticker, ch)
+                
+                logger.info("[Combined ML TripleScan] Injected %d new + annotated existing | "
+                           "final candidate count: %d", added, len(ml_screened_with_channels))
+                _log_detail("Stage 2-3 -- Parallel Analysis", 
+                           f"ML: Triple-scanner: {added} injected + annotated, total {len(ml_screened_with_channels)}")
+            except Exception as exc:
+                logger.warning("[Combined ML] Triple-scanner failed (continuing with empty channel map): %s", exc)
+                # Fallback: use original mlscreened list with empty channels
+
+            # Stage 2 with potentially expanded candidate list
+            s2_passed = run_ml_stage2(ml_screened_with_channels, verbose=verbose,
+                                      enriched_map=ml_enriched, channel_map=channel_map)
+            logger.info("[Combined ML] Stage 2 completed: %d passing gate", len(s2_passed))
+            _log_detail("Stage 2-3 -- Parallel Analysis", f"ML: Stage 2 done: {len(s2_passed)} passed gate")
+
+            if _cancelled():
+                ml_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+                return
+            if not s2_passed:
+                logger.warning("[Combined ML] Stage 2 returned no results")
+                _log_detail("Stage 2-3 -- Parallel Analysis", "ML: Stage 2 returned no results")
+                ml_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+                return
+
+            # Stage 3 scoring — pass enriched_map so it uses cached data (zero yfinance calls)
+            logger.info("[Combined ML] Starting Stage 3 scoring with %d candidates", len(s2_passed))
+            _log_detail("Stage 2-3 -- Parallel Analysis", "ML: Stage 3 (7-Dimension Star Rating) starting", indent=False)
+            ml_df_all_scored = run_ml_stage3(s2_passed, enriched_map=ml_enriched)
+            if ml_df_all_scored is None or ml_df_all_scored.empty:
+                logger.warning("[Combined ML] Stage 3 returned empty")
+                _log_detail("Stage 2-3 -- Parallel Analysis", "ML: Stage 3 returned empty")
+                ml_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+                return
+            logger.info("[Combined ML] Stage 3 completed: shape %s", ml_df_all_scored.shape)
+            _log_detail("Stage 2-3 -- Parallel Analysis", f"ML: Stage 3 done: {len(ml_df_all_scored)} scored")
+
+            # Apply min_star filter
+            _ml_min = ml_min_star if ml_min_star is not None else getattr(C, "ML_COMBINED_MIN_STAR", 3.0)
+            ml_df_passed = ml_df_all_scored.copy()
+            if not ml_df_passed.empty and "ml_star" in ml_df_passed.columns:
+                before = len(ml_df_passed)
+                ml_df_passed = ml_df_passed[ml_df_passed["ml_star"] >= _ml_min]
+                _log_detail("Stage 2-3 -- Parallel Analysis", f"ML: min_star≥{_ml_min}: {before}→{len(ml_df_passed)}")
+
+            # top_n cap
+            _ml_top = top_n if top_n is not None else getattr(C, "QM_SCAN_TOP_N", 50)
+            if len(ml_df_passed) > _ml_top:
+                ml_df_passed = ml_df_passed.head(_ml_top)
+                _log_detail("Stage 2-3 -- Parallel Analysis", f"ML: capped to top {_ml_top} results")
+
+            logger.info("[Combined ML] Final passed count after filters: %d", len(ml_df_passed))
+
+            ml_result = {
+                "passed": ml_df_passed,
+                "all": ml_df_all_scored,
+            }
+        except Exception as e:
+            logger.error("[Combined] ML process failed: %s", e, exc_info=True)
+            ml_error = str(e)
+            _log_detail("Stage 2-3 -- Parallel Analysis", f"ML error: {type(e).__name__}")
+            ml_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
         sepa_thread = executor.submit(_run_sepa)
         qm_thread = executor.submit(_run_qm)
+        ml_thread = executor.submit(_run_ml)
         
-        # Wait for both to complete, capture any exceptions from threads
+        # Wait for all three to complete, capture any exceptions from threads
         try:
             sepa_thread.result(timeout=600)  # 10 min timeout per thread
         except Exception as e:
@@ -745,6 +962,13 @@ def run_combined_scan(custom_filters: dict | None = None,
             logger.error("[Combined] QM thread exception (not caught in _run_qm): %s", e, exc_info=True)
             qm_error = str(e)
             qm_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
+
+        try:
+            ml_thread.result(timeout=600)
+        except Exception as e:
+            logger.error("[Combined] ML thread exception (not caught in _run_ml): %s", e, exc_info=True)
+            ml_error = str(e)
+            ml_result = {"passed": pd.DataFrame(), "all": pd.DataFrame()}
     
     parallel_elapsed = _elapsed(_t_parallel)
     logger.info("[Timing] Parallel Stage 2-3: %.1fs", parallel_elapsed)
@@ -756,6 +980,8 @@ def run_combined_scan(custom_filters: dict | None = None,
         print(f"[WARNING] SEPA analysis failed: {sepa_error}")
     if qm_error:
         print(f"[WARNING] QM analysis failed: {qm_error}")
+    if ml_error:
+        print(f"[WARNING] ML analysis failed: {ml_error}")
     
     total_elapsed = _elapsed()
     
@@ -768,10 +994,12 @@ def run_combined_scan(custom_filters: dict | None = None,
         "total": total_elapsed,
         "sepa_s1_count": len(sepa_s1_tickers),
         "qm_s1_count":   len(qm_s1_tickers),
+        "ml_s1_count":    len(ml_s1_tickers),
         "union_count":   len(s1_tickers),
         "union_after_prefilter": len(s1_tickers_filtered),
         "sepa_screened": len(sepa_screened),
         "qm_screened":   len(qm_screened),
+        "ml_screened":   len(ml_screened),
         "prefilter_removed": s15a_removed + s15b_sepa_removed + s15b_qm_removed,
     }
 
@@ -793,28 +1021,40 @@ def run_combined_scan(custom_filters: dict | None = None,
         "blocked": qm_blocked,
         "scan_count_warning": qm_result.get("scan_count_warning") if qm_result else None,
     }
-    
+
+    ml_final = {
+        "passed": ml_result["passed"] if ml_result else pd.DataFrame(),
+        "all": ml_result.get("all", pd.DataFrame()) if ml_result else pd.DataFrame(),
+        "market_env": market_env,
+        "timing": _timing,
+        "error": ml_error,
+        "blocked": ml_blocked,
+    }
+
     _qm_status_str = "已封鎖(熊市)" if qm_blocked else str(len(qm_final["passed"]))
+    _ml_status_str = "已封鎖(熊市)" if ml_blocked else str(len(ml_final["passed"]))
     _progress("Complete", 100,
-              f"\u2705 \u6383\u63cf\u5b8c\u6210: SEPA\u2192{len(sepa_final['passed'])} | QM\u2192{_qm_status_str} | "
-              f"Stage1 {len(s1_tickers)}\u2192預篩{len(s1_tickers_filtered)}\u2192分析 SEPA={len(sepa_screened)} QM={len(qm_screened)} | "
-              f"\u8017\u6642 {total_elapsed:.0f}s")
+              f"\u2705 掃描完成: SEPA→{len(sepa_final['passed'])} | QM→{_qm_status_str} | ML→{_ml_status_str} | "
+              f"Stage1 {len(s1_tickers)}→預篩{len(s1_tickers_filtered)}→分析 SEPA={len(sepa_screened)} QM={len(qm_screened)} ML={len(ml_screened)} | "
+              f"耗時 {total_elapsed:.0f}s")
     
     if verbose:
         print(f"\n[Combined Scan] Complete in {total_elapsed:.1f}s")
-        print(f"  Stage 1:   SEPA={len(sepa_s1_tickers)} | QM={len(qm_s1_tickers)} "
+        print(f"  Stage 1:   SEPA={len(sepa_s1_tickers)} | QM={len(qm_s1_tickers)} | ML={len(ml_s1_tickers)} "
               f"| Union={len(s1_tickers)}")
         print(f"  Pre-filter: Union {len(s1_tickers)}→{len(s1_tickers_filtered)} ($Vol) | "
-              f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | QM {len(qm_pre)}→{len(qm_screened)} (tech)")
+              f"SEPA {len(sepa_pre)}→{len(sepa_screened)} | QM {len(qm_pre)}→{len(qm_screened)} | ML {len(ml_pre)}→{len(ml_screened)} (tech)")
         qm_status = "BLOCKED (bear)" if qm_blocked else f"{len(qm_final['passed'])} passed"
-        print(f"  Results:   SEPA {len(sepa_final['passed'])} passed | QM {qm_status}")
+        ml_status = "BLOCKED (bear)" if ml_blocked else f"{len(ml_final['passed'])} passed"
+        print(f"  Results:   SEPA {len(sepa_final['passed'])} passed | QM {qm_status} | ML {ml_status}")
 
-    logger.info("[Combined Scan] Complete: SEPA=%d | QM=%s | Total=%.1fs | "
-                "S1 Union=%d→Prefilter=%d→Screened SEPA=%d QM=%d",
+    logger.info("[Combined Scan] Complete: SEPA=%d | QM=%s | ML=%s | Total=%.1fs | "
+                "S1 Union=%d→Prefilter=%d→Screened SEPA=%d QM=%d ML=%d",
                 len(sepa_final['passed']),
                 "BLOCKED" if qm_blocked else str(len(qm_final['passed'])),
+                "BLOCKED" if ml_blocked else str(len(ml_final['passed'])),
                 total_elapsed,
                 len(s1_tickers), len(s1_tickers_filtered),
-                len(sepa_screened), len(qm_screened))
+                len(sepa_screened), len(qm_screened), len(ml_screened))
     
-    return (sepa_final, qm_final)
+    return (sepa_final, qm_final, ml_final)

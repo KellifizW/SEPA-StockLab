@@ -1,5 +1,5 @@
 ﻿{% extends "base.html" %}
-{% block title %}Combined SEPA + QM Scan{% endblock %}
+{% block title %}Combined SEPA + QM + ML Scan{% endblock %}
 
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
@@ -18,6 +18,16 @@
   .badge-rpl  { background: #3a0060; color: #d49fff; }
   .badge-flag { background: #301020; color: #ff8fa3; }
   .badge-uk   { background: #1c2128; color: #8b949e; }
+  /* ── ML Channel / Setup badge colours ── */
+  .badge-gap    { background: #1a3060; color: #58a6ff; }
+  .badge-gainer { background: #0e4429; color: #3fb950; }
+  .badge-leader { background: #4a3800; color: #e3b341; }
+  .badge-ml-pb  { background: #0e4429; color: #3fb950; }
+  .badge-ml-br  { background: #1a3060; color: #58a6ff; }
+  .badge-ml-bo  { background: #4a3800; color: #e3b341; }
+  .badge-ml-ep  { background: #3a0060; color: #d49fff; }
+  .badge-ml-chg { background: #003040; color: #00d4ff; }
+  .badge-ml-par { background: #3a0a0a; color: #f85149; }
   .veto-badge { background: #3a0a0a; color: #f85149; font-size: 10px; border-radius: 3px; padding: 1px 5px; }
   /* ── SEPA score colours ── */
   .score-high { color: #3fb950; font-weight: 700; }
@@ -311,6 +321,13 @@
       type="button" onclick="onTabChange('qm')">
       <i class="bi bi-lightning-charge me-1" style="color:#e3b341"></i>QM
       <span class="badge bg-secondary ms-1" id="qmBadge">—</span>
+    </button>
+  </li>
+  <li class="nav-item">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#paneMl"
+      type="button" onclick="onTabChange('ml')">
+      <i class="bi bi-tsunami me-1" style="color:#d49fff"></i>ML
+      <span class="badge bg-secondary ms-1" id="mlBadge">—</span>
     </button>
   </li>
   <li class="nav-item">
@@ -715,6 +732,124 @@
     </div>
   </div><!-- /paneQm -->
 
+  <!-- ═══════════════ ML TAB ═══════════════ -->
+  <div class="tab-pane fade p-3" id="paneMl" role="tabpanel">
+
+    <!-- ML Summary cards -->
+    <div class="row g-3 mb-3" id="mlSummaryRow" style="display:none">
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="mlMetPassCount">—</div>
+          <div class="metric-lbl">通過 Passed</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="mlMet4Star" style="color:#3fb950">—</div>
+          <div class="metric-lbl">4★+ 佳績</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="mlMetAvgStar" style="color:#d49fff">—</div>
+          <div class="metric-lbl">平均星級 Avg Stars</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="metric-card">
+          <div class="metric-val" id="mlMetScanTime" style="color:#8b949e">—</div>
+          <div class="metric-lbl">掃描時間 Time</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ML Filter bar -->
+    <div class="d-flex align-items-center gap-2 mb-2">
+      <label class="small text-secondary mb-0">最低星級</label>
+      <select class="form-select form-select-sm" id="mlMinStar"
+        style="width:80px" onchange="filterMlTable()">
+        <option value="2">2★+</option>
+        <option value="2.5">2.5★+</option>
+        <option value="3" selected>3★+</option>
+        <option value="3.5">3.5★+</option>
+        <option value="4">4★+</option>
+      </select>
+    </div>
+
+    <!-- ML table -->
+    <div class="table-responsive">
+      <table class="table table-hover mb-0" id="mlTable" style="font-size:12.5px">
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th data-bs-toggle="tooltip"
+              title="點擊股票代號可進入ML個股分析頁面">
+              股票 Ticker
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="7維評分系統：EMA結構+回調質量+AVWAP匯合+量能形態+風險回報+相對強度+市場環境">
+              ⭐ 星級 Stars
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip" title="掃描通道：缺口GAP / 升幅GAINER / 領頭羊LEADER">通道 Ch</th>
+            <th data-bs-toggle="tooltip" title="形態類型：PB回調 / BR突破回測 / BO突破 / EP爆發 / CHG特徵轉變 / PARA拋物線">形態 Setup</th>
+            <th data-bs-toggle="tooltip"
+              title="ADR% 平均日波動幅度">
+              ADR%
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="日均成交額（百萬美元）">
+              日均成交額 $Vol
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="3個月動能變動">
+              3M%
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="EMA 9>21>50>150 堆疊排列 + 21/50 均線上升">
+              EMA
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="回調品質 — Shallow回調淺(佳) / Deep回調深">
+              回調 Pullback
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="AVWAP 價格位於錨定VWAP之上為利好訊號">
+              AVWAP
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip"
+              title="量能形態：低量縮量(利好) / 放量(利弊視情況)">
+              量能 Vol
+              <i class="bi bi-info-circle text-secondary" style="font-size:10px"></i>
+            </th>
+            <th data-bs-toggle="tooltip" title="決策樹評分：GO✓ / CAUTION△ / STOP✗，顯示通過步驟數/9">決策樹 DT</th>
+          </tr>
+        </thead>
+        <tbody id="mlBody">
+          <tr><td colspan="13" class="text-center text-secondary py-5">
+            掃描後顯示結果 Run scan to see results
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ML info footer -->
+    <div class="mt-4 p-3 info-panel small text-secondary">
+      <i class="bi bi-info-circle me-2" style="color:#d49fff"></i>
+      <strong>Martin Luk 策略說明：</strong>
+      本掃描器實現 Martin Luk 的回調波段策略，專注於 EMA 堆疊排列、AVWAP 支撐匯合、量縮回調的強勢股。
+      核心理念：在強勢上升趨勢中尋找低風險回調入場點，最大止損 2.5%，每筆風險 0.5% 賬戶。
+      建議使用 3★ 以上作為觀察清單，4★ 以上為優先標的。
+    </div>
+  </div><!-- /paneMl -->
+
   <!-- ═══════════════ MARKET TAB ═══════════════ -->
   <div class="tab-pane fade p-3" id="paneMkt" role="tabpanel">
     <div id="mktContent">
@@ -742,6 +877,7 @@ let _jid          = null;
 let _sepaData     = [];   // SEPA passed rows
 let _sepaAllData  = [];   // SEPA all scored rows
 let _qmAllData    = [];   // QM all rows from backend (before min_star filter)
+let _mlAllData    = [];   // ML all rows from backend (before min_star filter)
 let _sepaShowAll  = false;
 let _currentTab   = 'sepa';
 let _liveLogVis   = false;
@@ -815,6 +951,7 @@ document.addEventListener('DOMContentLoaded', function() {
       if (cached._ver === CACHE_VER) {
         var sepa = cached.sepa || [], sepaAll = cached.sepaAll || sepa;
         var qm   = cached.qm  || [];
+        var ml   = cached.ml  || [];
         if (sepa.length) {
           _sepaData = sepa; _sepaAllData = sepaAll;
           renderSepaTable(_sepaShowAll ? _sepaAllData : _sepaData);
@@ -831,10 +968,14 @@ document.addEventListener('DOMContentLoaded', function() {
           _qmAllData = qm;
           filterQmTable();   // handles rendering + summary cards
         }
+        if (ml.length) {
+          _mlAllData = ml;
+          filterMlTable();   // handles rendering + summary cards
+        }
         if (cached.market) renderMarket(cached.market);
         if (cached.timing)  renderTiming(cached.timing);
         var ts = cached._ts ? ' (' + new Date(cached._ts).toLocaleTimeString('zh-HK') + ')' : '';
-        setStatus('Restored: SEPA ' + sepa.length + ' + QM ' + qm.length + ts);
+        setStatus('Restored: SEPA ' + sepa.length + ' + QM ' + qm.length + ' + ML ' + ml.length + ts);
         document.getElementById('btnLoadLast').classList.remove('d-none');
       }
     }
@@ -986,6 +1127,7 @@ function onDone(result) {
 
   var sepa   = result.sepa   || {};
   var qm     = result.qm     || {};
+  var ml     = result.ml     || {};
   var market = result.market || {};
   var timing = result.timing || {};
 
@@ -996,11 +1138,14 @@ function onDone(result) {
 
   // Store ALL QM rows; filterQmTable() applies minStar + topN
   _qmAllData = qm.passed || qm.rows || [];
+  // Store ALL ML rows; filterMlTable() applies mlMinStar
+  _mlAllData = ml.passed || ml.rows || [];
 
   renderSepaTable(_sepaShowAll ? _sepaAllData : _sepaData);
   populateSectorFilter();
   renderScanCharts(_sepaShowAll ? _sepaAllData : _sepaData);
   filterQmTable();   // ← applies min_star filter + updates summary cards
+  filterMlTable();   // ← applies ml min_star filter + updates summary cards
   renderMarket(market);
   renderTiming(timing);
   updateSepaSummary(sepaRows, sepaAll);
@@ -1011,6 +1156,11 @@ function onDone(result) {
     return (r.qm_star || r.stars || 0) >= parseFloat(document.getElementById('minStar').value || 4);
   }).length;
   document.getElementById('qmBadge').textContent = filteredQmLen;
+  // ML badge = filtered count
+  var filteredMlLen = _mlAllData.filter(function(r) {
+    return (r.ml_star || r.stars || 0) >= parseFloat(document.getElementById('mlMinStar').value || 3);
+  }).length;
+  document.getElementById('mlBadge').textContent = filteredMlLen;
 
   if (sepaAll.length > sepaRows.length) {
     document.getElementById('allScoredCount').textContent = sepaAll.length;
@@ -1024,24 +1174,25 @@ function onDone(result) {
     document.getElementById('scanLogPath').textContent = result.log_path;
   }
 
-  // Show filtered QM count (matching table) rather than raw backend pool size
-  setStatus('Done — SEPA: ' + sepaRows.length + '/' + sepaAll.length + ' | QM: ' + filteredQmLen + '★4+ (' + _qmAllData.length + ' total ≥3★)');
+  // Show filtered counts
+  setStatus('Done — SEPA: ' + sepaRows.length + '/' + sepaAll.length + ' | QM: ' + filteredQmLen + '★4+ (' + _qmAllData.length + ' total) | ML: ' + filteredMlLen + '★3+ (' + _mlAllData.length + ' total)');
   document.getElementById('btnLoadLast').classList.remove('d-none');
 
   // ── Completion popup notification ─────────────────────────────────
   var csvHint = '';
   if (result.sepa_csv) csvHint += '<br><small class="text-muted">SEPA CSV: ' + result.sepa_csv + '</small>';
   if (result.qm_csv)   csvHint += '<br><small class="text-muted">QM CSV: '   + result.qm_csv   + '</small>';
+  if (result.ml_csv)   csvHint += '<br><small class="text-muted">ML CSV: '   + result.ml_csv   + '</small>';
   var logHint = result.log_path ? '<br><small class="text-muted">日誌: ' + result.log_path + '</small>' : '';
   toastCompletion(
-    '✅ Combined 掃描完成！<br>SEPA: <strong>' + sepaRows.length + '</strong> 個股票 | QM: <strong>' + filteredQmLen + '</strong> 個設置 (≥4★) /' + _qmAllData.length + ' (≥3★)' + csvHint + logHint,
+    '✅ Combined 掃描完成！<br>SEPA: <strong>' + sepaRows.length + '</strong> 個股票 | QM: <strong>' + filteredQmLen + '</strong> 個設置 (≥4★) | ML: <strong>' + filteredMlLen + '</strong> 個設置 (≥3★)' + csvHint + logHint,
     true
   );
 
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({
       _ver: CACHE_VER, sepa: sepaRows, sepaAll: sepaAll,
-      qm: _qmAllData, market: market, timing: timing,
+      qm: _qmAllData, ml: _mlAllData, market: market, timing: timing,
       _ts: new Date().toISOString()
     }));
   } catch(e) { /* ignore quota */ }
@@ -1474,6 +1625,162 @@ function updateQmSummary(rows) {
     : '—';
   document.getElementById('metAvgStar').textContent = avg + '★';
   document.getElementById('metScanTime').textContent = new Date().toLocaleTimeString('zh-HK');
+}
+
+/* ═══ ML RENDERING ═══════════════════════════════════════════════════ */
+function filterMlTable() {
+  var minStar = parseFloat(document.getElementById('mlMinStar').value || 3);
+  var filtered = _mlAllData
+    .filter(function(r) { return (r.ml_star || r.stars || 0) >= minStar; });
+  renderMlTable(filtered);
+  document.getElementById('mlBadge').textContent = filtered.length;
+  if (_mlAllData.length > 0) updateMlSummary(filtered);
+}
+
+function renderMlTable(rows) {
+  var tbody = document.getElementById('mlBody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = '<tr><td colspan="13" class="text-center text-secondary py-5">No results</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(function(r, i) {
+    var star      = parseFloat(r.ml_star != null ? r.ml_star : (r.stars != null ? r.stars : 0));
+    var starClass = star >= 5 ? 'star-5p' : star >= 4.5 ? 'star-5' : star >= 4 ? 'star-4' : star >= 3 ? 'star-3' : 'star-low';
+    var starHtml  = renderStars(star);
+
+    // Channel & Setup
+    var chHtml    = mlChannelBadgeHtml(r.channel || '');
+    var setupHtml = mlSetupBadgeHtml((r.setup_type || '').toUpperCase());
+
+    var adrVal = r.adr != null ? parseFloat(r.adr) : null;
+    var adrTxt = adrVal != null ? adrVal.toFixed(1) + '%' : '—';
+    var adrCls = adrVal != null && adrVal < 4 ? 'text-danger' : '';
+
+    var dvol = r.dollar_volume_m != null ? '$' + parseFloat(r.dollar_volume_m).toFixed(1) + 'M' : '—';
+    var m3   = r.mom_3m != null ? fmtMom(r.mom_3m) : '—';
+
+    // EMA stacking
+    var emaStacked = r.ema_stacked
+      ? '<i class="bi bi-check-circle-fill text-success"></i>'
+      : '<span class="text-secondary">—</span>';
+    var emaRising = r.ema_all_rising
+      ? ' <i class="bi bi-arrow-up-short text-success" style="font-size:10px"></i>'
+      : '';
+    var emaHtml = emaStacked + emaRising;
+
+    // Pullback quality
+    var pb = r.pullback_quality || '';
+    var pbCls = pb === 'shallow' ? 'text-success' : pb === 'deep' ? 'text-warning' : 'text-secondary';
+    var pbTxt = pb ? '<span class="' + pbCls + '">' + pb + '</span>' : '—';
+
+    // AVWAP
+    var avwapLow  = r.above_avwap_low;
+    var avwapHigh = r.above_avwap_high;
+    var avwapHtml = '—';
+    if (avwapLow || avwapHigh) {
+      var parts = [];
+      if (avwapLow)  parts.push('<span class="text-success">L✓</span>');
+      if (avwapHigh) parts.push('<span class="text-info">H✓</span>');
+      avwapHtml = parts.join(' ');
+    }
+
+    // Volume
+    var volDry = r.vol_dry_ratio;
+    var volHtml = '—';
+    if (volDry != null) {
+      var vd = parseFloat(volDry);
+      volHtml = vd <= 0.5
+        ? '<span class="text-success">' + vd.toFixed(2) + '×</span>'
+        : '<span class="text-secondary">' + vd.toFixed(2) + '×</span>';
+    }
+
+    // Decision tree
+    var dtHtml = mlDtBadgeHtml(r.decision_tree);
+
+    return '<tr class="qm-row" onclick="window.location=\'/ml/analyze?ticker=' + r.ticker + '\'">' +
+      '<td class="text-secondary">' + (i + 1) + '</td>' +
+      '<td><a href="/ml/analyze?ticker=' + r.ticker + '" class="fw-bold" ' +
+        'style="color:#d49fff" onclick="event.stopPropagation()">' +
+        r.ticker + '</a></td>' +
+      '<td class="' + starClass + '">' + starHtml + '</td>' +
+      '<td>' + chHtml + '</td>' +
+      '<td>' + setupHtml + '</td>' +
+      '<td class="' + adrCls + '">' + adrTxt + '</td>' +
+      '<td>' + dvol + '</td>' +
+      '<td>' + m3 + '</td>' +
+      '<td>' + emaHtml + '</td>' +
+      '<td>' + pbTxt + '</td>' +
+      '<td>' + avwapHtml + '</td>' +
+      '<td>' + volHtml + '</td>' +
+      '<td>' + dtHtml + '</td>' +
+      '</tr>';
+  }).join('');
+
+  tbody.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
+    new bootstrap.Tooltip(el, {trigger: 'hover'});
+  });
+}
+
+/* ─── ML Channel / Setup / DT helper functions ──────────────────── */
+function mlChannelBadgeHtml(ch) {
+  var map = {
+    'GAP':    ['badge-gap',    '缺口'],
+    'GAINER': ['badge-gainer', '升幅'],
+    'LEADER': ['badge-leader', '領頭']
+  };
+  var info = map[(ch || '').toUpperCase()];
+  if (!info) return '<span class="text-secondary" style="font-size:11px">現時</span>';
+  return '<span class="badge ' + info[0] + '">' + info[1] + '</span>';
+}
+
+function mlSetupBadgeHtml(code) {
+  var map = {
+    'PB_EMA':    ['badge-ml-pb',  'PB'],
+    'BR_RETEST': ['badge-ml-br',  'BR'],
+    'BREAKOUT':  ['badge-ml-bo',  'BO'],
+    'EP':        ['badge-ml-ep',  'EP'],
+    'CHAR_CHG':  ['badge-ml-chg', 'CHG'],
+    'PARABOLIC': ['badge-ml-par', 'PARA']
+  };
+  var info = map[code] || ['badge-uk', code || '?'];
+  return '<span class="badge ' + info[0] + '">' + info[1] + '</span>';
+}
+
+function mlDtBadgeHtml(dt) {
+  if (!dt) return '<span class="text-secondary" style="font-size:11px">—</span>';
+  
+  // Handle both object (API) and string (CSV) formats
+  var dtObj = dt;
+  if (typeof dt === 'string') {
+    // Try to parse Python dict string: "{'signal': 'NO-GO', 'pass_count': 4, ...}"
+    try {
+      // Convert Python dict syntax to JSON
+      var jsonStr = dt.replace(/'/g, '"').replace(/True/g, 'true').replace(/False/g, 'false');
+      dtObj = JSON.parse(jsonStr);
+    } catch (e) {
+      return '<span class="text-secondary" style="font-size:11px">—</span>';
+    }
+  }
+  
+  var verdict = dtObj.signal || dtObj.verdict || '';
+  var pass    = dtObj.pass_count != null ? dtObj.pass_count : '?';
+  var cls     = verdict === 'GO' ? 'text-success' : verdict === 'CAUTION' ? 'text-warning' : 'text-danger';
+  var icon    = verdict === 'GO' ? '✓' : verdict === 'CAUTION' ? '△' : '✗';
+  return '<span class="' + cls + ' fw-bold" style="font-size:11px" data-bs-toggle="tooltip" title="' +
+    pass + '/9 步通過">' + icon + ' ' + pass + '/9</span>';
+}
+
+function updateMlSummary(rows) {
+  document.getElementById('mlSummaryRow').style.display = '';
+  document.getElementById('mlMetPassCount').textContent = rows.length;
+  var n4 = rows.filter(function(r) { return (r.ml_star || r.stars || 0) >= 4; }).length;
+  document.getElementById('mlMet4Star').textContent = n4;
+  var avg = rows.length
+    ? (rows.reduce(function(s, r) { return s + (r.ml_star || r.stars || 0); }, 0) / rows.length).toFixed(1)
+    : '—';
+  document.getElementById('mlMetAvgStar').textContent = avg + '★';
+  document.getElementById('mlMetScanTime').textContent = new Date().toLocaleTimeString('zh-HK');
 }
 
 /* ─── Star renderer ──────────────────────────────────────────────── */

@@ -384,6 +384,7 @@ def _check_ml_stage2(ticker: str, df: pd.DataFrame) -> dict | None:
         "passes_6m":        passes_6m,
         "ema_stacked":      ema_align.get("all_stacked", False),
         "ema_all_rising":   ema_align.get("all_rising", False),
+        "channel":          "",  # Default empty channel (standard EMA/momentum path)
     }
 
 
@@ -787,7 +788,7 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         star = max(0.0, min(star, star_max))
 
     # ── Build output dict ─────────────────────────────────────────────────
-    row_out = dict(row)  # copy Stage 2 fields
+    row_out = dict(row)  # copy Stage 2 fields (including channel from Stage 2)
     row_out.update({
         "ml_star":          round(star, 2),
         "setup_type":       setup_type,
@@ -804,6 +805,10 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         "vol_ratio":        round(vol_ratio, 2),
         "vol_dry_ratio":    round(dry_ratio, 3),
     })
+
+    # Ensure channel field exists in output (inherited from Stage 2)
+    if "channel" not in row_out:
+        row_out["channel"] = ""
 
     # ── Lightweight decision tree for scan table badge ────────────────────
     # Uses the same 9-step logic from ml_analyzer but with the inline dim_scores
@@ -823,15 +828,24 @@ def _score_ml_stage3(row: dict, df: pd.DataFrame) -> dict | None:
         }
     except Exception as _dt_exc:
         logger.debug("[ML S3] %s decision tree skipped: %s", ticker, _dt_exc)
-        row_out["decision_tree"] = None
+        row_out["decision_tree"] = {"signal": "", "pass_count": 0, "total": 9}  # Default structure
 
     return row_out
 
 
-def run_ml_stage3(s2_rows: list[dict]) -> pd.DataFrame:
+def run_ml_stage3(s2_rows: list[dict],
+                  enriched_map: dict | None = None) -> pd.DataFrame:
     """
     Stage 3 — Apply ML pullback quality scoring to all Stage 2 candidates.
     Returns a DataFrame with all scored rows.
+
+    Parameters
+    ----------
+    enriched_map : dict | None
+        Pre-downloaded enriched OHLCV data keyed by ticker.
+        When provided (e.g. from combined_scanner), tickers found in the map
+        skip the get_enriched() network call entirely — zero additional
+        yfinance requests.
     """
     from modules.data_pipeline import get_enriched
 
@@ -850,7 +864,11 @@ def run_ml_stage3(s2_rows: list[dict]) -> pd.DataFrame:
         _progress("Stage 3", min(pct, 95), f"Scoring {ticker}…", ticker)
 
         try:
-            df = get_enriched(ticker, period="1y", use_cache=True)
+            # Combined scan path: use pre-downloaded data (zero network calls)
+            if enriched_map and ticker in enriched_map:
+                df = enriched_map[ticker]
+            else:
+                df = get_enriched(ticker, period="1y", use_cache=True)
             if df is None or df.empty:
                 continue
             result = _score_ml_stage3(row, df)
