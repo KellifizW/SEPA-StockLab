@@ -734,12 +734,9 @@ function initIbkrDrawer() {
     console.error('Error initializing IBKR drawer:', e);
   }
   
-  // Status polling disabled until IBKR API connection is implemented
-  // Uncomment below when /api/ibkr/* endpoints are ready
-  /*
+  // Poll IBKR status every 30 seconds and run initial check
   window.setInterval(updateIbkrStatus, 30000);
   updateIbkrStatus(); // Initial check
-  */
 }
 
 // GET /api/ibkr/status

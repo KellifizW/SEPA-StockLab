@@ -23,6 +23,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import trader_config as C
+
+# eventkit (ib_insync dependency) calls asyncio.get_event_loop() at import time.
+# In Flask's daemon threads there is no current event loop → RuntimeError.
+# Pre-create one so the import succeeds regardless of which thread loads this module.
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from ib_insync import IB, Contract, Order, OrderStatus, Execution, Trade  # type: ignore[import-not-found]
 from ib_insync.order import OrderComboLeg  # type: ignore[import-not-found]
 from ib_insync.objects import Position  # type: ignore[import-not-found]

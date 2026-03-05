@@ -4780,6 +4780,28 @@ def api_qm_backtest_log(jid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# IBKR routes  (registered as blueprint — all routes are new, no conflicts)
+# ═══════════════════════════════════════════════════════════════════════════════
+from routes.ibkr_api import bp as _ibkr_bp
+app.register_blueprint(_ibkr_bp)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard highlights partial  (HTMX)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/htmx/dashboard/highlights")
+def htmx_dashboard_highlights():
+    r: dict = {}
+    _combined_last = ROOT / "data" / "combined_last_scan.json"
+    try:
+        if _combined_last.exists():
+            r = json.loads(_combined_last.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return render_template("_dashboard_highlights.html", r=r)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════════

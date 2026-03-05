@@ -911,6 +911,19 @@ ML_THEME_HISTORY_DAYS        = 60      # Days of theme tracking history to retai
 ML_SCORECARD_HISTORY_DAYS    = 365     # Days of trade quality scorecard history
 
 # ─────────────────────────────────────────────────────────────────────────────
+# IBKR  (Interactive Brokers API — ib_insync)
+# ─────────────────────────────────────────────────────────────────────────────
+IBKR_ENABLED          = True          # 主開關 — False 則完全停用 IBKR 功能
+IBKR_HOST             = "127.0.0.1"   # IBKR Gateway / TWS 地址 (localhost)
+IBKR_PORT_PAPER       = 4002          # IB Gateway 模擬盤埠號 (TWS 模擬: 7497)
+IBKR_PORT_LIVE        = 4001          # IB Gateway 實盤埠號  (TWS 實盤: 7496)
+IBKR_CLIENT_ID        = 1             # Client ID (每個連線必須唯一)
+IBKR_CONNECTION_MODE  = "paper"       # "paper" | "live" — 控制使用哪個端口
+IBKR_READONLY         = False         # True = 只讀模式，禁止下單
+IBKR_TIMEOUT_SEC      = 10            # API 操作逾時（秒）
+IBKR_QUOTE_CACHE_SEC  = 5             # 報價快取時間（秒），避免頻繁請求
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TELEGRAM BOT  (Polling 方式通訊 + 管理員審批系統)
 # ─────────────────────────────────────────────────────────────────────────────
 TG_ENABLED            = True                                    # 主開關 — 改為 True 才啟用

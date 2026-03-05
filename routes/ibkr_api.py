@@ -44,7 +44,7 @@ def _check_ib_available() -> tuple[bool, Optional[str]]:
     try:
         _client()
         return True, None
-    except ImportError as e:
+    except (ImportError, RuntimeError) as e:
         return False, str(e)
 
 
