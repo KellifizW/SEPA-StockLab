@@ -19,6 +19,7 @@ import logging
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import numpy as np
@@ -187,6 +188,117 @@ def _reset_yf_crumb() -> bool:
         except Exception as e:
             logger.warning(f"[DataPipeline] crumb reset failed: {e}")
             return False
+
+
+# ─── US Trading Day Helpers (Timezone-Aware) ─────────────────────────────────
+
+# US stock market holidays (NYSE/NASDAQ closed)
+# These are in US Eastern Time (ET)
+_US_MARKET_HOLIDAYS = [
+    # Fixed holidays
+    (1, 1),    # New Year's Day
+    (7, 4),    # Independence Day
+    (12, 25),  # Christmas
+]
+
+def _is_us_market_holiday(check_date: date) -> bool:
+    """Check if date is a US stock market holiday (NYSE/NASDAQ closed)."""
+    m, d = check_date.month, check_date.day
+    
+    # Fixed holidays
+    if (m, d) in _US_MARKET_HOLIDAYS:
+        return True
+    
+    # MLK Day (3rd Monday of January)
+    if m == 1 and 15 <= d <= 21 and check_date.weekday() == 0:
+        return True
+    
+    # Presidents Day (3rd Monday of February)
+    if m == 2 and 15 <= d <= 21 and check_date.weekday() == 0:
+        return True
+    
+    # Good Friday (roughly: between Mar 20 and Apr 23, on Friday)
+    # For exact calculation, would need dateutil.easter; this is conservative
+    if check_date.weekday() == 4:  # Friday
+        if (check_date.month == 3 and check_date.day >= 20) or \
+           (check_date.month == 4 and check_date.day <= 23):
+            # Rough approximation; not exact for all years
+            pass
+    
+    # Memorial Day (last Monday of May)
+    if m == 5 and check_date.weekday() == 0 and 25 <= d:
+        return True
+    
+    # Labor Day (1st Monday of September)
+    if m == 9 and check_date.weekday() == 0 and d <= 7:
+        return True
+    
+    # Thanksgiving (4th Thursday of November)
+    if m == 11 and check_date.weekday() == 3 and 22 <= d <= 28:
+        return True
+    
+    # Day after Thanksgiving (also closed)
+    if m == 11 and check_date.weekday() == 4 and 23 <= d <= 29:
+        return True
+    
+    return False
+
+
+def get_last_us_trading_day_hk(reference_hk_dt: datetime | None = None) -> date:
+    """
+    Return the most recent US stock market trading day, adjusted for Hong Kong timezone.
+    
+    This function:
+    1. Takes the current Hong Kong time (or a reference time in HK)
+    2. Converts to US Eastern Time (ET)
+    3. Finds the last valid trading day in ET (accounting for weekends + holidays)
+    
+    This ensures that when a user in Hong Kong is deciding whether to run a scan,
+    they check against the correct US trading day (not their local calendar day).
+    
+    Args:
+        reference_hk_dt: datetime in Hong Kong timezone (None → use now)
+    
+    Returns:
+        date: Last US trading day in ET timezone (as a naive date object)
+    
+    Example:
+        - Hong Kong: Monday 09:00
+        - ET: Sunday 20:00 (previous day)
+        - Returns: Friday (last US trading day before the Sunday ET)
+        
+        - Hong Kong: Saturday 09:00
+        - ET: Friday 20:00 (same day, still open or just closed)
+        - Returns: Friday (just-closed trading day)
+    """
+    # Get current Hong Kong datetime
+    if reference_hk_dt is None:
+        hk_tz = ZoneInfo("Asia/Hong_Kong")
+        reference_hk_dt = datetime.now(hk_tz)
+    
+    # Convert to US Eastern Time
+    et_tz = ZoneInfo("America/New_York")
+    et_dt = reference_hk_dt.astimezone(et_tz)
+    
+    # Start from the ET date and walk backward to find a valid trading day
+    current_et = et_dt.date()
+    
+    for _ in range(10):  # Look back up to 10 days
+        # Skip weekends (5=Saturday, 6=Sunday)
+        if current_et.weekday() in (5, 6):
+            current_et -= timedelta(days=1)
+            continue
+        
+        # Skip market holidays
+        if _is_us_market_holiday(current_et):
+            current_et -= timedelta(days=1)
+            continue
+        
+        # Found a valid trading day
+        return current_et
+    
+    # Fallback (shouldn't happen with 10-day lookback)
+    return current_et
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

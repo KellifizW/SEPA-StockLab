@@ -804,7 +804,14 @@ def api_scan_last():
 def api_scan_cache_info():
     """Return cache status to help users understand expected scan speed."""
     try:
-        today = date.today().isoformat()
+        # Import helper to get last US trading day (timezone-aware for HK users)
+        from modules.data_pipeline import get_last_us_trading_day_hk
+        
+        # Use last US trading day (ET timezone, accounting for HK's position)
+        # This ensures cache checks are correct even when running from Hong Kong
+        trading_day = get_last_us_trading_day_hk()
+        today = trading_day.isoformat()
+        
         cache_dir = ROOT / C.PRICE_CACHE_DIR
 
         # RS cache check — read first line only (fast, no pandas)
@@ -832,6 +839,7 @@ def api_scan_cache_info():
                 pass
 
         # Price cache: count today's meta files (sample-based for speed)
+        # Uses last US trading day (HK timezone-adjusted) for comparison
         price_cached_today = 0
         if cache_dir.exists():
             metas = list(cache_dir.glob("*_2y.meta"))
@@ -850,6 +858,7 @@ def api_scan_cache_info():
                         pass
 
         # Fundamentals cache: count today's fmeta files (sample-based)
+        # Uses last US trading day (HK timezone-adjusted) for comparison
         fund_cached_today = 0
         if cache_dir.exists():
             fmetas = list(cache_dir.glob("*_fundamentals.fmeta"))
