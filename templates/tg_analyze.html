@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票分析 - SEPA StockLab</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --accent: #58a6ff;
+            --success: #3fb950;
+            --danger: #f85149;
+            --warning: #d29922;
+        }
+        
+        body {
+            background: var(--bg-primary);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            padding: 0;
+            margin: 0;
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        
+        .header a {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .header h1 {
+            font-size: 1.3rem;
+            margin: 0;
+            flex: 1;
+        }
+        
+        .header-meta {
+            font-size: 0.85rem;
+            color: #8b949e;
+        }
+        
+        .content {
+            padding: 1rem;
+            max-width: 600px;
+            margin: 0 auto;
+            min-height: calc(100vh - 70px);
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 3rem 1rem;
+        }
+        
+        .loading.active {
+            display: block;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 2rem;
+            height: 2rem;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }
+        
+        .card-header {
+            background: transparent;
+            border-bottom: 1px solid var(--border);
+            padding: 1rem;
+            font-weight: 600;
+            color: var(--accent);
+        }
+        
+        .card-body {
+            padding: 1rem;
+        }
+        
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .stat-row:last-child {
+            border-bottom: none;
+        }
+        
+        .stat-label {
+            font-weight: 500;
+        }
+        
+        .stat-value {
+            color: var(--accent);
+            font-weight: 600;
+        }
+        
+        .recommendation {
+            padding: 1rem;
+            border-radius: 0.375rem;
+            text-align: center;
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .recommendation.buy {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+        
+        .recommendation.watch {
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--warning);
+            border: 1px solid var(--warning);
+        }
+        
+        .recommendation.avoid {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+        
+        .dimension-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .dimension-row:last-child {
+            border-bottom: none;
+        }
+        
+        .dimension-label {
+            font-weight: 500;
+            flex: 1;
+        }
+        
+        .dimension-score {
+            padding: 0.25rem 0.75rem;
+            background: var(--border);
+            border-radius: 0.25rem;
+            font-weight: 600;
+            color: var(--accent);
+            min-width: 60px;
+            text-align: right;
+        }
+        
+        .stars {
+            font-size: 1.2rem;
+            color: var(--warning);
+            margin: 0.5rem 0;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 200px;
+            margin: 1rem 0;
+        }
+        
+        .error-msg {
+            background: rgba(248, 81, 73, 0.15);
+            border: 1px solid var(--danger);
+            color: var(--danger);
+            padding: 1rem;
+            border-radius: 0.375rem;
+            margin: 1rem 0;
+        }
+        
+        .back-button {
+            background: var(--border);
+            color: var(--text);
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 0.375rem;
+            margin-top: 1rem;
+            width: 100%;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        
+        .back-button:hover {
+            background: var(--accent);
+            color: var(--bg-primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a onclick="goBack()" title="返回菜單">&larr;</a>
+        <div>
+            <h1>📊 股票分析</h1>
+            <div class="header-meta" id="headerMeta">加載中...</div>
+        </div>
+    </div>
+    
+    <div class="content">
+        <!-- Loading State -->
+        <div id="loading" class="loading active">
+            <div class="spinner"></div>
+            <p>分析中... 這可能需要 30-60 秒</p>
+        </div>
+        
+        <!-- Result State -->
+        <div id="result" style="display: none;">
+            <!-- Recommendation -->
+            <div id="recommendationBox"></div>
+            
+            <!-- Basic Info -->
+            <div class="card">
+                <div class="card-header">📈 基本信息</div>
+                <div class="card-body">
+                    <div class="stat-row">
+                        <span class="stat-label">股票代碼</span>
+                        <span class="stat-value" id="baseTicker">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">當前價格</span>
+                        <span class="stat-value" id="basePrice">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">評分</span>
+                        <span class="stat-value" id="baseScore">-</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Dimensions (QM/ML) -->
+            <div id="dimensionsCard" class="card" style="display: none;">
+                <div class="card-header">⭐ 評級維度</div>
+                <div class="card-body" id="dimensionsContent"></div>
+            </div>
+            
+            <!-- SEPA Recommendation (SEPA only) -->
+            <div id="sepaBasisCard" class="card" style="display: none;">
+                <div class="card-header">💡 分析基礎</div>
+                <div class="card-body" id="sepaBasisContent"></div>
+            </div>
+            
+            <!-- Chart -->
+            <div id="chartCard" class="card" style="display: none;">
+                <div class="card-header">📊 30 天價格走勢</div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="priceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Additional Info -->
+            <div id="additionalCard" class="card" style="display: none;">
+                <div class="card-header">ℹ️ 額外信息</div>
+                <div class="card-body" id="additionalContent"></div>
+            </div>
+            
+            <!-- Error Display -->
+            <div id="errorBox" style="display: none;"></div>
+            
+            <!-- Back Button -->
+            <button class="back-button" onclick="goBack()">← 返回菜單</button>
+        </div>
+    </div>
+    
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        
+        // 從 URL 參數獲取 ticker 和 strategy
+        const urlParams = new URLSearchParams(window.location.search);
+        const ticker = '{{ ticker }}' || urlParams.get('ticker') || 'NVDA';
+        const strategy = '{{ strategy }}' || urlParams.get('strategy') || 'SEPA';
+        
+        let analysisData = null;
+        let priceChart = null;
+        
+        async function loadAnalysis() {
+            try {
+                document.getElementById('headerMeta').textContent = `${strategy} 分析中...`;
+                
+                const response = await fetch(`/api/tg/analyze/${ticker}?strategy=${strategy}`);
+                
+                if (!response.ok) {
+                    showError(`分析失敗 (HTTP ${response.status})`);
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (!data.ok) {
+                    showError(data.error || '分析失敗');
+                    return;
+                }
+                
+                analysisData = data.result;
+                renderResult();
+            } catch (e) {
+                showError(`錯誤: ${e.message}`);
+            } finally {
+                document.getElementById('loading').classList.remove('active');
+            }
+        }
+        
+        function renderResult() {
+            document.getElementById('result').style.display = 'block';
+            document.getElementById('headerMeta').textContent = `${ticker} | ${strategy}`;
+            
+            if (strategy === 'SEPA') {
+                renderSEPA();
+            } else if (strategy === 'QM') {
+                renderQM();
+            } else if (strategy === 'ML') {
+                renderML();
+            }
+        }
+        
+        function renderSEPA() {
+            const r = analysisData;
+            
+            // Recommendation
+            const recBox = document.getElementById('recommendationBox');
+            const rec = (r.recommendation || 'WATCH').toUpperCase();
+            const recClass = rec === 'BUY' ? 'buy' : rec === 'AVOID' ? 'avoid' : 'watch';
+            recBox.innerHTML = `<div class="recommendation ${recClass}">${rec}</div>`;
+            
+            // Basic info
+            document.getElementById('baseTicker').textContent = r.ticker || '-';
+            document.getElementById('basePrice').textContent = `$${(r.price || 0).toFixed(2)}`;
+            document.getElementById('baseScore').textContent = `${(r.sepa_score || 0).toFixed(1)}/100`;
+            
+            // SEPA basis
+            const basisCard = document.getElementById('sepaBasisCard');
+            const basisContent = document.getElementById('sepaBasisContent');
+            const reasons = r.reasons || [];
+            
+            if (reasons.length > 0) {
+                basisCard.style.display = 'block';
+                basisContent.innerHTML = reasons.map(reason => 
+                    `<div class="stat-row"><span>✓ ${reason}</span></div>`
+                ).join('');
+            }
+            
+            // Price chart if position data exists
+            if (r.position) {
+                renderChart();
+            }
+        }
+        
+        function renderQM() {
+            const r = analysisData;
+            
+            // Star rating
+            const rec = r.recommendation || 'WATCH';
+            const recClass = rec.includes('BUY') || rec.includes('Strong') ? 'buy' : 
+                             rec.includes('AVOID') ? 'avoid' : 'watch';
+            const starBox = document.getElementById('recommendationBox');
+            const stars = '★'.repeat(Math.round(r.star_rating || 0)) + '☆'.repeat(5 - Math.round(r.star_rating || 0));
+            starBox.innerHTML = `
+                <div class="recommendation ${recClass}">
+                    ${rec}<br>
+                    <div class="stars">${stars}</div>
+                </div>
+            `;
+            
+            // Basic info
+            document.getElementById('baseTicker').textContent = r.ticker || '-';
+            document.getElementById('basePrice').textContent = `$${(r.close || 0).toFixed(2)}`;
+            document.getElementById('baseScore').textContent = `${(r.star_rating || 0).toFixed(1)}/5 ★`;
+            
+            // Dimensions
+            const dimCard = document.getElementById('dimensionsCard');
+            const dimContent = document.getElementById('dimensionsContent');
+            const dims = r.dimensions || {};
+            const dimLabels = {
+                'momentum': '動量質量',
+                'adr_level': 'ADR 水平',
+                'consolidation': '盤整質量',
+                'ma_alignment': 'MA 對齐',
+                'stock_type': '股票類型',
+                'market_timing': '市場時機'
+            };
+            
+            let dimHtml = '';
+            for (const [key, val] of Object.entries(dims)) {
+                const label = dimLabels[key] || key;
+                dimHtml += `
+                    <div class="dimension-row">
+                        <span class="dimension-label">${label}</span>
+                        <span class="dimension-score">${(val || 0).toFixed(1)}</span>
+                    </div>
+                `;
+            }
+            
+            if (dimHtml) {
+                dimCard.style.display = 'block';
+                dimContent.innerHTML = dimHtml;
+            }
+            
+            // Additional info
+            const addCard = document.getElementById('additionalCard');
+            const addContent = document.getElementById('additionalContent');
+            let addHtml = '';
+            
+            if (r.adr) {
+                addHtml += `<div class="stat-row"><span class="stat-label">ADR</span><span class="stat-value">${(r.adr || 0).toFixed(2)}%</span></div>`;
+            }
+            if (r.setup_type) {
+                addHtml += `<div class="stat-row"><span class="stat-label">Setup 類型</span><span class="stat-value">${r.setup_type}</span></div>`;
+            }
+            
+            if (addHtml) {
+                addCard.style.display = 'block';
+                addContent.innerHTML = addHtml;
+            }
+            
+            // Price chart
+            renderChart();
+        }
+        
+        function renderML() {
+            const r = analysisData;
+            
+            // Star rating
+            const rec = r.recommendation || 'WATCH';
+            const recClass = rec.includes('BUY') || rec.includes('Strong') ? 'buy' : 
+                             rec.includes('AVOID') ? 'avoid' : 'watch';
+            const starBox = document.getElementById('recommendationBox');
+            const stars = '★'.repeat(Math.round(r.star_rating || 0)) + '☆'.repeat(7 - Math.round(r.star_rating || 0));
+            starBox.innerHTML = `
+                <div class="recommendation ${recClass}">
+                    ${rec}<br>
+                    <div class="stars">${stars}</div>
+                </div>
+            `;
+            
+            // Basic info
+            document.getElementById('baseTicker').textContent = r.ticker || '-';
+            document.getElementById('basePrice').textContent = `$${(r.close || 0).toFixed(2)}`;
+            document.getElementById('baseScore').textContent = `${(r.star_rating || 0).toFixed(1)}/7 ★`;
+            
+            // Dimensions (7 dimensions)
+            const dimCard = document.getElementById('dimensionsCard');
+            const dimContent = document.getElementById('dimensionsContent');
+            const dims = r.dimensions || {};
+            const dimLabels = {
+                'ema_structure': 'EMA 結構',
+                'pullback_quality': '回檔質量',
+                'avwap_confluence': 'AVWAP 匯聚',
+                'volume_pattern': '成交量模式',
+                'risk_reward': '風險回報',
+                'relative_strength': '相對強度',
+                'market_environment': '市場環境'
+            };
+            
+            let dimHtml = '';
+            for (const [key, val] of Object.entries(dims)) {
+                const label = dimLabels[key] || key;
+                dimHtml += `
+                    <div class="dimension-row">
+                        <span class="dimension-label">${label}</span>
+                        <span class="dimension-score">${(val || 0).toFixed(1)}</span>
+                    </div>
+                `;
+            }
+            
+            if (dimHtml) {
+                dimCard.style.display = 'block';
+                dimContent.innerHTML = dimHtml;
+            }
+            
+            // Additional info
+            const addCard = document.getElementById('additionalCard');
+            const addContent = document.getElementById('additionalContent');
+            let addHtml = '';
+            
+            if (r.adr) {
+                addHtml += `<div class="stat-row"><span class="stat-label">ADR</span><span class="stat-value">${(r.adr || 0).toFixed(2)}%</span></div>`;
+            }
+            if (r.setup_type) {
+                addHtml += `<div class="stat-row"><span class="stat-label">Setup 類型</span><span class="stat-value">${r.setup_type}</span></div>`;
+            }
+            
+            if (addHtml) {
+                addCard.style.display = 'block';
+                addContent.innerHTML = addHtml;
+            }
+            
+            // Price chart
+            renderChart();
+        }
+        
+        function renderChart() {
+            const chartCard = document.getElementById('chartCard');
+            chartCard.style.display = 'block';
+            
+            // Load chart data from API
+            fetch(`/api/chart/enriched/${ticker}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.ok && data.candles && data.candles.length > 0) {
+                        drawChart(data.candles);
+                    }
+                })
+                .catch(e => console.log('Chart load skipped:', e.message));
+        }
+        
+        function drawChart(candles) {
+            const ctx = document.getElementById('priceChart');
+            if (!ctx) return;
+            
+            // Take last 30 candles
+            const chartData = candles.slice(-30);
+            
+            if (priceChart) priceChart.destroy();
+            priceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartData.map(c => {
+                        const d = new Date(c.time * 1000);
+                        return (d.getMonth() + 1) + '/' + d.getDate();
+                    }),
+                    datasets: [{
+                        label: 'Close Price',
+                        data: chartData.map(c => c.close),
+                        borderColor: '#58a6ff',
+                        backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                        tension: 0.3,
+                        fill: true,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        pointHoverRadius: 4,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {legend: {display: false}},
+                    scales: {
+                        y: {
+                            ticks: {color: '#8b949e', font: {size: 10}},
+                            grid: {color: '#30363d', drawBorder: false},
+                            border: {display: false}
+                        },
+                        x: {
+                            ticks: {color: '#8b949e', font: {size: 10}},
+                            grid: {display: false},
+                            border: {display: false}
+                        }
+                    }
+                }
+            });
+        }
+        
+        function showError(msg) {
+            document.getElementById('result').style.display = 'block';
+            const errorBox = document.getElementById('errorBox');
+            errorBox.style.display = 'block';
+            errorBox.innerHTML = `<div class="error-msg">❌ ${msg}</div>`;
+        }
+        
+        function goBack() {
+            window.location.href = '/tg/menu';
+        }
+        
+        // Load analysis on page ready
+        document.addEventListener('DOMContentLoaded', loadAnalysis);
+    </script>
+</body>
+</html>

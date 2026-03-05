@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Trade - StockLab Mini App</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --success: #3fb950;
+            --danger: #f85149;
+        }
+        
+        body {
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+            min-height: 100vh;
+            padding: 10px;
+            margin: 0;
+        }
+        
+        .container-fluid {
+            max-width: 100%;
+            padding: 0;
+        }
+        
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .card-header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 15px;
+        }
+        
+        .card-title {
+            margin: 0;
+            color: var(--text-primary);
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .form-label {
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 500;
+            margin-bottom: 6px;
+        }
+        
+        .form-control, .form-select {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 10px 12px;
+            font-size: 14px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            background: var(--bg-primary);
+            border-color: var(--accent);
+            color: var(--text-primary);
+            box-shadow: 0 0 0 0.2rem rgba(88, 166, 255, 0.25);
+        }
+        
+        .btn {
+            padding: 10px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: var(--accent);
+            color: #0d1117;
+        }
+        
+        .btn-primary:hover {
+            background: #79c0ff;
+            color: #0d1117;
+        }
+        
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #f55c5c;
+        }
+        
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: none;
+        }
+        
+        .status.success {
+            background: rgba(63, 185, 80, 0.1);
+            color: #3fb950;
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+        
+        .status.error {
+            background: rgba(248, 81, 73, 0.1);
+            color: #f85149;
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+        
+        .row-fields {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        .row-fields.full {
+            grid-template-columns: 1fr;
+        }
+        
+        .input-group-text {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+        
+        .back-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 15px;
+        }
+        
+        .back-link:hover {
+            color: #79c0ff;
+        }
+        
+        #loadingSpinner {
+            display: none;
+        }
+        
+        .spinner-border {
+            color: var(--accent);
+        }
+        
+        @media (max-width: 480px) {
+            body {
+                padding: 8px;
+            }
+            
+            .row-fields {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- Back Link -->
+        <a href="javascript:history.back()" class="back-link">
+            <span>←</span> Back
+        </a>
+        
+        <!-- Title Card -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">📊 Add Trade</h2>
+            </div>
+        </div>
+        
+        <!-- Status Messages -->
+        <div id="statusMsg" class="status"></div>
+        
+        <!-- Trade Form Card -->
+        <div class="card">
+            <div class="card-body" style="padding: 15px;">
+                <form id="tradeForm" onsubmit="submitTrade(event)">
+                    <!-- Ticker -->
+                    <div class="row-fields full">
+                        <div>
+                            <label for="ticker" class="form-label">Ticker</label>
+                            <input type="text" class="form-control" id="ticker" placeholder="e.g., NVDA" 
+                                   maxlength="10" required style="text-transform: uppercase;">
+                        </div>
+                    </div>
+                    
+                    <!-- Buy Price & Shares -->
+                    <div class="row-fields">
+                        <div>
+                            <label for="buyPrice" class="form-label">Buy Price ($)</label>
+                            <input type="number" class="form-control" id="buyPrice" placeholder="100.50" 
+                                   step="0.01" min="1" required>
+                        </div>
+                        <div>
+                            <label for="shares" class="form-label">Shares</label>
+                            <input type="number" class="form-control" id="shares" placeholder="100" 
+                                   step="1" min="1" required>
+                        </div>
+                    </div>
+                    
+                    <!-- Stop Loss & Target -->
+                    <div class="row-fields">
+                        <div>
+                            <label for="stopLoss" class="form-label">Stop Loss ($)</label>
+                            <input type="number" class="form-control" id="stopLoss" placeholder="95.00" 
+                                   step="0.01" min="0">
+                        </div>
+                        <div>
+                            <label for="target" class="form-label">Target ($)</label>
+                            <input type="number" class="form-control" id="target" placeholder="120.00" 
+                                   step="0.01" min="0">
+                        </div>
+                    </div>
+                    
+                    <!-- Strategy & Note -->
+                    <div class="row-fields">
+                        <div>
+                            <label for="strategy" class="form-label">Strategy</label>
+                            <select class="form-select" id="strategy">
+                                <option value="SEPA">SEPA (Minervini)</option>
+                                <option value="QM">QM (Qullamaggie)</option>
+                                <option value="ML">ML (Martin Luk)</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Note -->
+                    <div class="row-fields full">
+                        <div>
+                            <label for="note" class="form-label">Note (Optional)</label>
+                            <textarea class="form-control" id="note" placeholder="e.g., VCP breakout, strong technicals..." 
+                                      rows="2" maxlength="200"></textarea>
+                        </div>
+                    </div>
+                    
+                    <!-- Position Summary -->
+                    <div style="background: var(--bg-primary); border: 1px solid var(--border-color); 
+                                border-radius: 6px; padding: 10px; margin: 15px 0; font-size: 12px;">
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Position Summary:</div>
+                        <div>Position Size: <span id="posSizeDisplay" style="color: var(--accent);">$0.00</span></div>
+                        <div>Stop Loss: <span id="stopPctDisplay" style="color: #f85149;">0%</span></div>
+                        <div>Risk/Reward: <span id="rrDisplay" style="color: #3fb950;">0:1</span></div>
+                    </div>
+                    
+                    <!-- Buttons -->
+                    <div style="display: flex; gap: 8px; padding: 0; margin-top: 15px;">
+                        <button type="submit" class="btn btn-primary" style="flex: 1;">
+                            <span id="submitText">✅ Add Trade</span>
+                            <span id="loadingSpinner" style="display: none;">
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            </span>
+                        </button>
+                        <button type="reset" class="btn btn-danger" style="flex: 1;">Clear</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Help Card -->
+        <div class="card" style="margin-bottom: 20px;">
+            <div class="card-header">
+                <p class="card-title" style="margin: 0;">💡 Tips</p>
+            </div>
+            <div class="card-body" style="padding: 15px; font-size: 12px; color: var(--text-secondary);">
+                <ul style="margin: 0; padding-left: 16px;">
+                    <li>Fill in all required fields</li>
+                    <li>Stop Loss should be below Buy Price</li>
+                    <li>Target should be above Buy Price</li>
+                    <li>Risk/Reward ratio should be at least 2:1</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let Telegram = window.Telegram;
+        
+        // Auto-uppercase ticker input
+        document.getElementById('ticker').addEventListener('input', function() {
+            this.value = this.value.toUpperCase();
+        });
+        
+        // Calculate position summary on values change
+        ['buyPrice', 'shares', 'stopLoss', 'target'].forEach(id => {
+            document.getElementById(id).addEventListener('change', updateSummary);
+        });
+        
+        function updateSummary() {
+            const buyPrice = parseFloat(document.getElementById('buyPrice').value) || 0;
+            const shares = parseInt(document.getElementById('shares').value) || 0;
+            const stopLoss = parseFloat(document.getElementById('stopLoss').value) || 0;
+            const target = parseFloat(document.getElementById('target').value) || 0;
+            
+            const posSize = buyPrice * shares;
+            document.getElementById('posSizeDisplay').textContent = `$${posSize.toFixed(2)}`;
+            
+            if (buyPrice > 0 && stopLoss > 0) {
+                const stopPct = ((buyPrice - stopLoss) / buyPrice * 100).toFixed(1);
+                document.getElementById('stopPctDisplay').textContent = `${stopPct}%`;
+            }
+            
+            if (buyPrice > 0 && stopLoss > 0 && target > 0) {
+                const risk = buyPrice - stopLoss;
+                const reward = target - buyPrice;
+                const rr = (reward / risk).toFixed(2);
+                document.getElementById('rrDisplay').textContent = `${rr}:1`;
+            }
+        }
+        
+        function submitTrade(event) {
+            event.preventDefault();
+            
+            const ticker = document.getElementById('ticker').value.trim().toUpperCase();
+            const buyPrice = parseFloat(document.getElementById('buyPrice').value);
+            const shares = parseInt(document.getElementById('shares').value);
+            const stopLoss = parseFloat(document.getElementById('stopLoss').value) || null;
+            const target = parseFloat(document.getElementById('target').value) || null;
+            const strategy = document.getElementById('strategy').value;
+            const note = document.getElementById('note').value.trim();
+            
+            // Validation
+            if (!ticker || !buyPrice || !shares) {
+                showStatus('Please fill in all required fields', 'error');
+                return;
+            }
+            
+            if (stopLoss && buyPrice <= stopLoss) {
+                showStatus('Stop Loss must be below Buy Price', 'error');
+                return;
+            }
+            
+            if (target && buyPrice >= target) {
+                showStatus('Target must be above Buy Price', 'error');
+                return;
+            }
+            
+            // Show loading
+            document.getElementById('loadingSpinner').style.display = 'inline';
+            document.getElementById('submitText').style.display = 'none';
+            
+            // Submit trade
+            fetch('/api/quick-add-position', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ticker: ticker,
+                    buy_price: buyPrice,
+                    shares: shares,
+                    stop_loss: stopLoss,
+                    target: target,
+                    strategy: strategy,
+                    note: note
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('loadingSpinner').style.display = 'none';
+                document.getElementById('submitText').style.display = 'inline';
+                
+                if (data.ok) {
+                    showStatus(`✅ Trade added! ${ticker} @ $${buyPrice} (${shares} shares)`, 'success');
+                    document.getElementById('tradeForm').reset();
+                    updateSummary();
+                    
+                    // Notify Telegram
+                    if (Telegram?.WebApp?.showPopup) {
+                        Telegram.WebApp.showPopup({
+                            title: 'Success',
+                            message: `Trade for ${ticker} added successfully!`,
+                            buttons: [{type: 'ok'}]
+                        });
+                    }
+                } else {
+                    showStatus(data.error || 'Failed to add trade', 'error');
+                }
+            })
+            .catch(e => {
+                document.getElementById('loadingSpinner').style.display = 'none';
+                document.getElementById('submitText').style.display = 'inline';
+                showStatus('Error: ' + e.message, 'error');
+            });
+        }
+        
+        function showStatus(msg, type) {
+            const el = document.getElementById('statusMsg');
+            el.textContent = msg;
+            el.className = `status ${type}`;
+            el.style.display = 'block';
+            
+            if (type === 'success') {
+                setTimeout(() => { el.style.display = 'none'; }, 4000);
+            }
+        }
+        
+        // Initialize Telegram WebApp
+        if (Telegram?.WebApp) {
+            Telegram.WebApp.ready();
+            Telegram.WebApp.expand();
+            Telegram.WebApp.setHeaderColor('#0d1117');
+        }
+    </script>
+</body>
+</html>

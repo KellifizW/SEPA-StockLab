@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEPA StockLab — Error</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        body {
+            background: #212529;
+            color: #f0f0f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .container {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            padding: 16px;
+            text-align: center;
+        }
+        
+        .error-icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+        }
+        
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 24px;
+            color: #ff6b6b;
+        }
+        
+        p {
+            margin: 0 0 32px 0;
+            color: #999;
+            line-height: 1.6;
+        }
+        
+        .close-btn {
+            padding: 10px 24px;
+            background: #3fb950;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        
+        .close-btn:active {
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="error-icon">⚠️</div>
+        <h1>Authentication Failed</h1>
+        <p>{{ error }}</p>
+        <button class="close-btn" onclick="closeApp()">Close</button>
+    </div>
+    
+    <script>
+        const TelegramApp = window.Telegram.WebApp;
+        
+        function closeApp() {
+            TelegramApp.close();
+        }
+        
+        // Try to auto-close after 5 seconds
+        setTimeout(() => {
+            TelegramApp.close();
+        }, 5000);
+    </script>
+</body>
+</html>

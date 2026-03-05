@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>現有持倉 - SEPA StockLab</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --accent: #58a6ff;
+            --success: #3fb950;
+            --danger: #f85149;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            padding: 0;
+            margin: 0;
+        }
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .header a {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 1.5rem;
+        }
+        .header h1 {
+            font-size: 1.3rem;
+            margin: 0;
+            flex: 1;
+        }
+        .container {
+            padding: 1rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .position-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+            margin-bottom: 0.75rem;
+            padding: 1rem;
+        }
+        .position-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+        .position-ticker {
+            font-weight: 600;
+            color: var(--accent);
+            font-size: 1.1rem;
+        }
+        .position-pnl {
+            font-weight: 600;
+            font-size: 1rem;
+        }
+        .position-pnl.positive {
+            color: var(--success);
+        }
+        .position-pnl.negative {
+            color: var(--danger);
+        }
+        .position-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+            font-size: 0.85rem;
+        }
+        .stat {
+            background: var(--bg-primary);
+            padding: 0.5rem;
+            border-radius: 0.25rem;
+            border-left: 2px solid var(--accent);
+        }
+        .stat-label {
+            color: #8b949e;
+            font-size: 0.75rem;
+        }
+        .stat-value {
+            color: var(--text);
+            font-weight: 500;
+        }
+        .loading {
+            text-align: center;
+            padding: 2rem;
+        }
+        .spinner {
+            display: inline-block;
+            width: 2rem;
+            height: 2rem;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .empty {
+            text-align: center;
+            padding: 2rem;
+            color: #8b949e;
+        }
+        .summary {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .summary-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="/tg/menu" title="返回菜單">&larr;</a>
+        <h1>📋 現有持倉</h1>
+    </div>
+    
+    <div class="container">
+        <div id="content" class="loading">
+            <div class="spinner"></div>
+            <p>加載中...</p>
+        </div>
+    </div>
+    
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        
+        async function loadPositions() {
+            try {
+                const response = await fetch('/api/positions-data');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                
+                if (!data.ok) {
+                    document.getElementById('content').innerHTML = `<p>❌ ${data.error}</p>`;
+                    return;
+                }
+                
+                const positions = data.positions || [];
+                const stats = data.stats || {};
+                
+                if (positions.length === 0) {
+                    document.getElementById('content').innerHTML = '<div class="empty"><p>📭 沒有開放持倉</p></div>';
+                    return;
+                }
+                
+                let html = '';
+                
+                // 摘要
+                if (stats.total_positions) {
+                    const totalPnl = stats.total_pnl || 0;
+                    const pnlClass = totalPnl >= 0 ? 'positive' : 'negative';
+                    html += `
+                        <div class="summary">
+                            <div class="summary-row">
+                                <span>持倉數</span>
+                                <span>${stats.total_positions}</span>
+                            </div>
+                            <div class="summary-row">
+                                <span>總投資</span>
+                                <span>$${(stats.total_invested || 0).toFixed(2)}</span>
+                            </div>
+                            <div class="summary-row">
+                                <span>總損益</span>
+                                <span class="${pnlClass}">$${totalPnl.toFixed(2)}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // 持倉詳情
+                html += positions.map(pos => {
+                    const unrealizedPnl = (pos.unrealized_pnl || 0).toFixed(2);
+                    const pnlPct = ((pos.unrealized_pnl_pct || 0) * 100).toFixed(2);
+                    const pnlClass = unrealizedPnl >= 0 ? 'positive' : 'negative';
+                    
+                    return `
+                        <div class="position-card">
+                            <div class="position-header">
+                                <div class="position-ticker">${pos.ticker}</div>
+                                <div class="position-pnl ${pnlClass}">
+                                    $${unrealizedPnl} (${pnlPct}%)
+                                </div>
+                            </div>
+                            <div class="position-stats">
+                                <div class="stat">
+                                    <div class="stat-label">入場價</div>
+                                    <div class="stat-value">$${(pos.entry_price || 0).toFixed(2)}</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">現價</div>
+                                    <div class="stat-value">$${(pos.current_price || 0).toFixed(2)}</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">倉位</div>
+                                    <div class="stat-value">${(pos.quantity || 0)} 股</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">策略</div>
+                                    <div class="stat-value">${pos.strategy || 'SEPA'}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                document.getElementById('content').innerHTML = html;
+            } catch (e) {
+                document.getElementById('content').innerHTML = `<p>❌ 錯誤：${e.message}</p>`;
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', loadPositions);
+    </script>
+</body>
+</html>

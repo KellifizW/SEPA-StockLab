@@ -5,43 +5,26 @@ Telegram Bot Polling Integration + 管理員審批系統
 
 支援的指令（公共）：
   /market              — 評估市場環境 (regime, breadth, sectors)
-  /dashboard           — 儀表板概覽 (市場、持倉、觀察清單)
   /watchlist           — 顯示觀察清單 (A/B/C 分級)
-  /positions, /position— 顯示現有持倉
-  /account             — 顯示帳戶信息和統計
-  /analyze             — SEPA 深度分析 (會詢問股票代碼)
-  /qm                  — QM Qullamaggie 6★ 評級 (會詢問股票代碼)
-  /ml                  — ML Martin Luk 7★ 評級 (會詢問股票代碼)
-  /trade               — 新建交易 (買入/賣出，逐步引導)
+  /positions           — 顯示現有持倉
+  /analyze <ticker>    — SEPA 深度分析 (BUY/WATCH/AVOID)
+  /qm <ticker>         — QM Qullamaggie 6★ 評級
+  /ml <ticker>         — ML Martin Luk 7★ 評級
+  /scan                — SEPA 全市場掃描 (背景執行)
+  /qm_scan             — QM 全市場掃描 (背景執行)
+  /ml_scan             — ML 全市場掃描 (背景執行)
   /help                — 顯示幫助訊息
 
 支援的指令（管理員專用）：
-  /scan                — SEPA (Minervini) 掃描 (背景執行, 5-30 分鐘)
-  /qm_scan             — QM (Qullamaggie) 掃描 (背景執行, 5-30 分鐘)
-  /ml_scan             — ML (Martin Luk) 掃描 (背景執行, 5-30 分鐘)
-  /approve <chat_id>   — 批准新用戶
-  /deny <chat_id>      — 拒絕新用戶
-  /admin_list          — 查看待批准列表
-
-交互式指令流程：
-  /analyze, /qm, /ml:
-    1. 用戶輸入 /analyze（無參數）
-    2. Bot 詢問: 分析哪個股票?
-    3. 用戶輸入股票代碼
-    4. 後台執行分析
-
-  /trade:
-    1. 用戶輸入 /trade
-    2. Bot 展示按鈕: 買入 / 賣出
-    3. 用戶選擇
-    4. Bot 一步步詢問: 股票代碼 → 入場價 → 數量 → 止損價
-    5. Bot 確認並計算 R:R
+  /approve <chat_id>     — 批准新用戶
+  /deny <chat_id>        — 拒絕新用戶
+  /admin_list            — 查看待批准列表
 
 新用戶流程：
-  1. 新用戶輸入任何指令
+  1. 新用戶 (Chat ID: 520073103) 輸入任何指令
   2. Bot 檢查白名單，發現未批准
   3. Bot 發送審批請求給管理員
-  4. 管理員點擊 ✅ 批准 / ❌ 拒絕 按鈕
+  4. 管理員輸入 /approve 520073103
   5. 新用戶被加入白名單，可正常使用
 """
 
@@ -81,11 +64,6 @@ _approval_lock = threading.Lock()
 # Active scan tracking (prevent concurrent scans per user)
 _active_scans: Dict[str, str] = {}  # {chat_id: scan_type}
 _active_scans_lock = threading.Lock()
-
-# User interaction state machine (for multi-step commands)
-# {chat_id: {"state": "waiting_for_analyze_ticker", "data": {...}}}
-_user_states: Dict[str, Dict] = {}
-_user_states_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ANSI Colors
@@ -218,6 +196,42 @@ def send_message(text: str, chat_id: Optional[str] = None, parse_mode: str = "HT
         return True
     except Exception as e:
         logger.error(f"send_message 失敗: {e}", exc_info=False)
+        return False
+
+
+def register_bot_commands():
+    """
+    在 Telegram 中註冊 Bot 命令菜單
+    此功能使用戶在輸入 / 時會看到可用的命令列表
+    """
+    try:
+        url = _build_url("setMyCommands")
+        commands = [
+            {"command": "menu", "description": "打開 Mini App 菜單"},
+            {"command": "market", "description": "評估市場環境"},
+            {"command": "watchlist", "description": "顯示觀察清單"},
+            {"command": "positions", "description": "顯示現有持倉"},
+            {"command": "analyze", "description": "SEPA 深度分析 <股票代碼>"},
+            {"command": "qm", "description": "Qullamaggie 6★ 評級 <股票代碼>"},
+            {"command": "ml", "description": "Martin Luk 7★ 評級 <股票代碼>"},
+            {"command": "scan", "description": "SEPA 全市場掃描"},
+            {"command": "qm_scan", "description": "QM 全市場掃描"},
+            {"command": "ml_scan", "description": "ML 全市場掃描"},
+            {"command": "help", "description": "顯示幫助訊息"},
+        ]
+        
+        data = {"commands": commands}
+        resp = requests.post(url, json=data, timeout=_TG_REQUEST_TIMEOUT)
+        result = resp.json()
+        
+        if result.get("ok"):
+            logger.info(f"✅ 已註冊 {len(commands)} 個 Telegram 命令")
+            return True
+        else:
+            logger.warning(f"setMyCommands 失敗: {result.get('description', 'unknown')}")
+            return False
+    except Exception as e:
+        logger.error(f"register_bot_commands 失敗: {e}", exc_info=False)
         return False
 
 
@@ -456,27 +470,44 @@ def _handle_positions_command(chat_id: str) -> str:
 
 def _handle_analyze_command(chat_id: str, ticker: str):
     """
-    /analyze 指令 — SEPA 深度分析 (非同步背景執行)
+    /analyze <ticker> 指令 — SEPA 深度分析 (非同步背景執行)
     
-    若 ticker 為空：詢問用戶要分析哪個股票，並進入狀態機制
-    若 ticker 有值：直接進行分析
+    支持兩種交付方式：
+    1. 傳統文字回應 (長)
+    2. Telegram Mini App (Rich UI)
     """
     ticker = ticker.upper().strip()
-    
-    # 若無 ticker，進入狀態機制詢問用戶
     if not ticker:
-        with _user_states_lock:
-            _user_states[chat_id] = {
-                "state": "waiting_for_analyze_ticker",
-                "data": {}
-            }
-        send_message("🔍 請輸入要進行 SEPA 分析的股票代碼 (例如: NVDA)", chat_id=chat_id)
+        send_message("❌ 用法: /analyze &lt;ticker&gt;\n例如: /analyze NVDA", chat_id=chat_id)
         return
 
-    send_message(
-        f"⏳ 正在進行 SEPA 分析: <code>{ticker}</code>...\n(約需 30-60 秒)",
-        chat_id=chat_id, parse_mode="HTML"
-    )
+    # 嘗試發送 Mini App 按鈕（需要用戶批准）
+    # webAppInfo 格式要求 url 參數指向完整 HTTPS URL
+    try:
+        mini_app_url = f"https://sepa-stocklab.example.com/tg/app?ticker={ticker}"  # 替換為實際 URL
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📊 在 Mini App 中分析",
+                        "web_app": {
+                            "url": mini_app_url
+                        }
+                    }
+                ]
+            ]
+        }
+        send_message(
+            f"📊 分析 <code>{ticker}</code>...\n\n點擊下方按鈕以在 Mini App 中查看詳細分析。",
+            chat_id=chat_id, parse_mode="HTML", reply_markup=reply_markup
+        )
+    except Exception as e:
+        logger.debug(f"Mini App 按鈕發送失敗 (降級到文字): {e}")
+        # 降級：發送傳統文字分析請求
+        send_message(
+            f"⏳ 正在進行 SEPA 分析: <code>{ticker}</code>...\n(約需 30-60 秒)",
+            chat_id=chat_id, parse_mode="HTML"
+        )
 
     def _run():
         try:
@@ -526,21 +557,11 @@ def _handle_analyze_command(chat_id: str, ticker: str):
 
 def _handle_qm_command(chat_id: str, ticker: str):
     """
-    /qm 指令 — QM Qullamaggie 6★ 分析 (非同步背景執行)
-    
-    若 ticker 為空：詢問用戶要分析哪個股票，並進入狀態機制
-    若 ticker 有值：直接進行分析
+    /qm <ticker> 指令 — QM Qullamaggie 6★ 分析 (非同步背景執行)
     """
     ticker = ticker.upper().strip()
-    
-    # 若無 ticker，進入狀態機制詢問用戶
     if not ticker:
-        with _user_states_lock:
-            _user_states[chat_id] = {
-                "state": "waiting_for_qm_ticker",
-                "data": {}
-            }
-        send_message("🔍 請輸入要進行 QM 分析的股票代碼 (例如: NVDA)", chat_id=chat_id)
+        send_message("❌ 用法: /qm &lt;ticker&gt;\n例如: /qm NVDA", chat_id=chat_id)
         return
 
     send_message(
@@ -606,21 +627,11 @@ def _handle_qm_command(chat_id: str, ticker: str):
 
 def _handle_ml_command(chat_id: str, ticker: str):
     """
-    /ml 指令 — ML Martin Luk 7★ 分析 (非同步背景執行)
-    
-    若 ticker 為空：詢問用戶要分析哪個股票，並進入狀態機制
-    若 ticker 有值：直接進行分析
+    /ml <ticker> 指令 — ML Martin Luk 7★ 分析 (非同步背景執行)
     """
     ticker = ticker.upper().strip()
-    
-    # 若無 ticker，進入狀態機制詢問用戶
     if not ticker:
-        with _user_states_lock:
-            _user_states[chat_id] = {
-                "state": "waiting_for_ml_ticker",
-                "data": {}
-            }
-        send_message("🔍 請輸入要進行 ML 分析的股票代碼 (例如: NVDA)", chat_id=chat_id)
+        send_message("❌ 用法: /ml &lt;ticker&gt;\n例如: /ml NVDA", chat_id=chat_id)
         return
 
     send_message(
@@ -791,28 +802,26 @@ def _handle_help_command() -> str:
     """
     text = """<b>📋 SEPA StockLab — 可用指令</b>
 
+<b>🎯 功能菜單:</b>
+<b>/menu</b> — 打開完整功能菜單（推薦使用）
+
 <b>📊 市場 &amp; 資訊:</b>
 <b>/market</b> — 評估市場環境 (Regime, Breadth, Sectors)
-<b>/dashboard</b> — 儀表板概覽 (市場、持倉、觀察清單)
 <b>/watchlist</b> — 顯示觀察清單 (A/B/C 分級)
 <b>/positions</b> — 顯示現有持倉
-<b>/position</b> — 別名於 /positions
-<b>/account</b> — 顯示帳戶信息和統計
 
 <b>🔍 單股分析 (需 30-60 秒):</b>
-<b>/analyze</b> — SEPA 深度分析 (會詢問股票代碼)
-<b>/qm</b> — QM Qullamaggie 6★ 評級 (會詢問股票代碼)
-<b>/ml</b> — ML Martin Luk 7★ 評級 (會詢問股票代碼)
+<b>/analyze &lt;ticker&gt;</b> — SEPA 深度分析 (BUY/WATCH/AVOID)
+<b>/qm &lt;ticker&gt;</b> — QM Qullamaggie 6★ 評級
+<b>/ml &lt;ticker&gt;</b> — ML Martin Luk 7★ 評級
 
-<b>💼 交易:</b>
-<b>/trade</b> — 新建交易 (買入/賣出，逐步引導)
-
-<b>🚀 全市場掃描 (管理員專用，需 5-30 分鐘):</b>
+<b>🚀 全市場掃描 (需 5-30 分鐘，完成後通知):</b>
 <b>/scan</b> — SEPA (Minervini) 掃描
 <b>/qm_scan</b> — QM (Qullamaggie) 掃描
 <b>/ml_scan</b> — ML (Martin Luk) 掃描
 
 <b>ℹ️ 其他:</b>
+<b>/mini_app</b> — 打開 Qullamaggie Mini App 📱
 <b>/help</b> — 顯示此幫助訊息
 
 <i>SEPA StockLab Telegram Bot | 本地運行 (Polling mode)</i>"""
@@ -824,198 +833,48 @@ def _handle_unknown_command(text: str) -> str:
     return f"❌ 未知指令: <code>{text[:50]}</code>\n輸入 /help 查看可用指令"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# New Command Handlers: Dashboard, Position, Account, Trade
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _handle_dashboard_command(chat_id: str) -> str:
+def _handle_menu_command(chat_id: str):
     """
-    /dashboard 指令 — 儀表板概覽
+    /menu 指令 — 打開 Mini App 菜單（主菜單）
+    發送web_app按鈕連接到tg_menu頁面
+    """
+    mini_app_url = getattr(C, 'TG_MINI_APP_BASE_URL', 'http://localhost:5000') + '/tg/menu'
+    reply_markup = {
+        "inline_keyboard": [[{
+            "text": "📊 打開功能菜單",
+            "web_app": {"url": mini_app_url}
+        }]]
+    }
+    msg = "<b>🎯 SEPA StockLab 功能菜單</b>\n\n點擊下方按鈕打開完整菜單"
+    send_message(msg, chat_id=chat_id, reply_markup=reply_markup)
+    logger.info(f"已發送菜單按鈕 (Chat ID: {chat_id})")
+
+
+def _handle_mini_app_command(chat_id: str):
+    """
+    /mini_app 指令 — 打開 Qullamaggie Mini App（發送web_app按鈕）
+    """
+    mini_app_url = getattr(C, 'TG_MINI_APP_BASE_URL', 'http://localhost:5000') + '/tg/app'
     
-    結合市場狀況、持倉摘要、觀察清單統計
-    """
-    try:
-        lines = ["<b>📊 Telegram Bot 儀表板</b>\n"]
-        
-        # 市場狀況
-        try:
-            from modules.market_env import assess
-            result = assess(verbose=False)
-            regime = result.get("regime", "UNKNOWN")
-            breadth = result.get("breadth_pct", 0)
-            lines.append(f"<b>📈 市場:</b> {regime} | Breadth: {breadth:.0f}%\n")
-        except Exception as e:
-            logger.warning(f"無法載入市場環境: {e}")
-            lines.append("<b>📈 市場:</b> (無法載入)\n")
-        
-        # 持倉摘要
-        try:
-            from modules.position_monitor import _load
-            pos_data = _load()
-            positions = pos_data.get("positions", {})
-            pos_count = len(positions)
-            if positions:
-                total_val = sum(p.get("position_value", 0) for p in positions.values())
-                lines.append(f"<b>💼 持倉:</b> {pos_count} 個 | 總值: ${total_val:,.0f}\n")
-            else:
-                lines.append(f"<b>💼 持倉:</b> 無\n")
-        except Exception as e:
-            logger.warning(f"無法載入持倉: {e}")
-            lines.append("<b>💼 持倉:</b> (無法載入)\n")
-        
-        # 觀察清單統計
-        try:
-            from modules.watchlist import _load
-            wl_data = _load()
-            total_wl = sum(len(wl_data.get(g, {})) for g in ["A", "B", "C"])
-            if total_wl > 0:
-                a_count = len(wl_data.get("A", {}))
-                b_count = len(wl_data.get("B", {}))
-                c_count = len(wl_data.get("C", {}))
-                lines.append(f"<b>📋 觀察清單:</b> 共 {total_wl} | A:{a_count} B:{b_count} C:{c_count}")
-            else:
-                lines.append(f"<b>📋 觀察清單:</b> 無")
-        except Exception as e:
-            logger.warning(f"無法載入觀察清單: {e}")
-            lines.append("<b>📋 觀察清單:</b> (無法載入)")
-        
-        return "\n".join(lines)
-    except Exception as e:
-        logger.error(f"_handle_dashboard_command 失敗: {e}", exc_info=True)
-        return f"❌ 儀表板載入失敗:\n{str(e)[:100]}"
+    msg = """<b>📱 Qullamaggie Mini App</b>
 
-
-def _handle_position_command(chat_id: str) -> str:
-    """
-    /position 指令 — 別名於 /positions
-    """
-    return _handle_positions_command(chat_id)
-
-
-def _handle_account_command(chat_id: str) -> str:
-    """
-    /account 指令 — 顯示帳戶信息和統計
-    """
-    try:
-        from modules.position_monitor import _load
-        pos_data = _load()
-        
-        lines = ["<b>💰 帳戶信息</b>\n"]
-        
-        # 帳戶設置
-        try:
-            account_size = C.ACCOUNT_SIZE
-            max_risk = C.MAX_RISK_PER_TRADE_PCT
-            lines.append(f"<b>帳戶規模:</b> ${account_size:,.0f}\n")
-            lines.append(f"<b>最大風險 (per trade):</b> {max_risk:.1f}%\n")
-        except Exception as e:
-            logger.warning(f"無法載入帳戶參數: {e}")
-        
-        # 持倉統計
-        positions = pos_data.get("positions", {})
-        if positions:
-            pos_values = [p.get("position_value", 0) for p in positions.values()]
-            total_pos_val = sum(pos_values)
-            pos_pct = (total_pos_val / account_size * 100) if account_size else 0
-            
-            lines.append(f"\n<b>持倉統計:</b>")
-            lines.append(f"  持倉數量: {len(positions)}")
-            lines.append(f"  總投資額: ${total_pos_val:,.0f}")
-            lines.append(f"  帳戶佔比: {pos_pct:.1f}%")
-        else:
-            lines.append(f"\n<b>持倉統計:</b> 無持倉")
-        
-        return "\n".join(lines)
-    except Exception as e:
-        logger.error(f"_handle_account_command 失敗: {e}", exc_info=True)
-        return f"❌ 帳戶信息載入失敗:\n{str(e)[:100]}"
-
-
-def _handle_trade_command(chat_id: str):
-    """
-    /trade 指令 — 新建交易（交互式流程）
+點擊下方按鈕打開小程式進行個股分析"""
     
-    步驟:
-    1. 檢查 IBKR 帳戶連接狀態
-    2. 若已連接，詢問 buy / sell
-    3. 根據選擇詢問後續信息 (股票代碼、數量、價格、止損等)
-    4. 最後確認對話框確認是否提交
-    """
-    try:
-        from modules.ibkr_client import is_ibkr_connected, get_status
-        
-        # 檢查 IBKR 連接狀態
-        if not is_ibkr_connected():
-            status = get_status()
-            error_msg = status.get("last_error", "未知錯誤")
-            send_message(
-                f"❌ <b>IBKR 帳戶未連接</b>\n\n"
-                f"連接狀態: <code>{status.get('state', 'DISCONNECTED')}</code>\n"
-                f"錯誤信息: {error_msg}\n\n"
-                f"請先連接 IBKR 帳戶後再進行交易",
-                chat_id=chat_id,
-                parse_mode="HTML"
-            )
-            logger.warning(f"用戶 {chat_id} 嘗試交易但 IBKR 未連接")
-            return
-        
-        # 獲取帳戶詳細信息
-        status = get_status()
-        account = status.get("account", "Unknown")
-        
-        # 購買力：優先使用 BuyingPower，備選 cash，最後備選 nav
-        buying_power = status.get("buying_power", 0)
-        if buying_power == 0:
-            buying_power = status.get("cash", 0)
-        if buying_power == 0:
-            buying_power = status.get("nav", 0)
-        
-        nav = status.get("nav", 0)
-        
-        # 初始化狀態
-        with _user_states_lock:
-            _user_states[chat_id] = {
-                "state": "waiting_for_trade_action",
-                "data": {
-                    "account_id": account,
-                    "buying_power": buying_power,
-                    "nav": nav
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📊 打開Mini App",
+                    "web_app": {
+                        "url": mini_app_url
+                    }
                 }
-            }
-        
-        # 構造按鈕消息
-        reply_markup = {
-            "inline_keyboard": [
-                [
-                    {"text": "📈 買入", "callback_data": "trade_buy"},
-                    {"text": "📉 賣出", "callback_data": "trade_sell"}
-                ]
             ]
-        }
-        
-        trade_msg = (
-            f"✅ <b>IBKR 已連接</b>\n\n"
-            f"帳戶: <code>{account}</code>\n"
-            f"淨值: ${nav:,.2f}\n"
-            f"可用資金: ${buying_power:,.2f}\n\n"
-            f"💼 <b>新建交易</b> — 請選擇交易方向:"
-        )
-        
-        send_message(
-            trade_msg,
-            chat_id=chat_id,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-        
-        logger.info(f"✅ 用戶 {chat_id} 開始交易流程 (帳戶: {account}, 可用資金: ${buying_power:,.2f})")
-        
-    except Exception as e:
-        logger.error(f"_handle_trade_command 失敗: {e}", exc_info=True)
-        send_message(
-            f"❌ 初始化交易失敗:\n{str(e)[:100]}",
-            chat_id=chat_id
-        )
+        ]
+    }
+    
+    send_message(msg, chat_id=chat_id, reply_markup=reply_markup)
+    logger.info(f"✅ Mini App 按鈕已發送 (Chat ID: {chat_id})")
 
 
 def _handle_approve_command(chat_id: str, args: str) -> str:
@@ -1144,188 +1003,17 @@ def _handle_callback_query(callback_query: Dict):
     """
     try:
         callback_data = callback_query.get("data", "")
-        user_chat_id = callback_query.get("from", {}).get("id")
+        admin_chat_id = callback_query.get("from", {}).get("id")
         callback_query_id = callback_query.get("id")
         
-        if not user_chat_id:
+        if not admin_chat_id:
             return
         
-        user_chat_id_str = str(user_chat_id)
+        admin_chat_id_str = str(admin_chat_id)
         
-        # ── 交易按鈕處理（無需管理員身份） ──────────────────────────────────────
-        if callback_data == "trade_buy":
-            with _user_states_lock:
-                _user_states[user_chat_id_str] = {
-                    "state": "waiting_for_trade_ticker",
-                    "data": {"action": "buy"}
-                }
-            send_message("📈 請輸入要買入的股票代碼 (例如: NVDA)", chat_id=user_chat_id_str)
-            _answer_callback_query(callback_query_id, "✅ 買入模式")
-            return
-        
-        elif callback_data == "trade_sell":
-            with _user_states_lock:
-                _user_states[user_chat_id_str] = {
-                    "state": "waiting_for_trade_ticker",
-                    "data": {"action": "sell"}
-                }
-            send_message("📉 請輸入要賣出的股票代碼 (例如: NVDA)", chat_id=user_chat_id_str)
-            _answer_callback_query(callback_query_id, "✅ 賣出模式")
-            return
-        
-        # ── 訂單類型選擇 ──────────────────────────────────────────────────────────
-        elif callback_data == "order_type_mkt":
-            # 市價單 - 直接跳過價格欄，進入止損詢問
-            with _user_states_lock:
-                _user_states[user_chat_id_str]["data"]["order_type"] = "MKT"
-                # 市價單使用當前價格作為成交價
-                current_price = _user_states[user_chat_id_str]["data"].get("current_price", 0)
-                _user_states[user_chat_id_str]["data"]["price"] = current_price
-                _user_states[user_chat_id_str]["state"] = "waiting_for_trade_stoploss"
-            
-            ticker = _user_states.get(user_chat_id_str, {}).get("data", {}).get("ticker", "?")
-            quantity = _user_states.get(user_chat_id_str, {}).get("data", {}).get("quantity", 0)
-            current_price = _user_states.get(user_chat_id_str, {}).get("data", {}).get("current_price", 0)
-            
-            send_message(
-                f"🔄 <b>市價單</b>\n\n"
-                f"股票: <code>{ticker}</code>\n"
-                f"數量: {quantity} 股\n"
-                f"成交價: ${current_price:.2f}\n\n"
-                f"🛑 <b>請輸入止損價格</b> (例如: {current_price*0.95:.2f})\n"
-                f"<i>或輸入 0 跳過止損設定</i>",
-                chat_id=user_chat_id_str,
-                parse_mode="HTML"
-            )
-            _answer_callback_query(callback_query_id, "✅ 市價單")
-            return
-        
-        elif callback_data == "order_type_lmt":
-            # 限價單 - 需要詢問價格
-            with _user_states_lock:
-                _user_states[user_chat_id_str]["data"]["order_type"] = "LMT"
-                _user_states[user_chat_id_str]["state"] = "waiting_for_trade_price"
-            
-            ticker = _user_states.get(user_chat_id_str, {}).get("data", {}).get("ticker", "?")
-            current_price = _user_states.get(user_chat_id_str, {}).get("data", {}).get("current_price", 0)
-            
-            send_message(
-                f"💰 <b>限價單</b>\n\n"
-                f"股票: <code>{ticker}</code>\n"
-                f"當前價: ${current_price:.2f}\n\n"
-                f"請輸入限價 (例如: {current_price*0.99:.2f})",
-                chat_id=user_chat_id_str,
-                parse_mode="HTML"
-            )
-            _answer_callback_query(callback_query_id, "✅ 限價單")
-            return
-        
-        # ── 交易確認按鈕處理 ──────────────────────────────────────────────────────
-        elif callback_data == "cancel_trade":
-            # 用戶取消交易
-            with _user_states_lock:
-                _user_states.pop(user_chat_id_str, None)
-            send_message("❌ 交易已取消", chat_id=user_chat_id_str)
-            _answer_callback_query(callback_query_id, "交易已取消")
-            return
-        
-        elif callback_data.startswith("confirm_trade_"):
-            # 用戶確認交易，提交到 IBKR
-            # 格式: confirm_trade_BUY_NVDA_100_150.25_140.00
-            try:
-                parts = callback_data.split("_")
-                if len(parts) < 6:
-                    send_message("❌ 交易數據格式錯誤", chat_id=user_chat_id_str)
-                    _answer_callback_query(callback_query_id, "❌ 錯誤")
-                    return
-                
-                action = parts[2]  # BUY / SELL
-                ticker = parts[3]  # NVDA
-                try:
-                    qty = int(parts[4])
-                    entry_price = float(parts[5])
-                    stop_loss = float(parts[6])
-                except (ValueError, IndexError):
-                    send_message("❌ 交易參數解析失敗", chat_id=user_chat_id_str)
-                    _answer_callback_query(callback_query_id, "❌ 錯誤")
-                    return
-                
-                # 獲取完整的交易數據
-                with _user_states_lock:
-                    user_data = _user_states.get(user_chat_id_str, {}).get("data", {})
-                    account_id = user_data.get("account_id", "Unknown")
-                    nav = user_data.get("nav", 0)
-                
-                # 提交交易到 IBKR（後台執行）
-                def _submit_trade():
-                    try:
-                        from modules.ibkr_client import place_order
-                        
-                        # 使用市價訂單
-                        result = place_order(
-                            ticker=ticker,
-                            action=action,
-                            qty=qty,
-                            order_type="MKT"
-                        )
-                        
-                        if result.get("success"):
-                            order_id = result.get("order_id")
-                            msg = f"""✅ <b>交易已提交</b>
-
-<b>帳戶:</b> <code>{account_id}</code>
-<b>訂單 ID:</b> <code>{order_id}</code>
-
-<b>交易信息:</b>
-<b>  類型:</b> {'📈 買入' if action == 'BUY' else '📉 賣出'}
-<b>  股票:</b> <code>{ticker}</code>
-<b>  數量:</b> {qty} 股
-<b>  類型:</b> 市價訂單
-
-<b>輔助信息:</b>
-<b>  計劃入場:</b> ${entry_price:.2f}
-<b>  計劃止損:</b> ${stop_loss:.2f}
-
-<i>⏳ 訂單已發送到 IBKR，請查看帳戶確認成交情況</i>"""
-                            send_message(msg, chat_id=user_chat_id_str, parse_mode="HTML")
-                            logger.info(f"✅ 交易已提交: {ticker} {action} {qty} (Order ID: {order_id})")
-                        else:
-                            error_msg = result.get("message", "未知錯誤")
-                            send_message(
-                                f"❌ <b>交易提交失敗</b>\n\n{error_msg}",
-                                chat_id=user_chat_id_str,
-                                parse_mode="HTML"
-                            )
-                            logger.error(f"❌ 交易提交失敗: {error_msg}")
-                    
-                    except Exception as e:
-                        logger.error(f"_submit_trade 失敗: {e}", exc_info=True)
-                        send_message(
-                            f"❌ 提交交易時發生錯誤:\n{str(e)[:100]}",
-                            chat_id=user_chat_id_str
-                        )
-                    
-                    # 清空用戶狀態
-                    with _user_states_lock:
-                        _user_states.pop(user_chat_id_str, None)
-                
-                # 在後台線程中執行交易提交
-                send_message("⏳ 正在提交交易到 IBKR，請稍候...", chat_id=user_chat_id_str)
-                threading.Thread(target=_submit_trade, daemon=True).start()
-                
-                _answer_callback_query(callback_query_id, "✅ 交易提交中...")
-                
-            except Exception as e:
-                logger.error(f"確認交易失敗: {e}", exc_info=True)
-                send_message(f"❌ 處理交易確認時出錯:\n{str(e)[:100]}", chat_id=user_chat_id_str)
-                _answer_callback_query(callback_query_id, "❌ 錯誤")
-            return
-        
-        # ── 管理員按鈕處理 ───────────────────────────────────────────────────────
-        # 確認只有管理員才能點擊批准/拒絕按鈕
-        if not _is_admin(user_chat_id_str):
-            if callback_data.startswith(("approve_", "deny_")):
-                logger.warning(f"🔒 非管理員嘗試使用按鈕: {user_chat_id_str}")
+        # 確認只有管理員才能點擊按鈕
+        if not _is_admin(admin_chat_id_str):
+            logger.warning(f"🔒 非管理員嘗試使用按鈕: {admin_chat_id_str}")
             return
         
         # 解析 callback_data: "approve_520073103" 或 "deny_520073103"
@@ -1345,10 +1033,10 @@ def _handle_callback_query(callback_query: Dict):
                     msg_text = f"""<b>✅ 已批准</b>
 
 Chat ID: <code>{target_chat_id}</code>
-操作者: <code>{user_chat_id_str}</code>"""
-                    send_message(msg_text, chat_id=user_chat_id_str)
+操作者: <code>{admin_chat_id_str}</code>"""
+                    send_message(msg_text, chat_id=admin_chat_id_str)
                     
-                    logger.info(f"✅ Chat ID {target_chat_id} 已被批准 (by {user_chat_id_str})")
+                    logger.info(f"✅ Chat ID {target_chat_id} 已被批准 (by {admin_chat_id_str})")
                     
                     # 移除待審記錄
                     _PENDING_REQUESTS.pop(target_chat_id, None)
@@ -1364,13 +1052,13 @@ Chat ID: <code>{target_chat_id}</code>
             msg_text = f"""<b>❌ 已拒絕</b>
 
 Chat ID: <code>{target_chat_id}</code>
-操作者: <code>{user_chat_id_str}</code>"""
-            send_message(msg_text, chat_id=user_chat_id_str)
+操作者: <code>{admin_chat_id_str}</code>"""
+            send_message(msg_text, chat_id=admin_chat_id_str)
             
             # 移除待審記錄
             _PENDING_REQUESTS.pop(target_chat_id, None)
             
-            logger.info(f"❌ Chat ID {target_chat_id} 已被拒絕 (by {user_chat_id_str})")
+            logger.info(f"❌ Chat ID {target_chat_id} 已被拒絕 (by {admin_chat_id_str})")
         
         # 向用戶確認按鈕已點擊（Telegram 的 "popover" 提示）
         if callback_query_id:
@@ -1406,6 +1094,9 @@ def start_polling():
     with _approval_lock:
         _APPROVED_IDS.add(str(C.TG_ADMIN_CHAT_ID))
         _save_approved_ids()
+    
+    # 註冊 Telegram 命令菜單
+    register_bot_commands()
     
     logger.info(f"🟢 Telegram Polling 已啟動 (interval: {C.TG_POLL_INTERVAL}s)")
     
@@ -1475,368 +1166,6 @@ def _process_update(update: Dict):
         
         chat_id_str = str(chat_id)
         
-        # 檢查用戶是否處於等待輸入狀態（狀態機制）
-        with _user_states_lock:
-            user_state = _user_states.get(chat_id_str)
-        
-        if user_state:
-            state_type = user_state.get("state")
-            
-            # 處理狀態機制中的輸入
-            if state_type == "waiting_for_analyze_ticker":
-                with _user_states_lock:
-                    _user_states.pop(chat_id_str, None)
-                _handle_analyze_command(chat_id_str, msg_text)
-                return
-            elif state_type == "waiting_for_qm_ticker":
-                with _user_states_lock:
-                    _user_states.pop(chat_id_str, None)
-                _handle_qm_command(chat_id_str, msg_text)
-                return
-            elif state_type == "waiting_for_ml_ticker":
-                with _user_states_lock:
-                    _user_states.pop(chat_id_str, None)
-                _handle_ml_command(chat_id_str, msg_text)
-                return
-            elif state_type == "waiting_for_trade_ticker":
-                # 用戶輸入股票代碼，獲取快照報價並顯示
-                ticker = msg_text.upper().strip()
-                
-                # 驗證 ticker 格式（簡單檢查）
-                if not ticker or len(ticker) > 5:
-                    send_message("❌ 無效的股票代碼格式，請輸入有效的 ticker (例如: NVDA)", chat_id=chat_id_str)
-                    return
-                
-                # 獲取快照報價
-                try:
-                    import yfinance as yf
-                    
-                    tkr = yf.Ticker(ticker)
-                    info = tkr.info or {}
-                    
-                    if not info:
-                        raise ValueError("Unable to fetch ticker info")
-                    
-                    # 提取報價信息
-                    price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
-                    prev_close = info.get("previousClose", 0)
-                    change = price - prev_close if prev_close else 0
-                    change_pct = (change / prev_close * 100) if prev_close else 0
-                    high_52w = info.get("fiftyTwoWeekHigh", 0)
-                    low_52w = info.get("fiftyTwoWeekLow", 0)
-                    volume = info.get("volume", 0)
-                    avg_volume = info.get("averageVolume", 0)
-                    market_cap = info.get("marketCap", 0)
-                    pe_ratio = info.get("trailingPE", 0)
-                    
-                    # 取得現在時間作為快照時間
-                    now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                    
-                    # 計算 52 週位置百分比
-                    week_52_pct = 0
-                    if high_52w and low_52w:
-                        week_52_pct = (price - low_52w) / (high_52w - low_52w) * 100
-                    
-                    # 格式化變動指示
-                    change_emoji = "📈" if change >= 0 else "📉"
-                    change_str = f"+{change:.2f}" if change >= 0 else f"{change:.2f}"
-                    change_pct_str = f"+{change_pct:.2f}%" if change_pct >= 0 else f"{change_pct:.2f}%"
-                    
-                    # 格式化其他信息
-                    volume_str = f"{volume/1e6:.1f}M" if volume else "N/A"
-                    avg_volume_str = f"{avg_volume/1e6:.1f}M" if avg_volume else "N/A"
-                    market_cap_str = ""
-                    if market_cap:
-                        if market_cap >= 1e12:
-                            market_cap_str = f"${market_cap/1e12:.1f}T"
-                        elif market_cap >= 1e9:
-                            market_cap_str = f"${market_cap/1e9:.1f}B"
-                        else:
-                            market_cap_str = f"${market_cap/1e6:.1f}M"
-                    
-                    pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A"
-                    
-                    # 構造快照報價消息
-                    snapshot_msg = f"""<b>📸 {ticker} 快照報價</b>
-
-<b>現價:</b> <code>${price:.2f}</code> {change_emoji} {change_str} ({change_pct_str})
-<b>前收:</b> ${prev_close:.2f}
-
-<b>52 週範圍:</b> ${low_52w:.2f} - ${high_52w:.2f}
-<b>目前位置:</b> {week_52_pct:.1f}% (52W 區間)
-
-<b>成交量:</b> {volume_str} (平均: {avg_volume_str})
-<b>市值:</b> {market_cap_str}
-<b>P/E 比:</b> {pe_str}
-
-<i>📊 快照時間: {now}</i>
-
-� <b>請輸入交易數量</b> (例如: 100)"""
-                    
-                    # 存儲 ticker 並更新狀態
-                    with _user_states_lock:
-                        _user_states[chat_id_str]["data"]["ticker"] = ticker
-                        _user_states[chat_id_str]["data"]["current_price"] = price
-                        _user_states[chat_id_str]["state"] = "waiting_for_trade_quantity"
-                    
-                    send_message(snapshot_msg, chat_id=chat_id_str, parse_mode="HTML")
-                    logger.info(f"✅ 快照報價取得: {ticker} @ ${price:.2f}")
-                    
-                except Exception as e:
-                    logger.error(f"獲取快照報價失敗 [{ticker}]: {e}", exc_info=False)
-                    send_message(
-                        f"⚠️ 無法取得 {ticker} 的實時報價，請繼續輸入交易數量\n"
-                        f"📊 請輸入交易數量 (例如: 100)",
-                        chat_id=chat_id_str, parse_mode="HTML"
-                    )
-                    # 即使報價失敗，也繼續進行交易流程
-                    with _user_states_lock:
-                        _user_states[chat_id_str]["data"]["ticker"] = ticker
-                        _user_states[chat_id_str]["state"] = "waiting_for_trade_quantity"
-                
-                return
-            elif state_type == "waiting_for_trade_quantity":
-                # 用戶輸入數量，驗證購買力並詢問訂單類型
-                try:
-                    quantity = int(msg_text)
-                    if quantity <= 0:
-                        send_message("❌ 數量必須大於 0", chat_id=chat_id_str)
-                        return
-                    
-                    # 重新獲取最新的購買力（解決競態條件）
-                    try:
-                        status = get_status()
-                        buying_power = status.get("buying_power", 0)
-                        if buying_power == 0:
-                            buying_power = status.get("cash", 0)
-                        if buying_power == 0:
-                            buying_power = status.get("nav", 0)
-                        account_id = status.get("account", "")
-                    except Exception as e:
-                        logger.warning(f"重新獲取購買力失敗: {e}")
-                        buying_power = 0
-                        account_id = ""
-                    
-                    ticker = _user_states[chat_id_str]["data"].get("ticker", "?")
-                    current_price = _user_states[chat_id_str]["data"].get("current_price", 0)
-                    action = _user_states[chat_id_str]["data"].get("action", "BUY")
-                    
-                    # 計算所需資金
-                    position_value = current_price * quantity
-                    
-                    # 驗證購買力是否足夠（只在買入時檢查）
-                    if action == "BUY" and position_value > buying_power:
-                        send_message(
-                            f"❌ 購買力不足\n\n"
-                            f"股票: <code>{ticker}</code>\n"
-                            f"數量: {quantity} 股\n"
-                            f"當前價: ${current_price:.2f}\n"
-                            f"所需資金: ${position_value:,.2f}\n"
-                            f"可用資金: ${buying_power:,.2f}\n\n"
-                            f"請輸入較少的數量或選擇其他股票",
-                            chat_id=chat_id_str,
-                            parse_mode="HTML"
-                        )
-                        return
-                    
-                    # 保存購買力和賬戶信息到狀態
-                    with _user_states_lock:
-                        _user_states[chat_id_str]["data"]["quantity"] = quantity
-                        _user_states[chat_id_str]["data"]["buying_power"] = buying_power
-                        _user_states[chat_id_str]["data"]["account_id"] = account_id
-                        _user_states[chat_id_str]["state"] = "waiting_for_order_type"
-                    
-                    # 構造訂單類型按鈕
-                    reply_markup = {
-                        "inline_keyboard": [
-                            [
-                                {"text": "🔄 市價單", "callback_data": "order_type_mkt"},
-                                {"text": "💰 限價單", "callback_data": "order_type_lmt"}
-                            ]
-                        ]
-                    }
-                    
-                    send_message(
-                        f"📊 <b>訂單類型</b>\n\n"
-                        f"股票: <code>{ticker}</code>\n"
-                        f"數量: {quantity} 股\n"
-                        f"當前價: ${current_price:.2f}\n"
-                        f"預計成本: ${position_value:,.2f}\n"
-                        f"可用資金: ${buying_power:,.2f}\n\n"
-                        f"請選擇訂單類型:",
-                        chat_id=chat_id_str,
-                        parse_mode="HTML",
-                        reply_markup=reply_markup
-                    )
-                    
-                except ValueError:
-                    send_message("❌ 無效的數量格式，請輸入整數 (例如: 100)", chat_id=chat_id_str)
-                return
-            elif state_type == "waiting_for_trade_price":
-                # 用戶輸入限價，然後進入止損詢問
-                try:
-                    price = float(msg_text)
-                    if price <= 0:
-                        send_message("❌ 價格必須大於 0", chat_id=chat_id_str)
-                        return
-                    
-                    with _user_states_lock:
-                        _user_states[chat_id_str]["data"]["price"] = price
-                        _user_states[chat_id_str]["state"] = "waiting_for_trade_stoploss"
-                    
-                    ticker = _user_states.get(chat_id_str, {}).get("data", {}).get("ticker", "?")
-                    quantity = _user_states.get(chat_id_str, {}).get("data", {}).get("quantity", 0)
-                    
-                    send_message(
-                        f"💰 <b>限價單確認</b>\n\n"
-                        f"股票: <code>{ticker}</code>\n"
-                        f"數量: {quantity} 股\n"
-                        f"限價: ${price:.2f}\n\n"
-                        f"🛑 <b>請輸入止損價格</b> (例如: {price*0.95:.2f})\n"
-                        f"<i>或輸入 0 跳過止損設定</i>",
-                        chat_id=chat_id_str,
-                        parse_mode="HTML"
-                    )
-                    
-                except ValueError:
-                    send_message("❌ 無效的價格格式，請輸入數字 (例如: 150.25)", chat_id=chat_id_str)
-                return
-            elif state_type == "waiting_for_trade_stoploss":
-                # 用戶輸入止損，計算風險回報並顯示確認對話框
-                try:
-                    stoploss = float(msg_text)
-                    
-                    with _user_states_lock:
-                        data = _user_states[chat_id_str]["data"]
-                        ticker = data.get("ticker", "?")
-                        action = data.get("action", "BUY")  # 從狀態追蹤中獲取
-                        price = data.get("price", 0)
-                        quantity = data.get("quantity", 0)
-                        account_id = data.get("account_id", "")
-                        buying_power = data.get("buying_power", 0)
-                    
-                    # 再次重新獲取最新的購買力（最後驗證）
-                    try:
-                        status = get_status()
-                        fresh_buying_power = status.get("buying_power", 0)
-                        if fresh_buying_power == 0:
-                            fresh_buying_power = status.get("cash", 0)
-                        if fresh_buying_power == 0:
-                            fresh_buying_power = status.get("nav", 0)
-                        # 使用最新的購買力
-                        buying_power = fresh_buying_power
-                    except Exception as e:
-                        logger.warning(f"最後驗證：重新獲取購買力失敗: {e}")
-                        # 使用之前保存的值或者 0
-                    
-                    # 如果 stoploss = 0，表示跳過止損設定
-                    if stoploss == 0:
-                        stoploss = None
-                    
-                    # 驗證止損價格合理性（如果有設定）
-                    if stoploss is not None:
-                        if action == "BUY" and stoploss >= price:
-                            send_message("❌ 買入時止損價應該低於入場價", chat_id=chat_id_str)
-                            return
-                        elif action == "SELL" and stoploss <= price:
-                            send_message("❌ 賣出時止損價應該高於入場價", chat_id=chat_id_str)
-                            return
-                    
-                    # 計算風險回報比
-                    entry_price = price
-                    stop_loss = stoploss if stoploss else 0
-                    
-                    if stop_loss:
-                        target_price = entry_price + (entry_price - stop_loss) * 2  # 假設 R:R 2:1
-                        risk_amount = abs(entry_price - stop_loss) * quantity
-                        reward_amount = abs(target_price - entry_price) * quantity
-                        rr_ratio = reward_amount / risk_amount if risk_amount > 0 else 0
-                    else:
-                        target_price = 0
-                        risk_amount = 0
-                        reward_amount = 0
-                        rr_ratio = 0
-                    
-                    account_size = C.ACCOUNT_SIZE
-                    position_val = price * quantity
-                    position_pct = (position_val / account_size * 100) if account_size else 0
-                    risk_pct = (risk_amount / account_size * 100) if account_size else 0
-                    
-                    # 檢查購買力是否足夠
-                    if position_val > buying_power:
-                        send_message(
-                            f"❌ 購買力不足\n\n"
-                            f"需要: ${position_val:,.2f}\n"
-                            f"可用: ${buying_power:,.2f}",
-                            chat_id=chat_id_str,
-                            parse_mode="HTML"
-                        )
-                        return
-                    
-                    # 構造確認消息
-                    action_display = "📈 買入" if action == "BUY" else "📉 賣出"
-                    
-                    stoploss_info = f"<b>  止損價:</b> ${stop_loss:.2f}" if stop_loss else "<b>  止損價:</b> <i>未設定</i>"
-                    target_info = f"<b>  目標價:</b> ${target_price:.2f}" if target_price else "<b>  目標價:</b> <i>未計算</i>"
-                    rr_info = f"<b>  R:R 比:</b> 1:{rr_ratio:.1f}" if rr_ratio else "<b>  R:R 比:</b> <i>未設定</i>"
-                    
-                    confirm_msg = f"""<b>{action_display} 交易確認</b>
-
-<b>帳戶:</b> <code>{account_id}</code>
-
-<b>交易詳情:</b>
-<b>  股票:</b> <code>{ticker}</code>
-<b>  數量:</b> {quantity} 股
-<b>  入場價:</b> ${entry_price:.2f}
-{stoploss_info}
-{target_info}
-
-<b>風險回報:</b>
-<b>  風險金額:</b> ${risk_amount:,.2f}
-<b>  獲利金額:</b> ${reward_amount:,.2f}
-{rr_info}
-
-<b>帳戶影響:</b>
-<b>  倉位值:</b> ${position_val:,.2f} ({position_pct:.1f}%)
-<b>  風險比:</b> {risk_pct:.2f}%
-<b>  購買力:</b> ${buying_power:,.2f}
-
-<i>⚠️ 點擊「確認」即刻提交交易</i>"""
-                    
-                    # 構造確認/取消按鈕
-                    reply_markup = {
-                        "inline_keyboard": [
-                            [
-                                {"text": "✅ 確認交易", "callback_data": f"confirm_trade_{action}_{ticker}_{quantity}_{entry_price:.2f}_{stop_loss:.2f}"},
-                                {"text": "❌ 取消", "callback_data": "cancel_trade"}
-                            ]
-                        ]
-                    }
-                    
-                    # 保存完整交易數據
-                    with _user_states_lock:
-                        _user_states[chat_id_str]["state"] = "waiting_for_trade_confirmation"
-                        _user_states[chat_id_str]["data"].update({
-                            "stoploss": stoploss,
-                            "target_price": target_price,
-                            "risk_amount": risk_amount,
-                            "reward_amount": reward_amount,
-                            "rr_ratio": rr_ratio
-                        })
-                    
-                    send_message(
-                        confirm_msg,
-                        chat_id=chat_id_str,
-                        parse_mode="HTML",
-                        reply_markup=reply_markup
-                    )
-                    
-                    logger.info(f"📋 交易確認對話: {ticker} {action} {quantity} @ ${entry_price:.2f}")
-                    
-                except ValueError:
-                    send_message("❌ 無效的止損價格格式，請輸入數字 (例如: 140.00)", chat_id=chat_id_str)
-                return
-        
         # 提取指令（第一個 '/' 後的單詞）
         cmd_parts = msg_text.split()
         cmd = cmd_parts[0].lower()
@@ -1871,26 +1200,7 @@ def _process_update(update: Dict):
             logger.info(f"⏳ Chat ID {chat_id_str} 未批准，已發送審批請求")
             return
         
-        # ── Admin-Only 掃描指令 ──────────────────────────────────────────────
-        if cmd == "/scan":
-            if not is_admin:
-                send_message("❌ /scan 指令僅管理員可用", chat_id=chat_id_str)
-                return
-            _handle_scan_command(chat_id_str, "SEPA")
-            return
-        elif cmd == "/qm_scan":
-            if not is_admin:
-                send_message("❌ /qm_scan 指令僅管理員可用", chat_id=chat_id_str)
-                return
-            _handle_scan_command(chat_id_str, "QM")
-            return
-        elif cmd == "/ml_scan":
-            if not is_admin:
-                send_message("❌ /ml_scan 指令僅管理員可用", chat_id=chat_id_str)
-                return
-            _handle_scan_command(chat_id_str, "ML")
-            return
-        
+        # 公共指令
         # ── 非同步指令（背景執行，函數內部自行 send_message) ──────────────────
         if cmd == "/analyze":
             _handle_analyze_command(chat_id_str, args)
@@ -1901,23 +1211,31 @@ def _process_update(update: Dict):
         elif cmd == "/ml":
             _handle_ml_command(chat_id_str, args)
             return
-        elif cmd == "/trade":
-            _handle_trade_command(chat_id_str)
+        elif cmd == "/scan":
+            _handle_scan_command(chat_id_str, "SEPA")
+            return
+        elif cmd == "/qm_scan":
+            _handle_scan_command(chat_id_str, "QM")
+            return
+        elif cmd == "/ml_scan":
+            _handle_scan_command(chat_id_str, "ML")
             return
 
-        # ── 同步指令（即時回覆) ───────────────────────────────────────────────
+        # 同步指令（即時回覆) ───────────────────────────────────────────────
         if cmd == "/market":
             reply = _handle_market_command(chat_id_str)
-        elif cmd == "/dashboard":
-            reply = _handle_dashboard_command(chat_id_str)
         elif cmd == "/watchlist":
             reply = _handle_watchlist_command(chat_id_str)
         elif cmd == "/positions":
             reply = _handle_positions_command(chat_id_str)
-        elif cmd == "/position":
-            reply = _handle_position_command(chat_id_str)
-        elif cmd == "/account":
-            reply = _handle_account_command(chat_id_str)
+        elif cmd == "/menu":
+            # 主菜單命令（發送web_app按鈕）
+            _handle_menu_command(chat_id_str)
+            return
+        elif cmd == "/mini_app":
+            # Mini App 命令（發送web_app按鈕）
+            _handle_mini_app_command(chat_id_str)
+            return
         elif cmd == "/help":
             reply = _handle_help_command()
         else:

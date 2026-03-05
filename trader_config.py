@@ -16,9 +16,6 @@ if _env_file.exists():
 # ACCOUNT & RISK PARAMETERS
 # ─────────────────────────────────────────────────────────────────────────────
 ACCOUNT_SIZE = 100_000          # Total account equity (USD)
-DEFAULT_CURRENCY = "USD"        # Display currency (USD or HKD)
-ACCOUNT_BASE_CURRENCY = "HKD"   # Account base currency from IBKR (USD or HKD). Set this if IBKR is not connected!
-USD_TO_HKD_RATE = 7.85          # USD to HKD exchange rate (set manually or fetch from API)
 MAX_RISK_PER_TRADE_PCT = 1.5    # Max loss per trade as % of account (1-2%)
 MAX_POSITION_SIZE_PCT = 20.0    # Max single position as % of account
 MAX_OPEN_POSITIONS = 6          # Concentrated portfolio (4-8 ideal)
@@ -131,26 +128,14 @@ FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamenta
 FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
 FINVIZ_TIMEOUT_SEC    = 600.0      # 10 minutes max (finvizfinance needs ~2 sec per page × 464 pages = 15 min for full scan)
 
-# ── Stage 1.5 Pre-filter thresholds (combined_scanner.py) ────────────────────
-# Applied BEFORE the 2-year batch OHLCV download to reduce its scope.
-# Dollar volume = close × avg_vol — rough institutional interest proxy.
-SEPA_MIN_DOLLAR_VOL   = 2_000_000  # $2M minimum for SEPA (Minervini: institutional stocks)
-# QM uses QM_SCAN_MIN_DOLLAR_VOL (below, default $5M) for its own gate.
-
 # ─────────────────────────────────────────────────────────────────────────────
 # YFINANCE RETRY & RESILIENCE PARAMETERS
 # ─────────────────────────────────────────────────────────────────────────────
 YFINANCE_MAX_RETRIES     = 1        # Reduced from 2: 401/crumb errors often not recoverable by retry
                                     # Better to skip + continue than block waiting for auth reset
 YFINANCE_RETRY_BACKOFF   = 0.5      # Base delay (sec) between retry attempts (exponential: 0.5s, 1s, 2s...)
-YFINANCE_INTRA_REQUEST_DELAY_SEC = 0.15  # NEW: Inter-request delay to reduce 429 errors during parallel scans
-                                          # Tuning: 0.15s for 16 workers, 0.25-0.3s for 32 workers
 FUNDAMENTALS_TIMEOUT_SEC = 5.0      # Per-ticker fundamental fetch timeout (crisp fail instead of hanging)
 FUNDAMENTALS_SKIP_ON_TIMEOUT = True # Skip ticker on timeout instead of retrying endlessly
-FUNDAMENTALS_MAX_CONCURRENT = 4     # Global semaphore: max simultaneous get_fundamentals() yfinance calls
-                                    # Prevents 429/401 cascades when SEPA (32 workers) + QM (6 workers)
-                                    # run in parallel — without this, up to 38 threads × 6 requests each.
-                                    # Tuning: 3 = very safe, 4 = good balance, 6 = borderline, >8 = risky.
 CRUMB_RESET_COOLDOWN     = 3.0      # Min interval between session resets (prevent auth cascade)
 OHLCV_TIMEOUT_SEC        = 10.0     # Per-ticker OHLCV fetch timeout
 FINVIZ_MAX_PAGES      = 60         # If using pagination limiting (currently unused; finvizfinance loads all pages)
@@ -851,34 +836,12 @@ ML_DTQ_CAUTION_MIN_PASS      = 5       # Minimum passing questions for CAUTION s
 
 # ── Three-Scanner System (Chapter 18, MartinLukCore Ch2) ──────────────────
 ML_TRIPLE_SCANNER_ENABLED    = True    # Enable three-channel scanning
-ML_SCANNER_WORKERS           = 16      # ThreadPoolExecutor workers per channel
-                                       # REDUCED from 32 to avoid yfinance rate-limiting
-                                       # 32 workers caused concurrent YFRateLimitError on Channel 3
-                                       # Tradeoff: ~2x slower but stable (no 429 errors)
-                                       # Increase to 20-24 if first-day scan completes successfully
 ML_GAP_SCANNER_MIN_GAP_PCT   = 3.0     # Pre-market gap minimum (%)
 ML_GAP_SCANNER_MIN_VOL_MULT  = 1.5     # Gap scanner minimum volume multiple
 ML_GAINER_SCANNER_TOP_N      = 50      # Biggest gainers: top N prior-day performers
-ML_GAINER_MIN_GAIN_PCT       = 3.0     # Minimum prior-day % gain to qualify as gainer
 ML_GAINER_THEME_MIN_COUNT    = 2       # Min stocks in same sector to flag as theme
 ML_LEADER_MOMENTUM_PERIOD    = "1mo"   # Leader scanner: rank by 1-month performance
 ML_LEADER_MIN_WEEKS_ABOVE    = 3       # Min weeks W-EMA10 > W-EMA40 (leader quality)
-
-# ── Event-Channel Relaxed Filters (MartinLukCore Ch2-3) ──────────────────
-# GAP and GAINER stocks serve a different purpose than LEADER stocks.
-# Martin's workflow: Gap/Gainer stocks are watchlisted BEFORE trend
-# confirmation. They only need ADR + dollar volume to qualify for the
-# watchlist. Full EMA/momentum/weekly checks apply to LEADER channel only.
-# Reference: MartinLukCore "步驟一：從掃描結果中精選可執行標的"
-#   A型 = 均線支撐/收復型 (full leader filters)
-#   B型 = 盤前最強動能型  (event filters — relaxed)
-ML_EVENT_CHANNEL_ENABLED     = True    # Enable relaxed Stage 2 for GAP/GAINER
-ML_EVENT_MIN_ADR_PCT         = 3.0     # Lower ADR threshold for event stocks
-ML_EVENT_MIN_DOLLAR_VOLUME   = 3_000_000  # Lower $vol threshold for event stocks
-ML_EVENT_SKIP_MOMENTUM       = True    # Skip 3M/6M momentum gate for event stocks
-ML_EVENT_SKIP_WEEKLY_VETO    = True    # Skip weekly EMA veto for event stocks
-ML_EVENT_SKIP_EMA_ABOVE      = True    # Skip "price > EMA50" gate for event stocks
-ML_EVENT_DISABLE_HARD_VETO   = True    # Disable hard vetoes in Stage 3 for event stocks
 
 # ── Situational Awareness 3-Layer System (Chapter 17) ─────────────────────
 ML_SA_LAYER1_LOOKBACK        = 5       # Number of recent trades for Layer 1 P&L feedback
@@ -947,31 +910,6 @@ ML_LEADER_HISTORY_DAYS       = 90      # Days of leader scanner history to retai
 ML_THEME_HISTORY_DAYS        = 60      # Days of theme tracking history to retain
 ML_SCORECARD_HISTORY_DAYS    = 365     # Days of trade quality scorecard history
 
-# ── ML Watch Mode — Dynamic Intraday Scoring (Chapter 7, 9) ──────────────
-ML_WATCH_REFRESH_SEC         = 300     # Auto-refresh interval (5 minutes)
-ML_WATCH_MAX_CHASE_PCT       = 3.0     # Max chase % above LOD before warning
-ML_WATCH_VWAP_PROX_PCT       = 0.5    # VWAP proximity threshold for signal (%)
-ML_WATCH_ORH_WINDOW_MIN      = 15     # Opening Range High window (minutes)
-ML_WATCH_FLUSH_V_MIN_PCT     = 1.5    # Minimum flush depth for V-recovery (%)
-ML_WATCH_FLUSH_V_RECOVERY_PCT = 0.7   # Min recovery ratio (50-70% of flush) for V-signal
-
-# ML Watch Score weights (7-dimension dynamic scoring, 0-100 scale)
-ML_WSCORE_VWAP_ABOVE         = 15     # Price above VWAP
-ML_WSCORE_VWAP_BELOW         = -10    # Price below VWAP
-ML_WSCORE_EMA9_ABOVE         = 10     # Price above intraday EMA 9
-ML_WSCORE_EMA9_BELOW         = -8     # Price below intraday EMA 9
-ML_WSCORE_EMA21_ABOVE        = 10     # Price above intraday EMA 21
-ML_WSCORE_EMA21_BELOW        = -10    # Price below intraday EMA 21
-ML_WSCORE_ORH_BREAK          = 15     # ORH breakout confirmed
-ML_WSCORE_ORL_BREAK          = -15    # ORL breakdown
-ML_WSCORE_CHASE_OK           = 10     # Chase < 3% (safe entry zone)
-ML_WSCORE_CHASE_HIGH         = -20    # Chase > 3% (too extended)
-ML_WSCORE_FLUSH_V            = 12     # Flush → V-recovery detected
-ML_WSCORE_HL_CONFIRMED       = 10     # Higher lows confirmed intraday
-ML_WSCORE_HL_LOWER           = -8     # Lower lows forming
-ML_WSCORE_MKT_BULL           = 5      # Market regime bullish (from daily analysis)
-ML_WSCORE_MKT_BEAR           = -15    # Market regime bearish
-
 # ─────────────────────────────────────────────────────────────────────────────
 # TELEGRAM BOT  (Polling 方式通訊 + 管理員審批系統)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -981,30 +919,10 @@ TG_ADMIN_CHAT_ID      = os.getenv("TG_ADMIN_CHAT_ID", "")       # 管理員 Chat
 TG_POLL_INTERVAL      = 2                                       # Polling 間隔（秒）
 TG_APPROVAL_ENABLED   = True                                    # 啟用新用戶審批系統
 
-# ─────────────────────────────────────────────────────────────────────────────
-# INTERACTIVE BROKERS (IBKR) — LIVE TRADING & POSITION MANAGEMENT
-# ─────────────────────────────────────────────────────────────────────────────
-IBKR_ENABLED          = True                                    # 主開關 — 改為 True 才啟用 IBKR 功能
-IBKR_CONNECTION_MODE  = os.getenv("IBKR_CONNECTION_MODE", "TWS")  # "TWS" 或 "GATEWAY"
-
-# 根據連線模式自動選擇正確的 host 和 port
-if IBKR_CONNECTION_MODE == "GATEWAY":
-    IBKR_HOST         = os.getenv("IBKR_GATEWAY_HOST", "127.0.0.1")
-    IBKR_PORT_PAPER   = int(os.getenv("IBKR_GATEWAY_PORT_PAPER", "4002"))
-    IBKR_PORT_LIVE    = int(os.getenv("IBKR_GATEWAY_PORT_LIVE", "4001"))
-else:  # TWS (default)
-    IBKR_HOST         = os.getenv("IBKR_TWS_HOST", "127.0.0.1")
-    IBKR_PORT_PAPER   = int(os.getenv("IBKR_TWS_PORT_PAPER", "7497"))
-    IBKR_PORT_LIVE    = int(os.getenv("IBKR_TWS_PORT_LIVE", "7496"))
-
-IBKR_CLIENT_ID        = int(os.getenv("IBKR_CLIENT_ID", "1"))   # 應用程式識別碼
-IBKR_ACCOUNT          = os.getenv("IBKR_ACCOUNT", "")           # 留空使用預設帳號
-IBKR_READONLY         = os.getenv("IBKR_READONLY", "false").lower() == "true"  # 唯讀模式
-
-# IBKR 連線參數
-IBKR_TIMEOUT_SEC      = 10                                      # 連線逾時（秒）
-IBKR_SYNC_INTERVAL    = 300                                     # 同期倉位的間隔（秒），300 = 5 分鐘
-IBKR_QUOTE_CACHE_SEC  = 15                                      # 報價快取期限（秒）
+# Telegram Mini App  (WebApp 界面 — 需要 HTTPS 公開 URL)
+TG_MINI_APP_ENABLED   = True                                    # ✅ 已啟用
+TG_MINI_APP_BASE_URL  = os.getenv("TG_MINI_APP_BASE_URL", "http://localhost:5000")  # Mini App 根 URL
+TG_MINI_APP_SHOW_BUTTON = True                                  # 在分析結果中顯示 "打開 Mini App" 按鈕
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNTIME SETTINGS (persisted to data/settings.json)
