@@ -60,7 +60,29 @@
             max-width: 600px;
             margin: 0 auto;
             min-height: calc(100vh - 70px);
+            padding-bottom: 100px;
         }
+        
+        .bottom-nav {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: rgba(10,14,26,0.95); backdrop-filter: blur(20px);
+            border-top: 1px solid var(--border);
+            display: flex; overflow-x: auto; overflow-y: hidden;
+            padding: 6px 4px 14px; z-index: 50;
+            scrollbar-width: none;
+        }
+        .bottom-nav::-webkit-scrollbar { display: none; }
+        .nav-item {
+            display: flex; flex-direction: column; align-items: center; gap: 2px;
+            cursor: pointer; padding: 4px 10px; border-radius: 8px; transition: all 0.2s;
+            text-decoration: none; color: #8b949e;
+            -webkit-tap-highlight-color: transparent;
+            flex-shrink: 0; min-width: 52px;
+        }
+        .nav-item:active { transform: scale(0.88); }
+        .nav-item:hover, .nav-item.active { color: var(--accent); }
+        .nav-icon  { font-size: 18px; line-height: 1; }
+        .nav-label { font-size: 9px; font-weight: 600; white-space: nowrap; }
         
         .loading {
             display: none;
@@ -120,6 +142,7 @@
         
         .stat-label {
             font-weight: 500;
+            color: var(--text);
         }
         
         .stat-value {
@@ -169,6 +192,7 @@
         .dimension-label {
             font-weight: 500;
             flex: 1;
+            color: var(--text);
         }
         
         .dimension-score {
@@ -219,9 +243,28 @@
             background: var(--accent);
             color: var(--bg-primary);
         }
+        
+        #loadingOverlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8); backdrop-filter: blur(8px);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.3s;
+        }
+        #loadingOverlay.active {
+            opacity: 1; pointer-events: all;
+        }
+        #loadingText {
+            color: var(--text); font-size: 13px; margin-top: 4px;
+        }
     </style>
 </head>
 <body>
+    <div id="loadingOverlay">
+        <dotlottie-player src="/assets/loading.lottie" autoplay loop style="width:88px;height:88px;"></dotlottie-player>
+        <div id="loadingText">分析中...</div>
+    </div>
+
     <div class="header">
         <a onclick="goBack()" title="返回菜單">&larr;</a>
         <div>
@@ -628,18 +671,78 @@
                     plugins: {legend: {display: false}},
                     scales: {
                         y: {
-                            ticks: {color: '#8b949e', font: {size: 10}},
+                            ticks: {color: '#b0b0b0', font: {size: 10}},
                             grid: {color: '#30363d', drawBorder: false},
                             border: {display: false}
                         },
                         x: {
-                            ticks: {color: '#8b949e', font: {size: 10}},
+                            ticks: {color: '#b0b0b0', font: {size: 10}},
                             grid: {display: false},
                             border: {display: false}
                         }
                     }
                 }
             });
+        }
+        
+        async function navScan(name) {
+            const overlay = document.getElementById('loadingOverlay');
+            const loadText = document.getElementById('loadingText');
+            
+            const apiMap = {
+                'Combined': '/api/combined/scan/run',
+                'SEPA': '/api/scan/run',
+                'QM': '/api/qm/scan/run',
+                'ML': '/api/ml/scan/run'
+            };
+            const apiUrl = apiMap[name];
+            if (!apiUrl) return;
+            
+            overlay.classList.add('active');
+            loadText.textContent = `${name} 掃描中...`;
+            
+            try {
+                const response = await fetch(apiUrl, {method: 'POST'});
+                const r = await response.json();
+                
+                if (!response.ok || !r.job_id) {
+                    loadText.textContent = `掃描失敗: ${r.error || r.message || '未知錯誤'}`;
+                    setTimeout(() => overlay.classList.remove('active'), 2000);
+                    return;
+                }
+                
+                const jobId = r.job_id;
+                const statusUrl = apiUrl.replace('/run', `/status/${jobId}`);
+                let done = false;
+                
+                while (!done) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    try {
+                        const statusResponse = await fetch(statusUrl);
+                        const s = await statusResponse.json();
+                        
+                        if (s.status === 'completed' || s.stage === 'idle') {
+                            done = true;
+                            loadText.textContent = `${name} 掃描已完成！`;
+                            setTimeout(() => overlay.classList.remove('active'), 1500);
+                        } else if (s.status === 'error') {
+                            loadText.textContent = `掃描錯誤: ${s.error || 'Unknown'}`;
+                            setTimeout(() => overlay.classList.remove('active'), 2000);
+                            done = true;
+                        } else {
+                            const pct = Math.round((s.pct || 0) * 100) / 100;
+                            loadText.textContent = `${name} 掃描中... ${pct}%`;
+                        }
+                    } catch(e) {
+                        loadText.textContent = `狀態查詢失敗: ${e.message}`;
+                        setTimeout(() => overlay.classList.remove('active'), 2000);
+                        done = true;
+                    }
+                }
+            } catch(e) {
+                loadText.textContent = `掃描啟動失敗: ${e.message}`;
+                setTimeout(() => overlay.classList.remove('active'), 2000);
+            }
         }
         
         function showError(msg) {
@@ -656,5 +759,39 @@
         // Load analysis on page ready
         document.addEventListener('DOMContentLoaded', loadAnalysis);
     </script>
+    
+    <!-- Bottom nav -->
+    <nav class="bottom-nav">
+        <a class="nav-item" onclick="window.location.href='/tg/menu'">
+            <span class="nav-icon">🏠</span>
+            <span class="nav-label">主頁</span>
+        </a>
+        <a class="nav-item" onclick="navScan('Combined')">
+            <span class="nav-icon">⚡</span>
+            <span class="nav-label">組合</span>
+        </a>
+        <a class="nav-item" onclick="navScan('SEPA')">
+            <span class="nav-icon">📡</span>
+            <span class="nav-label">SEPA</span>
+        </a>
+        <a class="nav-item" onclick="navScan('QM')">
+            <span class="nav-icon">🟡</span>
+            <span class="nav-label">QM</span>
+        </a>
+        <a class="nav-item" onclick="navScan('ML')">
+            <span class="nav-icon">🟢</span>
+            <span class="nav-label">ML</span>
+        </a>
+        <a class="nav-item" onclick="window.location.href='/tg/menu/account'">
+            <span class="nav-icon">👤</span>
+            <span class="nav-label">帳戶</span>
+        </a>
+        <a class="nav-item" onclick="window.location.href='/tg/trade'" style="color:#d4a574;">
+            <span class="nav-icon">💹</span>
+            <span class="nav-label">交易</span>
+        </a>
+    </nav>
+    
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </body>
 </html>
