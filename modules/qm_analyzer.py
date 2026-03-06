@@ -506,7 +506,7 @@ def _score_dim_e(df: pd.DataFrame, dollar_volume: Optional[float] = None) -> dic
 # Dimension F — Market Timing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _score_dim_f() -> dict:
+def _score_dim_f(market_regime: Optional[str] = None) -> dict:
     """
     Score Dimension F: Market Timing / Environment.
 
@@ -523,9 +523,12 @@ def _score_dim_f() -> dict:
     veto   = False
 
     try:
-        from modules.market_env import assess as mkt_assess
-        mkt = mkt_assess(verbose=False)
-        regime = mkt.get("regime", "UNKNOWN")
+        if market_regime:
+            regime = market_regime
+        else:
+            from modules.market_env import assess as mkt_assess
+            mkt = mkt_assess(verbose=False)
+            regime = mkt.get("regime", "UNKNOWN")
         detail["regime"] = regime
 
         regime_map = {
@@ -826,7 +829,8 @@ def _build_trade_plan(stars: float, row: dict) -> dict:
 def analyze_qm(ticker: str,
                df: pd.DataFrame = None,
                rs_rank: Optional[float] = None,
-               print_report: bool = True) -> dict:
+               print_report: bool = True,
+               market_regime: Optional[str] = None) -> dict:
     """
     Full Qullamaggie 6-dimension analysis for a single stock.
 
@@ -866,7 +870,7 @@ def analyze_qm(ticker: str,
     dim_c = _score_dim_c(df)
     dim_d = _score_dim_d(df)
     dim_e = _score_dim_e(df, dollar_volume=dv)
-    dim_f = _score_dim_f()
+    dim_f = _score_dim_f(market_regime=market_regime)
 
     dim_scores = {"A": dim_a, "B": dim_b, "C": dim_c,
                   "D": dim_d, "E": dim_e, "F": dim_f}

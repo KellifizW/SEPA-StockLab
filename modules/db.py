@@ -49,15 +49,6 @@ def _get_conn():
         raise RuntimeError("duckdb not installed. Run: pip install duckdb")
 
 
-def _safe_alter_add_col(conn, table: str, column: str, col_type: str) -> None:
-    """Add a column to an existing table if it does not already exist (migration helper)."""
-    try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}")
-    except Exception:
-        # DuckDB <0.8 fallback: ignore 'already exists' errors silently
-        pass
-
-
 def _ensure_schema(conn):
     """Create all tables if they don't exist yet."""
     conn.execute("""
@@ -300,45 +291,87 @@ def _ensure_schema(conn):
     # ── Auto-Trade log ─────────────────────────────────────────────────────
     conn.execute("""
         CREATE TABLE IF NOT EXISTS auto_trade_log (
-            id                      INTEGER PRIMARY KEY,
-            trade_date              DATE NOT NULL,
-            trade_time              TIMESTAMP NOT NULL,
-            ticker                  VARCHAR NOT NULL,
-            strategy                VARCHAR,              -- QM or ML
-            screener_stars          DOUBLE,               -- Phase 2 screener star rating
-            stars                   DOUBLE,               -- Phase 3 deep-analysis star rating
-            watch_score             INTEGER,
-            regime                  VARCHAR,
-            action                  VARCHAR,              -- BUY, SKIP, BLOCKED
-            reason                  VARCHAR,
-            order_type              VARCHAR,
-            qty                     INTEGER,
-            limit_price             DOUBLE,
-            stop_price              DOUBLE,
-            current_price           DOUBLE,               -- Price at evaluation time
-            scan_data_age_min       INTEGER,              -- How old was scan data (minutes)
-            portfolio_exposure_pct  DOUBLE,               -- Total exposure % at order time
-            caution_flag            BOOLEAN DEFAULT FALSE, -- ML decision tree = CAUTION
-            order_id                INTEGER,
-            stop_order_id           INTEGER,              -- IBKR stop-loss order ID
-            stop_attached           BOOLEAN DEFAULT FALSE, -- Whether stop was successfully attached
-            dry_run                 BOOLEAN DEFAULT TRUE,
-            iron_rules              VARCHAR,              -- JSON list of triggered iron rules
-            dim_summary             VARCHAR               -- JSON summary of dimension scores
+            id              INTEGER PRIMARY KEY,
+            trade_date      DATE NOT NULL,
+            trade_time      TIMESTAMP NOT NULL,
+            ticker          VARCHAR NOT NULL,
+            strategy        VARCHAR,              -- QM or ML
+            stars           DOUBLE,
+            watch_score     INTEGER,
+            regime          VARCHAR,
+            action          VARCHAR,              -- BUY, SKIP, BLOCKED
+            reason          VARCHAR,
+            order_type      VARCHAR,
+            qty             INTEGER,
+            limit_price     DOUBLE,
+            stop_price      DOUBLE,
+            order_id        INTEGER,
+            dry_run         BOOLEAN DEFAULT TRUE,
+            iron_rules      VARCHAR,              -- JSON list of triggered iron rules
+            dim_summary     VARCHAR               -- JSON summary of dimension scores
         )
     """)
-    # Migrate existing tables: add columns introduced after initial deployment
-    _safe_alter_add_col(conn, "auto_trade_log", "screener_stars",         "DOUBLE")
-    _safe_alter_add_col(conn, "auto_trade_log", "current_price",          "DOUBLE")
-    _safe_alter_add_col(conn, "auto_trade_log", "scan_data_age_min",      "INTEGER")
-    _safe_alter_add_col(conn, "auto_trade_log", "portfolio_exposure_pct", "DOUBLE")
-    _safe_alter_add_col(conn, "auto_trade_log", "caution_flag",           "BOOLEAN DEFAULT FALSE")
-    _safe_alter_add_col(conn, "auto_trade_log", "stop_order_id",          "INTEGER")
-    _safe_alter_add_col(conn, "auto_trade_log", "stop_attached",          "BOOLEAN DEFAULT FALSE")
 
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_auto_trade_log_date
         ON auto_trade_log (trade_date, ticker)
+    """)
+
+    # ── Position Control — pool allocation log ─────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS position_pool_log (
+            id              INTEGER PRIMARY KEY,
+            log_time        TIMESTAMP NOT NULL,
+            ticker          VARCHAR NOT NULL,
+            pool            VARCHAR NOT NULL,
+            action          VARCHAR NOT NULL,
+            shares          INTEGER,
+            entry_price     DOUBLE,
+            stop_price      DOUBLE,
+            position_value  DOUBLE,
+            risk_dollars    DOUBLE,
+            pool_used_pct   DOUBLE,
+            pool_heat_pct   DOUBLE,
+            total_used_pct  DOUBLE,
+            total_heat_pct  DOUBLE,
+            pool_positions  INTEGER,
+            account_size    DOUBLE,
+            note            VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pool_log_time
+        ON position_pool_log (log_time, ticker)
+    """)
+
+    # ── Position Control — exit action log ─────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS exit_log (
+            id              INTEGER PRIMARY KEY,
+            exit_time       TIMESTAMP NOT NULL,
+            ticker          VARCHAR NOT NULL,
+            pool            VARCHAR NOT NULL,
+            strategy        VARCHAR,
+            exit_type       VARCHAR NOT NULL,
+            shares_sold     INTEGER,
+            shares_remaining INTEGER,
+            exit_price      DOUBLE,
+            entry_price     DOUBLE,
+            stop_price      DOUBLE,
+            r_multiple      DOUBLE,
+            pnl_pct         DOUBLE,
+            pnl_dollars     DOUBLE,
+            pool_used_after DOUBLE,
+            pool_heat_after DOUBLE,
+            total_heat_after DOUBLE,
+            reason          VARCHAR,
+            dry_run         BOOLEAN DEFAULT TRUE,
+            extra_json      VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_exit_log_time
+        ON exit_log (exit_time, ticker)
     """)
 
 
@@ -1617,22 +1650,23 @@ def append_auto_trade(entry: dict) -> bool:
     with _lock:
         try:
             conn = _get_conn()
+            next_id_row = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM auto_trade_log"
+            ).fetchone()
+            next_id = int(next_id_row[0]) if next_id_row else 1
             conn.execute("""
                 INSERT INTO auto_trade_log
-                    (trade_date, trade_time, ticker, strategy,
-                     screener_stars, stars, watch_score, regime,
-                     action, reason, order_type,
-                     qty, limit_price, stop_price, current_price,
-                     scan_data_age_min, portfolio_exposure_pct, caution_flag,
-                     order_id, stop_order_id, stop_attached,
-                     dry_run, iron_rules, dim_summary)
-                VALUES (?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?, ?)
+                    (id, trade_date, trade_time, ticker, strategy, stars,
+                     watch_score, regime, action, reason, order_type,
+                     qty, limit_price, stop_price, order_id, dry_run,
+                     iron_rules, dim_summary)
+                VALUES (?, ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?)
             """, [
+                next_id,
                 entry.get("trade_date"),
                 entry.get("trade_time"),
                 entry.get("ticker", ""),
                 entry.get("strategy", ""),
-                _to_float(entry.get("screener_stars")),
                 _to_float(entry.get("stars")),
                 _to_int(entry.get("watch_score")),
                 entry.get("regime", ""),
@@ -1642,13 +1676,7 @@ def append_auto_trade(entry: dict) -> bool:
                 _to_int(entry.get("qty")),
                 _to_float(entry.get("limit_price")),
                 _to_float(entry.get("stop_price")),
-                _to_float(entry.get("current_price")),
-                _to_int(entry.get("scan_data_age_min")),
-                _to_float(entry.get("portfolio_exposure_pct")),
-                bool(entry.get("caution_flag", False)),
                 _to_int(entry.get("order_id")),
-                _to_int(entry.get("stop_order_id")),
-                bool(entry.get("stop_attached", False)),
                 entry.get("dry_run", True),
                 _json.dumps(entry.get("iron_rules", []), ensure_ascii=False),
                 _json.dumps(entry.get("dim_summary", {}), ensure_ascii=False),
@@ -1667,26 +1695,168 @@ def query_auto_trade_log(days: int = 30) -> list:
         try:
             conn = _get_conn()
             rows = conn.execute(f"""
-                SELECT trade_date, trade_time, ticker, strategy,
-                       screener_stars, stars, watch_score, regime,
-                       action, reason, order_type,
-                       qty, limit_price, stop_price, current_price,
-                       scan_data_age_min, portfolio_exposure_pct, caution_flag,
-                       order_id, stop_order_id, stop_attached,
-                       dry_run, iron_rules, dim_summary
+                SELECT trade_date, trade_time, ticker, strategy, stars,
+                       watch_score, regime, action, reason, order_type,
+                       qty, limit_price, stop_price, order_id, dry_run,
+                       iron_rules, dim_summary
                 FROM auto_trade_log
                 WHERE trade_date >= CURRENT_DATE - INTERVAL {days} DAY
                 ORDER BY trade_time DESC
             """).fetchall()
             conn.close()
-            cols = ["trade_date", "trade_time", "ticker", "strategy",
-                    "screener_stars", "stars", "watch_score", "regime",
-                    "action", "reason", "order_type",
-                    "qty", "limit_price", "stop_price", "current_price",
-                    "scan_data_age_min", "portfolio_exposure_pct", "caution_flag",
-                    "order_id", "stop_order_id", "stop_attached",
-                    "dry_run", "iron_rules", "dim_summary"]
+            cols = ["trade_date", "trade_time", "ticker", "strategy", "stars",
+                    "watch_score", "regime", "action", "reason", "order_type",
+                    "qty", "limit_price", "stop_price", "order_id", "dry_run",
+                    "iron_rules", "dim_summary"]
             return [dict(zip(cols, row)) for row in rows]
         except Exception as exc:
             logger.error("[DB] query_auto_trade_log failed: %s", exc)
+            return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Position Control — Pool & Exit Logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def append_pool_log(entry: dict) -> bool:
+    """Append a pool allocation/release event."""
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            next_id = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM position_pool_log"
+            ).fetchone()[0])
+            conn.execute("""
+                INSERT INTO position_pool_log
+                    (id, log_time, ticker, pool, action, shares, entry_price,
+                     stop_price, position_value, risk_dollars,
+                     pool_used_pct, pool_heat_pct, total_used_pct,
+                     total_heat_pct, pool_positions, account_size, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                next_id,
+                entry.get("log_time"),
+                entry.get("ticker", ""),
+                entry.get("pool", "FREE"),
+                entry.get("action", ""),
+                _to_int(entry.get("shares")),
+                _to_float(entry.get("entry_price")),
+                _to_float(entry.get("stop_price")),
+                _to_float(entry.get("position_value")),
+                _to_float(entry.get("risk_dollars")),
+                _to_float(entry.get("pool_used_pct")),
+                _to_float(entry.get("pool_heat_pct")),
+                _to_float(entry.get("total_used_pct")),
+                _to_float(entry.get("total_heat_pct")),
+                _to_int(entry.get("pool_positions")),
+                _to_float(entry.get("account_size")),
+                entry.get("note", ""),
+            ])
+            conn.close()
+            return True
+        except Exception as exc:
+            logger.error("[DB] append_pool_log failed: %s", exc)
+            return False
+
+
+def query_pool_log(days: int = 30) -> list:
+    """Query pool allocation log entries within the last N days."""
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            rows = conn.execute(f"""
+                SELECT log_time, ticker, pool, action, shares, entry_price,
+                       stop_price, position_value, risk_dollars,
+                       pool_used_pct, pool_heat_pct, total_used_pct,
+                       total_heat_pct, pool_positions, account_size, note
+                FROM position_pool_log
+                WHERE log_time >= CURRENT_TIMESTAMP - INTERVAL {days} DAY
+                ORDER BY log_time DESC
+            """).fetchall()
+            conn.close()
+            cols = ["log_time", "ticker", "pool", "action", "shares",
+                    "entry_price", "stop_price", "position_value",
+                    "risk_dollars", "pool_used_pct", "pool_heat_pct",
+                    "total_used_pct", "total_heat_pct", "pool_positions",
+                    "account_size", "note"]
+            return [dict(zip(cols, row)) for row in rows]
+        except Exception as exc:
+            logger.error("[DB] query_pool_log failed: %s", exc)
+            return []
+
+
+def append_exit_log(entry: dict) -> bool:
+    """Append an automated exit action log entry."""
+    _init_schema_once()
+    import json as _json
+    with _lock:
+        try:
+            conn = _get_conn()
+            next_id = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM exit_log"
+            ).fetchone()[0])
+            conn.execute("""
+                INSERT INTO exit_log
+                    (id, exit_time, ticker, pool, strategy, exit_type,
+                     shares_sold, shares_remaining, exit_price, entry_price,
+                     stop_price, r_multiple, pnl_pct, pnl_dollars,
+                     pool_used_after, pool_heat_after, total_heat_after,
+                     reason, dry_run, extra_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                next_id,
+                entry.get("exit_time"),
+                entry.get("ticker", ""),
+                entry.get("pool", "FREE"),
+                entry.get("strategy", ""),
+                entry.get("exit_type", ""),
+                _to_int(entry.get("shares_sold")),
+                _to_int(entry.get("shares_remaining")),
+                _to_float(entry.get("exit_price")),
+                _to_float(entry.get("entry_price")),
+                _to_float(entry.get("stop_price")),
+                _to_float(entry.get("r_multiple")),
+                _to_float(entry.get("pnl_pct")),
+                _to_float(entry.get("pnl_dollars")),
+                _to_float(entry.get("pool_used_after")),
+                _to_float(entry.get("pool_heat_after")),
+                _to_float(entry.get("total_heat_after")),
+                entry.get("reason", ""),
+                entry.get("dry_run", True),
+                _json.dumps(entry.get("extra", {}), ensure_ascii=False),
+            ])
+            conn.close()
+            return True
+        except Exception as exc:
+            logger.error("[DB] append_exit_log failed: %s", exc)
+            return False
+
+
+def query_exit_log(days: int = 30) -> list:
+    """Query exit log entries within the last N days."""
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            rows = conn.execute(f"""
+                SELECT exit_time, ticker, pool, strategy, exit_type,
+                       shares_sold, shares_remaining, exit_price, entry_price,
+                       stop_price, r_multiple, pnl_pct, pnl_dollars,
+                       pool_used_after, pool_heat_after, total_heat_after,
+                       reason, dry_run, extra_json
+                FROM exit_log
+                WHERE exit_time >= CURRENT_TIMESTAMP - INTERVAL {days} DAY
+                ORDER BY exit_time DESC
+            """).fetchall()
+            conn.close()
+            cols = ["exit_time", "ticker", "pool", "strategy", "exit_type",
+                    "shares_sold", "shares_remaining", "exit_price",
+                    "entry_price", "stop_price", "r_multiple", "pnl_pct",
+                    "pnl_dollars", "pool_used_after", "pool_heat_after",
+                    "total_heat_after", "reason", "dry_run", "extra_json"]
+            return [dict(zip(cols, row)) for row in rows]
+        except Exception as exc:
+            logger.error("[DB] query_exit_log failed: %s", exc)
             return []

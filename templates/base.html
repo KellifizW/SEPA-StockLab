@@ -1619,8 +1619,14 @@ async function loadAccountDetail() {
       cashRows = '<tr><td colspan="3" class="text-center" style="color:#8b949e">IBKR 未連接 — 無法獲取現金明細<br>Connect IBKR for live breakdown</td></tr>';
     }
 
-    const nav  = (d.nav  || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-    const stk  = (d.stock_value || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const navVal = Number(d.nav || 0);
+    const stockVal = Number(d.gross_position_value ?? d.stock_value ?? 0);
+    const settledCashVal = Number(d.settled_cash ?? d.total_cash_value ?? d.total_cash ?? 0);
+    const stockPct = Number(d.stock_alloc_pct ?? (navVal > 0 ? (stockVal / navVal) * 100 : 0));
+    const cashAvailPct = Number(d.cash_available_pct ?? (navVal > 0 ? (settledCashVal / navVal) * 100 : 0));
+
+    const nav  = navVal.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const stk  = stockVal.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
     const pnl  = (d.unrealized_pnl || 0);
     const pnlCls = pnl >= 0 ? 'text-success' : 'text-danger';
     const pnlStr = (pnl >= 0 ? '+' : '') + pnl.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -1647,6 +1653,17 @@ async function loadAccountDetail() {
   ${source}
   ${!d.connected ? '<span class="badge bg-warning text-dark">IBKR Offline</span>' : ''}
   <span style="color:#8b949e; font-size:11px; margin-left:auto">基礎貨幣 Base: <strong style="color:var(--accent)">${base}</strong></span>
+</div>
+
+<div class="mb-2 px-2 py-2" style="background:#0d1117; border:1px solid #30363d; border-radius:6px; font-size:12px;">
+  <div class="d-flex justify-content-between">
+    <span style="color:#8b949e;">持股比例 Stock Allocation</span>
+    <strong style="color:#58a6ff;">${stockPct.toFixed(2)}%</strong>
+  </div>
+  <div class="d-flex justify-content-between mt-1">
+    <span style="color:#8b949e;">可再買入 Cash Available to Buy</span>
+    <strong style="color:#3fb950;">${cashAvailPct.toFixed(2)}%</strong>
+  </div>
 </div>
 
 <div class="row g-2 mb-2">

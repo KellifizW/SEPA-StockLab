@@ -208,14 +208,21 @@ def api_account_detail():
 
         cached = _load_nav_cache()
         if cached and cached.get("nav", 0) > 0:
+            nav = float(cached.get("nav", 0) or 0)
             return jsonify({
                 "ok": True, "source": "cached",
                 "data": {
                     "connected": False,
-                    "nav": cached.get("nav", 0),
+                    "nav": nav,
                     "cash_by_currency": {},
                     "stock_value": 0,
-                    "total_cash": cached.get("nav", 0),
+                    "gross_position_value": 0,
+                    "total_cash": nav,
+                    "total_cash_value": nav,
+                    "settled_cash": nav,
+                    "stock_alloc_pct": 0,
+                    "cash_available_pct": 100 if nav > 0 else 0,
+                    "cash_total_pct": 100 if nav > 0 else 0,
                     "unrealized_pnl": 0,
                     "account": cached.get("account", ""),
                     "base_currency": C.ACCOUNT_BASE_CURRENCY,
@@ -236,7 +243,9 @@ def api_account_convert():
     if not available:
         return jsonify({"ok": False, "error": error_msg}), 503
     try:
-        body = request.get_json(force=True) or {}
+        body = request.get_json(silent=True) or {}
+        if not body:
+            return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
         from_currency = body.get("from_currency", "").upper()
         to_currency = body.get("to_currency", "").upper()
         amount = float(body.get("amount", 0))
@@ -257,9 +266,17 @@ def api_account_convert():
                         result.get("order_id"))
             return jsonify({"ok": True, "data": result})
         else:
+            err = (result.get("error") or "Conversion failed")
+            status_code = 500
+            if "Not connected to IBKR" in err:
+                status_code = 503
+            elif "Unsupported pair" in err or "Amount too small" in err:
+                status_code = 400
             return jsonify({"ok": False,
-                            "error": result.get("error", "Conversion failed")}), 500
+                            "error": err}), status_code
     except Exception as exc:
+        if "Not connected to IBKR" in str(exc):
+            return jsonify({"ok": False, "error": str(exc)}), 503
         logger.error("api_account_convert error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -277,11 +294,20 @@ def api_ibkr_positions():
     try:
         from modules import position_monitor, db
 
-        # Auto-connect if not already connected
         client = _client()
         if not client.is_ibkr_connected():
-            logger.info("IBKR not connected, attempting to reconnect...")
-            client.connect()
+            # Passive polling endpoint: do not auto-connect here.
+            # This keeps dry-run mode and offline usage quiet/stable.
+            return jsonify({
+                "ok": True,
+                "data": {
+                    "positions": [],
+                    "synced_count": 0,
+                    "connected": False,
+                    "message": "IBKR disconnected",
+                },
+                "warning": "IBKR disconnected. Click Connect to sync live positions.",
+            })
 
         ibkr_positions = client.get_positions()
         if not ibkr_positions:
@@ -370,29 +396,26 @@ def api_ibkr_trades():
         return jsonify({"ok": False, "error": error_msg}), 503
     try:
         from modules import db
-        import time
         days = request.args.get("days", default=7, type=int)
         
-        # Auto-connect if not already connected
         client = _client()
         if not client.is_ibkr_connected():
-            logger.info("IBKR not connected, attempting to reconnect...")
-            result = client.connect()
-            if not result.get("success"):
-                logger.warning(f"Reconnection failed: {result.get('message')}")
-                # Fetch from DB only if IBKR connection failed
-                try:
-                    db_orders = db.query_ibkr_orders(days=days)
-                except Exception as db_exc:
-                    logger.warning("db.query_ibkr_orders failed: %s", db_exc)
-                    db_orders = []
-                return jsonify({
-                    "ok": True,
-                    "data": {"executions": [], "db_orders": db_orders, "count": 0},
-                    "warning": f"IBKR disconnected: {result.get('message')}"
-                })
-            # Wait a moment for connection to stabilize
-            time.sleep(0.5)
+            # Passive polling endpoint: do not auto-connect here.
+            try:
+                db_orders = db.query_ibkr_orders(days=days)
+            except Exception as db_exc:
+                logger.warning("db.query_ibkr_orders failed: %s", db_exc)
+                db_orders = []
+            return jsonify({
+                "ok": True,
+                "data": {
+                    "executions": [],
+                    "db_orders": db_orders,
+                    "count": 0,
+                    "connected": False,
+                },
+                "warning": "IBKR disconnected. Click Connect to load live executions.",
+            })
         
         executions = client.get_executions(days=days)
         # Wrap db call separately so a DB error never blocks the trade history response

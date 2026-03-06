@@ -418,7 +418,13 @@ def get_status() -> Dict[str, Any]:
 
 def get_account_detail() -> Dict[str, Any]:
     """
-    Get detailed multi-currency account breakdown from IBKR.
+        Get detailed multi-currency account breakdown from IBKR.
+
+        Core IBKR tags used (BASE currency):
+            - NetLiquidation    : account NAV
+            - GrossPositionValue: absolute gross market value of positions
+            - TotalCashValue    : total cash value (includes futures UPL effect)
+            - SettledCash       : settled cash balance (most accurate cash ready to deploy)
 
     Returns:
         {
@@ -448,7 +454,8 @@ def get_account_detail() -> Dict[str, Any]:
 
             cash_by_currency: Dict[str, float] = {}
             stock_value = 0.0
-            total_cash_base = 0.0
+            total_cash_value = 0.0
+            settled_cash = 0.0
             nav = 0.0
             unrealized_pnl = 0.0
             realized_pnl = 0.0
@@ -472,9 +479,13 @@ def get_account_detail() -> Dict[str, Any]:
                         cash_by_currency[av.currency] = 0.0
                     cash_by_currency[av.currency] += val
 
-                # Total cash in base currency
-                elif av.tag == "TotalCashBalance" and av.currency == "BASE":
-                    total_cash_base = val
+                # IBKR canonical: total cash value in base currency
+                elif av.tag == "TotalCashValue" and av.currency == "BASE":
+                    total_cash_value = val
+
+                # IBKR canonical: settled cash in base currency
+                elif av.tag == "SettledCash" and av.currency == "BASE":
+                    settled_cash = val
 
                 # Stock market value in base currency
                 elif av.tag == "StockMarketValue" and av.currency == "BASE":
@@ -514,7 +525,7 @@ def get_account_detail() -> Dict[str, Any]:
 
                 # Gross position value (total market value of all positions)
                 elif av.tag == "GrossPositionValue" and av.currency == "BASE":
-                    gross_position = val
+                    gross_position = abs(val)
 
                 # Detect base currency
                 elif av.tag == "ExchangeRate" and av.currency:
@@ -525,13 +536,31 @@ def get_account_detail() -> Dict[str, Any]:
                 import trader_config as _C
                 base_currency = _C.ACCOUNT_BASE_CURRENCY
 
+            # Fallbacks for brokers/accounts where some tags may be blank.
+            if total_cash_value == 0 and nav > 0:
+                total_cash_value = float(acct_vals.get("TotalCashBalance", 0) or 0)
+            if settled_cash == 0 and total_cash_value != 0:
+                settled_cash = total_cash_value
+
+            stock_value = gross_position if gross_position > 0 else max(0.0, stock_value)
+
+            stock_alloc_pct = (stock_value / nav * 100.0) if nav > 0 else 0.0
+            cash_available_pct = (settled_cash / nav * 100.0) if nav > 0 else 0.0
+            cash_total_pct = (total_cash_value / nav * 100.0) if nav > 0 else 0.0
+
             return {
                 "connected": True,
                 "account": account,
                 "nav": nav,
                 "cash_by_currency": cash_by_currency,
                 "stock_value": stock_value,
-                "total_cash": total_cash_base,
+                "total_cash": total_cash_value,
+                "gross_position_value": gross_position,
+                "total_cash_value": total_cash_value,
+                "settled_cash": settled_cash,
+                "stock_alloc_pct": round(stock_alloc_pct, 2),
+                "cash_available_pct": round(cash_available_pct, 2),
+                "cash_total_pct": round(cash_total_pct, 2),
                 "unrealized_pnl": unrealized_pnl,
                 "realized_pnl": realized_pnl,
                 "buying_power": buying_power,

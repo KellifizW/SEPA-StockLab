@@ -97,6 +97,31 @@
             </div>
           </div>
 
+          <div class="card mb-3" style="background:#0d1117; border:1px solid #30363d;">
+            <div class="card-header py-2" style="font-size:12px;">
+              <i class="bi bi-diagram-3 me-1"></i>Flow Monitor 流程監控
+            </div>
+            <div class="card-body py-2">
+              <div class="d-flex justify-content-between align-items-center mb-1" style="font-size:11px;">
+                <span id="atPhaseLabel" class="text-muted">等待啟動 / Waiting to start</span>
+                <span id="atPhasePct" style="color:var(--accent); font-weight:600;">0%</span>
+              </div>
+              <div class="progress" style="height:7px; background:#161b22; border:1px solid #30363d;">
+                <div id="atPhaseBar" class="progress-bar" role="progressbar"
+                     style="width:0%; background:linear-gradient(90deg, #00d4ff, #58a6ff);"></div>
+              </div>
+              <div class="row g-2 mt-2" style="font-size:11px; color:#8b949e;">
+                <div class="col-md-4">階段 Phase: <span id="atPhaseCode" style="color:#c9d1d9;">idle</span></div>
+                <div class="col-md-4">策略 Strategy: <span id="atCurStrategy" style="color:#c9d1d9;">—</span></div>
+                <div class="col-md-4">Ticker: <span id="atCurTicker" style="color:#c9d1d9;">—</span></div>
+              </div>
+              <div class="mt-1" style="font-size:11px; color:#8b949e;">
+                進度 Progress: <span id="atPhaseCount" style="color:#c9d1d9;">0 / 0</span>
+                <span class="ms-2">Regime: <span id="atRegime" style="color:#c9d1d9;">UNKNOWN</span></span>
+              </div>
+            </div>
+          </div>
+
           <!-- Candidates table -->
           <div style="max-height:250px;overflow-y:auto">
             <table class="table table-sm table-hover mb-0" id="candidatesTable">
@@ -116,6 +141,260 @@
 
           <!-- Error display -->
           <div id="atError" class="alert alert-danger mt-2 d-none" style="font-size:12px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 3-Pool Position Control 三池倉位控制 ─────────────── -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-pie-chart-fill me-2"></i>Position Control 倉位控制</span>
+          <button class="btn btn-sm btn-outline-secondary" onclick="loadPoolStatus()">
+            <i class="bi bi-arrow-clockwise"></i>
+          </button>
+        </div>
+        <div class="card-body">
+          <!-- Pool gauges -->
+          <div class="row g-3 mb-3" id="poolGauges">
+            <!-- ML Pool -->
+            <div class="col-md-4">
+              <div class="metric-card p-3" style="border-left:3px solid #f0883e">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <strong style="color:#f0883e">ML 倉</strong>
+                  <span id="poolMLCount" style="font-size:12px; color:#8b949e">0 / 4</span>
+                </div>
+                <div class="mb-1" style="font-size:11px; color:#8b949e">
+                  Capital 資金 <span id="poolMLUsed" style="color:#c9d1d9">0%</span>
+                  / <span id="poolMLCap">40%</span>
+                </div>
+                <div class="progress mb-2" style="height:6px; background:#161b22;">
+                  <div id="poolMLBar" class="progress-bar" style="width:0%; background:#f0883e;"></div>
+                </div>
+                <div style="font-size:11px; color:#8b949e">
+                  Heat 風險 <span id="poolMLHeat" style="color:#c9d1d9">0%</span>
+                  / <span id="poolMLMaxHeat">2.0%</span>
+                </div>
+                <div class="progress" style="height:4px; background:#161b22;">
+                  <div id="poolMLHeatBar" class="progress-bar" style="width:0%; background:#da3633;"></div>
+                </div>
+                <div id="poolMLTickers" class="mt-2" style="font-size:11px; color:#8b949e"></div>
+              </div>
+            </div>
+            <!-- QM Pool -->
+            <div class="col-md-4">
+              <div class="metric-card p-3" style="border-left:3px solid #58a6ff">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <strong style="color:#58a6ff">QM 倉</strong>
+                  <span id="poolQMCount" style="font-size:12px; color:#8b949e">0 / 4</span>
+                </div>
+                <div class="mb-1" style="font-size:11px; color:#8b949e">
+                  Capital 資金 <span id="poolQMUsed" style="color:#c9d1d9">0%</span>
+                  / <span id="poolQMCap">40%</span>
+                </div>
+                <div class="progress mb-2" style="height:6px; background:#161b22;">
+                  <div id="poolQMBar" class="progress-bar" style="width:0%; background:#58a6ff;"></div>
+                </div>
+                <div style="font-size:11px; color:#8b949e">
+                  Heat 風險 <span id="poolQMHeat" style="color:#c9d1d9">0%</span>
+                  / <span id="poolQMMaxHeat">3.0%</span>
+                </div>
+                <div class="progress" style="height:4px; background:#161b22;">
+                  <div id="poolQMHeatBar" class="progress-bar" style="width:0%; background:#da3633;"></div>
+                </div>
+                <div id="poolQMTickers" class="mt-2" style="font-size:11px; color:#8b949e"></div>
+              </div>
+            </div>
+            <!-- FREE Pool -->
+            <div class="col-md-4">
+              <div class="metric-card p-3" style="border-left:3px solid #8b949e">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <strong style="color:#8b949e">FREE 自由倉</strong>
+                  <span id="poolFREECount" style="font-size:12px; color:#8b949e">0 / 2</span>
+                </div>
+                <div class="mb-1" style="font-size:11px; color:#8b949e">
+                  Capital 資金 <span id="poolFREEUsed" style="color:#c9d1d9">0%</span>
+                  / <span id="poolFREECap">20%</span>
+                </div>
+                <div class="progress mb-2" style="height:6px; background:#161b22;">
+                  <div id="poolFREEBar" class="progress-bar" style="width:0%; background:#8b949e;"></div>
+                </div>
+                <div style="font-size:11px; color:#8b949e">
+                  Heat 風險 <span id="poolFREEHeat" style="color:#c9d1d9">0%</span>
+                  / <span id="poolFREEMaxHeat">1.5%</span>
+                </div>
+                <div class="progress" style="height:4px; background:#161b22;">
+                  <div id="poolFREEHeatBar" class="progress-bar" style="width:0%; background:#da3633;"></div>
+                </div>
+                <div id="poolFREETickers" class="mt-2" style="font-size:11px; color:#8b949e"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Account-level summary -->
+          <div class="row g-2" style="font-size:12px;">
+            <div class="col-md-3">
+              <span class="text-muted">Account 帳戶:</span>
+              <strong id="poolAcctSize" style="color:#c9d1d9">$—</strong>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Total Positions:</span>
+              <strong id="poolTotalPos" style="color:#c9d1d9">0 / 8</strong>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Total Heat:</span>
+              <strong id="poolTotalHeat" style="color:#c9d1d9">0%</strong>
+              <span class="text-muted">/ 5%</span>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Drawdown:</span>
+              <strong id="poolDrawdown" style="color:#c9d1d9">0%</strong>
+            </div>
+            <div class="col-md-3">
+              <span class="text-muted">Size Mult:</span>
+              <strong id="poolSizeMult" style="color:#c9d1d9">1.0x</strong>
+              <span id="poolStreakBadge"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Exit Engine 自動出場引擎 ──────────────────────────── -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-shield-exclamation me-2"></i>Exit Engine 自動出場引擎</span>
+          <div class="d-flex gap-2 align-items-center">
+            <span id="exitEngStatus" class="badge" style="font-size:10px;background:#30363d">—</span>
+            <button class="btn btn-sm btn-outline-warning" onclick="triggerExitCheck()" title="Manual dry-run check">
+              <i class="bi bi-play-circle"></i> Check Now
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="loadExitEngineStatus()">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <!-- Config summary row -->
+          <div class="row g-2 mb-3" style="font-size:12px;">
+            <div class="col-md-2">
+              <span class="text-muted">Enabled:</span>
+              <strong id="exitEngEnabled" style="color:#c9d1d9">—</strong>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Mode:</span>
+              <strong id="exitEngMode" style="color:#c9d1d9">—</strong>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Interval:</span>
+              <strong id="exitEngInterval" style="color:#c9d1d9">—</strong>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Last Check:</span>
+              <strong id="exitEngLastCheck" style="color:#c9d1d9">—</strong>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Exits Today:</span>
+              <strong id="exitEngExitsToday" style="color:#c9d1d9">0</strong>
+            </div>
+            <div class="col-md-2">
+              <span class="text-muted">Time Stop:</span>
+              <strong id="exitEngTimeStop" style="color:#c9d1d9">—</strong>
+            </div>
+          </div>
+
+          <!-- Position health table -->
+          <div style="max-height:250px; overflow-y:auto">
+            <table class="table table-sm table-hover mb-0">
+              <thead style="position:sticky;top:0;background:#1c2128;z-index:1">
+                <tr>
+                  <th>Ticker</th>
+                  <th>Pool</th>
+                  <th>Phase</th>
+                  <th>Close $</th>
+                  <th>Gain%</th>
+                  <th>R-Mult</th>
+                  <th>Stop $</th>
+                  <th>Action</th>
+                  <th>Signals</th>
+                </tr>
+              </thead>
+              <tbody id="exitEngPositions">
+                <tr><td colspan="9" class="text-muted text-center" style="font-size:11px">
+                  Click "Check Now" to scan positions / 點擊 "Check Now" 掃描持倉
+                </td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Pool Allocation Log 倉位分配紀錄 ───────────────────── -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-list-check me-2"></i>Pool Log 倉位紀錄</span>
+          <div class="d-flex gap-2 align-items-center">
+            <select id="poolLogDays" class="form-select form-select-sm" style="width:auto" onchange="loadPoolLog()">
+              <option value="1">Today</option>
+              <option value="7" selected>7 days</option>
+              <option value="30">30 days</option>
+            </select>
+            <ul class="nav nav-tabs nav-tabs-sm" style="border:0;font-size:11px;">
+              <li class="nav-item">
+                <a class="nav-link active py-1 px-2" id="tabPoolLog" href="#" onclick="showLogTab('pool');return false;">Allocation</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link py-1 px-2" id="tabExitLog" href="#" onclick="showLogTab('exit');return false;">Exit / Sell</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+          <!-- Pool allocation log table -->
+          <table class="table table-sm table-hover mb-0" id="poolLogTable">
+            <thead style="position:sticky;top:0;background:#1c2128;z-index:1">
+              <tr>
+                <th>Time 時間</th>
+                <th>Ticker</th>
+                <th>Pool 倉</th>
+                <th>Action</th>
+                <th>Shares</th>
+                <th>Value $</th>
+                <th>Risk $</th>
+                <th>Pool Used%</th>
+                <th>Pool Heat%</th>
+                <th>Total Heat%</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody id="poolLogBody">
+              <tr><td colspan="11" class="text-muted text-center">Loading…</td></tr>
+            </tbody>
+          </table>
+          <!-- Exit log table (hidden by default) -->
+          <table class="table table-sm table-hover mb-0 d-none" id="exitLogTable">
+            <thead style="position:sticky;top:0;background:#1c2128;z-index:1">
+              <tr>
+                <th>Time 時間</th>
+                <th>Ticker</th>
+                <th>Pool</th>
+                <th>Type</th>
+                <th>Shares</th>
+                <th>Exit $</th>
+                <th>Entry $</th>
+                <th>R-Mult</th>
+                <th>P&L %</th>
+                <th>P&L $</th>
+                <th>Reason 原因</th>
+              </tr>
+            </thead>
+            <tbody id="exitLogBody">
+              <tr><td colspan="11" class="text-muted text-center">Loading…</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -208,7 +487,7 @@ function atStop() {
 
 function _startPolling() {
   _pollStatus();
-  _pollTimer = setInterval(_pollStatus, 5000);
+  _pollTimer = setInterval(() => { _pollStatus(); loadPoolStatus(); loadExitEngineStatus(); }, 5000);
 }
 
 function _stopPolling() {
@@ -246,13 +525,25 @@ function _pollStatus() {
 
     // Config
     const cfg = s.config || {};
-    document.getElementById('cfgMinStarQM').textContent = cfg.min_screener_star_qm || cfg.min_star_qm || '—';
-    document.getElementById('cfgMinStarML').textContent = cfg.min_screener_star_ml || cfg.min_star_ml || '—';
+    document.getElementById('cfgMinStarQM').textContent = cfg.min_star_qm || '—';
+    document.getElementById('cfgMinStarML').textContent = cfg.min_star_ml || '—';
     document.getElementById('cfgMinWatch').textContent = cfg.min_watch_score || '—';
-    document.getElementById('cfgMaxBuys').textContent = (cfg.max_buys_qm || 2) + ' + ' + (cfg.max_buys_ml || 2);
+    document.getElementById('cfgMaxBuys').textContent = cfg.max_buys_per_day || '—';
     document.getElementById('cfgPollSec').textContent = (cfg.poll_interval_sec || 300) + 's';
     document.getElementById('cfgOrderType').textContent = cfg.order_type || '—';
     document.getElementById('cfgAttachStop').textContent = cfg.attach_stop ? 'Yes' : 'No';
+
+    // Flow monitor
+    const phasePct = Number(s.phase_progress_pct || 0);
+    const phaseLabel = s.phase_desc || '—';
+    document.getElementById('atPhaseLabel').textContent = phaseLabel;
+    document.getElementById('atPhasePct').textContent = `${phasePct}%`;
+    document.getElementById('atPhaseBar').style.width = `${Math.max(0, Math.min(100, phasePct))}%`;
+    document.getElementById('atPhaseCode').textContent = s.current_phase || 'idle';
+    document.getElementById('atCurStrategy').textContent = s.current_strategy || '—';
+    document.getElementById('atCurTicker').textContent = s.current_ticker || '—';
+    document.getElementById('atPhaseCount').textContent = `${s.processed_candidates || 0} / ${s.total_candidates || 0}`;
+    document.getElementById('atRegime').textContent = s.regime || 'UNKNOWN';
 
     // Candidates
     const body = document.getElementById('candidatesBody');
@@ -344,10 +635,246 @@ function _toast(msg, type) {
 document.addEventListener('DOMContentLoaded', () => {
   _pollStatus();
   loadHistory();
+  loadPoolStatus();
+  loadPoolLog();
   // If already running, start polling
   fetch('/api/auto-trade/status').then(r => r.json()).then(s => {
     if (s.running) _startPolling();
   }).catch(() => {});
 });
+
+/* ═══════════════ Pool Status ═══════════════ */
+function loadPoolStatus() {
+  fetch('/api/position-control/status')
+  .then(r => r.json())
+  .then(d => {
+    if (!d.ok) return;
+    const pools = d.pools || {};
+    const colors = {ML: '#f0883e', QM: '#58a6ff', FREE: '#8b949e'};
+
+    ['ML', 'QM', 'FREE'].forEach(p => {
+      const ps = pools[p] || {};
+      const usedPct = ps.used_pct || 0;
+      const heatPct = ps.heat_pct || 0;
+      const capPct  = ps.cap_pct || 0;
+      const maxHeat = ps.max_heat || 0;
+
+      document.getElementById('pool'+p+'Count').textContent = `${ps.positions||0} / ${ps.max_positions||0}`;
+      document.getElementById('pool'+p+'Used').textContent = usedPct.toFixed(1) + '%';
+      document.getElementById('pool'+p+'Cap').textContent = capPct + '%';
+      document.getElementById('pool'+p+'Bar').style.width = (capPct > 0 ? Math.min(100, usedPct/capPct*100) : 0) + '%';
+      document.getElementById('pool'+p+'Heat').textContent = heatPct.toFixed(2) + '%';
+      document.getElementById('pool'+p+'MaxHeat').textContent = maxHeat + '%';
+      const heatBarPct = maxHeat > 0 ? Math.min(100, heatPct/maxHeat*100) : 0;
+      const heatBar = document.getElementById('pool'+p+'HeatBar');
+      heatBar.style.width = heatBarPct + '%';
+      heatBar.style.background = heatBarPct >= 80 ? '#da3633' : heatBarPct >= 50 ? '#d29922' : '#238636';
+
+      const tickers = (ps.tickers || []).map(t => `<span class="badge bg-dark border border-secondary me-1">${_esc(t)}</span>`).join('');
+      document.getElementById('pool'+p+'Tickers').innerHTML = tickers || '<span class="text-muted">— empty —</span>';
+    });
+
+    document.getElementById('poolAcctSize').textContent = '$' + Number(d.account_size||0).toLocaleString();
+    document.getElementById('poolTotalPos').textContent = `${d.total_positions||0} / 8`;
+    document.getElementById('poolTotalHeat').textContent = (d.total_heat_pct||0).toFixed(2) + '%';
+    document.getElementById('poolDrawdown').textContent = (d.drawdown_pct||0).toFixed(1) + '%';
+
+    const mult = d.size_multiplier || 1;
+    const multEl = document.getElementById('poolSizeMult');
+    multEl.textContent = mult.toFixed(1) + 'x';
+    multEl.style.color = mult >= 1 ? '#238636' : mult > 0 ? '#d29922' : '#da3633';
+
+    const streakEl = document.getElementById('poolStreakBadge');
+    if (d.loss_streak >= 3) {
+      streakEl.innerHTML = `<span class="badge bg-danger ms-1">連虧 ${d.loss_streak}</span>`;
+    } else {
+      streakEl.innerHTML = '';
+    }
+  })
+  .catch(() => {});
+}
+
+/* ═══════════════ Pool / Exit Log ═══════════════ */
+let _activeLogTab = 'pool';
+
+function showLogTab(tab) {
+  _activeLogTab = tab;
+  document.getElementById('tabPoolLog').classList.toggle('active', tab === 'pool');
+  document.getElementById('tabExitLog').classList.toggle('active', tab === 'exit');
+  document.getElementById('poolLogTable').classList.toggle('d-none', tab !== 'pool');
+  document.getElementById('exitLogTable').classList.toggle('d-none', tab !== 'exit');
+  if (tab === 'pool') loadPoolLog();
+  else loadExitLog();
+}
+
+function loadPoolLog() {
+  const days = document.getElementById('poolLogDays').value;
+  fetch(`/api/position-control/pool-log?days=${days}`)
+  .then(r => r.json())
+  .then(d => {
+    const body = document.getElementById('poolLogBody');
+    const rows = d.rows || [];
+    if (rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="11" class="text-muted text-center">No records 無紀錄</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(r => {
+      const t = r.log_time ? new Date(r.log_time).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+      const actCls = r.action === 'ALLOCATE' ? 'score-high' : 'score-low';
+      return `<tr>
+        <td style="font-size:11px">${_esc(t)}</td>
+        <td><strong>${_esc(r.ticker)}</strong></td>
+        <td>${_esc(r.pool)}</td>
+        <td class="${actCls}">${_esc(r.action)}</td>
+        <td>${r.shares||''}</td>
+        <td>${r.position_value ? '$'+Number(r.position_value).toLocaleString() : '—'}</td>
+        <td>${r.risk_dollars ? '$'+Number(r.risk_dollars).toFixed(0) : '—'}</td>
+        <td>${(r.pool_used_pct||0).toFixed(1)}%</td>
+        <td>${(r.pool_heat_pct||0).toFixed(2)}%</td>
+        <td>${(r.total_heat_pct||0).toFixed(2)}%</td>
+        <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${_esc(r.note)}">${_esc(r.note)}</td>
+      </tr>`;
+    }).join('');
+  })
+  .catch(e => {
+    document.getElementById('poolLogBody').innerHTML =
+      `<tr><td colspan="11" class="text-danger text-center">Error: ${_esc(String(e))}</td></tr>`;
+  });
+}
+
+function loadExitLog() {
+  const days = document.getElementById('poolLogDays').value;
+  fetch(`/api/position-control/exit-log?days=${days}`)
+  .then(r => r.json())
+  .then(d => {
+    const body = document.getElementById('exitLogBody');
+    const rows = d.rows || [];
+    if (rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="11" class="text-muted text-center">No records 無紀錄</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(r => {
+      const t = r.exit_time ? new Date(r.exit_time).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+      const pnl = r.pnl_pct || 0;
+      const pnlCls = pnl >= 0 ? 'score-high' : 'score-low';
+      return `<tr>
+        <td style="font-size:11px">${_esc(t)}</td>
+        <td><strong>${_esc(r.ticker)}</strong></td>
+        <td>${_esc(r.pool)}</td>
+        <td>${_esc(r.exit_type)}</td>
+        <td>${r.shares_sold||''}</td>
+        <td>${r.exit_price ? '$'+Number(r.exit_price).toFixed(2) : '—'}</td>
+        <td>${r.entry_price ? '$'+Number(r.entry_price).toFixed(2) : '—'}</td>
+        <td>${(r.r_multiple||0).toFixed(1)}R</td>
+        <td class="${pnlCls}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%</td>
+        <td class="${pnlCls}">$${(r.pnl_dollars||0).toFixed(0)}</td>
+        <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${_esc(r.reason)}">${_esc(r.reason)}</td>
+      </tr>`;
+    }).join('');
+  })
+  .catch(e => {
+    document.getElementById('exitLogBody').innerHTML =
+      `<tr><td colspan="11" class="text-danger text-center">Error: ${_esc(String(e))}</td></tr>`;
+  });
+}
+
+/* ═══════════════ Exit Engine 出場引擎 ═══════════════ */
+function loadExitEngineStatus() {
+  fetch('/api/exit-engine/status')
+  .then(r => r.json())
+  .then(d => {
+    if (!d.ok) return;
+    const cfg = d.config || {};
+    document.getElementById('exitEngEnabled').textContent = cfg.enabled ? '✅ ON' : '❌ OFF';
+    document.getElementById('exitEngEnabled').style.color = cfg.enabled ? '#3fb950' : '#f85149';
+    document.getElementById('exitEngMode').textContent = cfg.dry_run ? '🔒 DRY-RUN' : '🔴 LIVE';
+    document.getElementById('exitEngMode').style.color = cfg.dry_run ? '#d29922' : '#f85149';
+    document.getElementById('exitEngInterval').textContent = (cfg.check_interval_sec||60) + 's';
+    document.getElementById('exitEngTimeStop').textContent = (cfg.time_stop_days||5) + 'd';
+    document.getElementById('exitEngExitsToday').textContent = d.total_exits_today || 0;
+
+    if (d.last_check_at) {
+      const dt = new Date(d.last_check_at);
+      document.getElementById('exitEngLastCheck').textContent = dt.toLocaleTimeString('en-US',{hour12:false});
+    }
+
+    const badge = document.getElementById('exitEngStatus');
+    if (cfg.enabled) {
+      badge.textContent = cfg.dry_run ? 'DRY-RUN' : 'LIVE';
+      badge.style.background = cfg.dry_run ? '#d29922' : '#da3633';
+    } else {
+      badge.textContent = 'OFF';
+      badge.style.background = '#30363d';
+    }
+
+    _renderExitResults(d.results || []);
+  }).catch(() => {});
+}
+
+function triggerExitCheck() {
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Checking…';
+  fetch('/api/exit-engine/check-now', {method:'POST'})
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      _renderExitResults(d.results || []);
+      document.getElementById('exitEngExitsToday').textContent = d.exits_found || 0;
+    }
+  }).catch(() => {})
+  .finally(() => {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-play-circle"></i> Check Now';
+  });
+}
+
+function _renderExitResults(results) {
+  const body = document.getElementById('exitEngPositions');
+  if (!results || results.length === 0) {
+    body.innerHTML = '<tr><td colspan="9" class="text-muted text-center" style="font-size:11px">No open positions 無持倉</td></tr>';
+    return;
+  }
+  body.innerHTML = results.map(r => {
+    const gain = r.gain_pct || 0;
+    const gainCls = gain >= 0 ? 'score-high' : 'score-low';
+    const actionCls = _exitActionClass(r.action_taken || r.primary_action);
+    const sigText = (r.signals || []).slice(0,2).map(s =>
+      _esc(s.msg_zh || s.msg_en || s.type || '')).join('; ');
+    return `<tr>
+      <td><strong>${_esc(r.ticker)}</strong></td>
+      <td><span class="badge" style="background:${_poolColor(r.pool)};font-size:10px">${_esc(r.pool)}</span></td>
+      <td>${r.phase || '—'}</td>
+      <td>$${(r.close||0).toFixed(2)}</td>
+      <td class="${gainCls}">${gain >= 0 ? '+' : ''}${gain.toFixed(1)}%</td>
+      <td>${(r.r_multiple||0).toFixed(1)}R</td>
+      <td>$${(r.recommended_stop||0).toFixed(2)}</td>
+      <td><span class="badge ${actionCls}" style="font-size:10px">${_esc(r.action_taken || r.primary_action)}</span></td>
+      <td style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${_esc(sigText)}">${sigText || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function _exitActionClass(action) {
+  if (!action) return 'bg-secondary';
+  if (action === 'HOLD') return 'bg-secondary';
+  if (action === 'DRY_RUN') return 'bg-warning text-dark';
+  if (action.includes('PARTIAL')) return 'bg-info text-dark';
+  if (action.includes('STOP') || action.includes('SELL') || action.includes('EXIT'))
+    return 'bg-danger';
+  return 'bg-secondary';
+}
+
+function _poolColor(pool) {
+  if (pool === 'ML') return '#f0883e';
+  if (pool === 'QM') return '#58a6ff';
+  return '#8b949e';
+}
+
+// Load exit engine on page init
+loadExitEngineStatus();
 </script>
 {% endblock %}

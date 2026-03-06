@@ -5,22 +5,30 @@
       "shares": 7.0,
       "qty": 7.0,
       "avg_cost": 64.51314285,
-      "market_price": 64.0,
-      "market_value": 448.0,
-      "unrealized_pnl": -3.59,
-      "unrealized_pnl_pct": -0.8013392857142856,
-      "source": "ibkr_sync"
+      "market_price": 62.9842987,
+      "market_value": 440.89,
+      "unrealized_pnl": -10.7,
+      "unrealized_pnl_pct": -2.426909206378008,
+      "source": "ibkr_sync",
+      "pool": "FREE",
+      "original_shares": 7.0,
+      "partial_sells": [],
+      "partial_sell_count": 0
     },
     "SPY": {
       "entry_price": 683.01,
       "shares": 1.0,
-      "qty": 1.0,
+      "qty": 2.0,
       "avg_cost": 683.01,
-      "market_price": 683.2704468,
-      "market_value": 683.27,
-      "unrealized_pnl": 0.26,
-      "unrealized_pnl_pct": 0.03805230728701685,
-      "source": "ibkr_sync"
+      "market_price": 677.36297605,
+      "market_value": 1354.73,
+      "unrealized_pnl": -11.46,
+      "unrealized_pnl_pct": -0.845925018269323,
+      "source": "ibkr_sync",
+      "pool": "FREE",
+      "original_shares": 1.0,
+      "partial_sells": [],
+      "partial_sell_count": 0
     }
   },
   "closed": [

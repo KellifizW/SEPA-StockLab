@@ -55,6 +55,17 @@
         {{ nav_sync_time }}
       </div>
       {% endif %}
+
+      <div class="d-flex align-items-center justify-content-center gap-2 mt-2" style="min-height:78px;">
+        <div style="width:64px; height:64px; position:relative;">
+          <canvas id="accountAssetDonut" width="64" height="64" aria-label="資產分佈 Asset Mix" role="img"></canvas>
+        </div>
+        <div class="text-start" style="font-size:10px; line-height:1.35; min-width:84px;">
+          <div id="assetCashLine" style="color:#3fb950;">現金 Cash: --</div>
+          <div id="assetStockLine" style="color:#58a6ff;">股票 Stocks: --</div>
+          <div id="assetOtherLine" style="color:#d29922;">其他 Other: --</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -185,10 +196,101 @@
 
 {% block extra_js %}
 <script>
+let _accountAssetChart = null;
+
 window.addEventListener('DOMContentLoaded', () => {
   // Load Telegram bot status
   updateTelegramStatus();
+  initAccountAssetDonut();
 });
+
+function _fmtPct(v) {
+  return `${(Number(v) || 0).toFixed(1)}%`;
+}
+
+function _setAssetLines(cashPct, stockPct, otherPct) {
+  const cashEl = document.getElementById('assetCashLine');
+  const stockEl = document.getElementById('assetStockLine');
+  const otherEl = document.getElementById('assetOtherLine');
+  if (cashEl) cashEl.textContent = `可買 Cash Ready: ${_fmtPct(cashPct)}`;
+  if (stockEl) stockEl.textContent = `持股 Stock Used: ${_fmtPct(stockPct)}`;
+  if (otherEl) otherEl.textContent = `其他 Other: ${_fmtPct(otherPct)}`;
+}
+
+function _renderAccountAssetDonut(cashAmt, stockAmt, otherAmt) {
+  const canvas = document.getElementById('accountAssetDonut');
+  if (!canvas || typeof Chart === 'undefined') return;
+
+  const safeCash = Math.max(0, Number(cashAmt) || 0);
+  const safeStock = Math.max(0, Number(stockAmt) || 0);
+  const safeOther = Math.max(0, Number(otherAmt) || 0);
+  const total = safeCash + safeStock + safeOther;
+
+  const data = total > 0
+    ? [safeCash, safeStock, safeOther]
+    : [1, 0, 0];
+
+  const cashPct = total > 0 ? (safeCash / total) * 100 : 100;
+  const stockPct = total > 0 ? (safeStock / total) * 100 : 0;
+  const otherPct = total > 0 ? (safeOther / total) * 100 : 0;
+  _setAssetLines(cashPct, stockPct, otherPct);
+
+  if (_accountAssetChart) {
+    _accountAssetChart.destroy();
+  }
+
+  _accountAssetChart = new Chart(canvas, {
+    type: 'doughnut',
+    data: {
+      labels: ['Cash', 'Stocks', 'Other'],
+      datasets: [{
+        data,
+        backgroundColor: ['#3fb950', '#58a6ff', '#d29922'],
+        borderColor: '#161b22',
+        borderWidth: 1,
+        hoverOffset: 1,
+      }],
+    },
+    options: {
+      responsive: false,
+      cutout: '62%',
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+      },
+      animation: { duration: 320 },
+    },
+  });
+}
+
+async function initAccountAssetDonut() {
+  const fallbackNav = Number({{ account_size|float }}) || 0;
+  _renderAccountAssetDonut(fallbackNav, 0, 0);
+
+  try {
+    const r = await fetch('/api/account/detail').then(x => x.json());
+    if (!r.ok || !r.data) return;
+
+    const d = r.data;
+    const nav = Math.max(0, Number(d.nav) || fallbackNav);
+    let cash = Math.max(0, Number(d.settled_cash ?? d.total_cash_value ?? d.total_cash) || 0);
+    let stock = Math.max(0, Number(d.gross_position_value ?? d.stock_value) || 0);
+
+    if (cash === 0 && stock === 0 && nav > 0) {
+      cash = nav;
+    }
+
+    let other = nav - cash - stock;
+    if (other < 0 && Math.abs(other) < 1.0) {
+      other = 0;
+    }
+    other = Math.max(0, other);
+
+    _renderAccountAssetDonut(cash, stock, other);
+  } catch (e) {
+    console.debug('Account asset mix unavailable:', e);
+  }
+}
 
 async function generateReport() {
   toast('Generating report…');

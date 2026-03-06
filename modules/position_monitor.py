@@ -55,6 +55,12 @@ def _load() -> dict:
     if POSITIONS_FILE.exists():
         try:
             data = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+            # ── backward compat: fill pool fields for legacy positions ──
+            for _tk, pos in data.get("positions", {}).items():
+                pos.setdefault("pool", "FREE")
+                pos.setdefault("original_shares", pos.get("shares", 0))
+                pos.setdefault("partial_sells", [])
+                pos.setdefault("partial_sell_count", 0)
             elapsed = time.time() - start
             logger.debug(f"[position_monitor] Loaded from JSON in {elapsed*1000:.1f}ms")
             return data
@@ -109,14 +115,19 @@ def _bg_db_save(data: dict):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def add_position(ticker: str, buy_price: float, shares: int,
-                 stop_loss: float, target: Optional[float] = None, note: str = ""):
+                 stop_loss: float, target: Optional[float] = None,
+                 note: str = "", pool: str = "FREE"):
     """
     Record a new position.
     stop_loss: absolute price (not percentage).
     target:    target price (optional, auto-calculated if None).
+    pool:      allocation pool — 'ML', 'QM', or 'FREE'.
     """
     import time
     ticker = ticker.upper().strip()
+    pool = pool.upper().strip() if pool else "FREE"
+    if pool not in ("ML", "QM", "FREE"):
+        pool = "FREE"
     start = time.time()
     
     # Fast JSON-only load (no DuckDB)
@@ -137,30 +148,42 @@ def add_position(ticker: str, buy_price: float, shares: int,
     pnl_pct   = 0.0
 
     data["positions"][ticker] = {
-        "buy_price":   round(buy_price, 2),
-        "shares":      shares,
-        "stop_loss":   round(stop_loss, 2),
-        "stop_pct":    round(stop_pct, 2),
-        "target":      round(target, 2),
-        "rr":          round(rr, 2),
-        "risk_dollar": round(risk_dol, 2),
-        "buy_date":    date.today().isoformat(),
-        "days_held":   0,
-        "max_price":   buy_price,    # track high water mark for trailing stop
-        "note":        note,
+        "buy_price":      round(buy_price, 2),
+        "shares":         shares,
+        "stop_loss":      round(stop_loss, 2),
+        "stop_pct":       round(stop_pct, 2),
+        "target":         round(target, 2),
+        "rr":             round(rr, 2),
+        "risk_dollar":    round(risk_dol, 2),
+        "buy_date":       date.today().isoformat(),
+        "days_held":      0,
+        "max_price":      buy_price,    # track high water mark for trailing stop
+        "note":           note,
+        "pool":           pool,
+        "original_shares": shares,
+        "partial_sells":  [],
+        "partial_sell_count": 0,
     }
     _save(data)
     
     elapsed = time.time() - start
-    logger.info(f"[add_position] {ticker} completed in {elapsed*1000:.1f}ms")
+    logger.info("[add_position] %s pool=%s shares=%d @ $%.2f in %.1fms",
+                ticker, pool, shares, buy_price, elapsed * 1000)
     
-    print(f"  ✓ {ticker}: {shares} shares @ ${buy_price:.2f}  "
+    print(f"  ✓ {ticker} [{pool}]: {shares} shares @ ${buy_price:.2f}  "
           f"Stop: ${stop_loss:.2f} (-{stop_pct:.1f}%)  "
           f"Target: ${target:.2f}  R:R {rr:.1f}:1")
 
 
-def close_position(ticker: str, exit_price: float, reason: str = ""):
-    """Record a position exit."""
+def close_position(ticker: str, exit_price: float, reason: str = "",
+                   shares_to_close: Optional[int] = None):
+    """
+    Record a position exit (full or partial).
+
+    Args:
+        shares_to_close: If None → close entire position.
+                         If int  → partial close (reduce shares).
+    """
     ticker = ticker.upper().strip()
     data   = _load()
 
@@ -168,26 +191,66 @@ def close_position(ticker: str, exit_price: float, reason: str = ""):
         print(f"  {ticker} not in open positions")
         return
 
-    pos      = data["positions"].pop(ticker)
-    buy_date = pos.get("buy_date", "")
+    pos       = data["positions"][ticker]
     buy_price = pos["buy_price"]
-    shares   = pos["shares"]
+    total_shares = pos["shares"]
+    pool      = pos.get("pool", "FREE")
+
+    # Determine how many shares to close
+    if shares_to_close is None or shares_to_close >= total_shares:
+        # Full close
+        shares_closed = total_shares
+        is_full_close = True
+    else:
+        shares_closed = max(1, shares_to_close)
+        is_full_close = False
+
     pnl_pct  = (exit_price - buy_price) / buy_price * 100
-    pnl_dol  = (exit_price - buy_price) * shares
+    pnl_dol  = (exit_price - buy_price) * shares_closed
 
     closed_entry = {
         **pos,
+        "shares":     shares_closed,
         "exit_price": round(exit_price, 2),
         "exit_date":  date.today().isoformat(),
         "pnl_pct":    round(pnl_pct, 2),
         "pnl_dollar": round(pnl_dol, 2),
         "reason":     reason,
+        "pool":       pool,
     }
     data["closed"].append(closed_entry)
+
+    if is_full_close:
+        data["positions"].pop(ticker)
+        logger.info("[close_position] %s [%s] FULL CLOSE %d shares @ $%.2f  "
+                    "P&L: %.1f%% ($%.0f)  reason=%s",
+                    ticker, pool, shares_closed, exit_price,
+                    pnl_pct, pnl_dol, reason)
+    else:
+        # Partial close — reduce shares, record the partial sell
+        remaining = total_shares - shares_closed
+        data["positions"][ticker]["shares"] = remaining
+        partial_entry = {
+            "date":   date.today().isoformat(),
+            "shares": shares_closed,
+            "price":  round(exit_price, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "reason": reason,
+        }
+        data["positions"][ticker].setdefault("partial_sells", []).append(partial_entry)
+        data["positions"][ticker]["partial_sell_count"] = len(
+            data["positions"][ticker]["partial_sells"]
+        )
+        logger.info("[close_position] %s [%s] PARTIAL %d/%d shares @ $%.2f  "
+                    "P&L: %.1f%% ($%.0f)  remaining=%d  reason=%s",
+                    ticker, pool, shares_closed, total_shares, exit_price,
+                    pnl_pct, pnl_dol, remaining, reason)
+
     _save(data)
 
     colour = _GREEN if pnl_pct >= 0 else _RED
-    print(f"  ✓ {ticker} CLOSED @ ${exit_price:.2f}  "
+    close_label = "CLOSED" if is_full_close else f"PARTIAL -{shares_closed}"
+    print(f"  ✓ {ticker} [{pool}] {close_label} @ ${exit_price:.2f}  "
           f"P&L: {colour}{pnl_pct:+.1f}% (${pnl_dol:+,.0f}){_RESET}")
 
 
@@ -518,3 +581,15 @@ def list_positions():
               f"{pos['buy_date']:<12}  "
               f"{pos.get('note', '')[:20]}")
     print(f"{'═'*65}\n")
+
+
+def get_positions_by_pool() -> dict:
+    """Return open positions grouped by pool: {'ML': {...}, 'QM': {...}, 'FREE': {...}}."""
+    data = _load()
+    grouped = {"ML": {}, "QM": {}, "FREE": {}}
+    for ticker, pos in data.get("positions", {}).items():
+        pool = pos.get("pool", "FREE")
+        if pool not in grouped:
+            pool = "FREE"
+        grouped[pool][ticker] = pos
+    return grouped

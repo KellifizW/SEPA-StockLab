@@ -473,7 +473,7 @@ def _score_dim_f(df: pd.DataFrame, rs_rank: Optional[float] = None) -> dict:
 # Dimension G — Market Environment
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _score_dim_g() -> dict:
+def _score_dim_g(market_regime: Optional[str] = None) -> dict:
     """
     G: Market Environment scoring.
     Martin reduces activity in corrections, blocks in downtrend.
@@ -490,28 +490,32 @@ def _score_dim_g() -> dict:
     veto = False
     regime = "UNKNOWN"
 
-    # ── Attempt 1: live market assessment ────────────────────────────────
-    try:
-        from modules.market_env import assess as mkt_assess
-        mkt = mkt_assess(verbose=False)
-        regime = mkt.get("regime", "UNKNOWN") if isinstance(mkt, dict) else "UNKNOWN"
-        detail["source"] = "live"
-    except Exception as exc:
-        logger.debug("[ML DimG] live assess() failed: %s — trying DB cache", exc)
-        # ── Attempt 2: DuckDB cached regime ──────────────────────────────
+    if market_regime:
+        regime = market_regime
+        detail["source"] = "injected"
+    else:
+        # ── Attempt 1: live market assessment ────────────────────────────
         try:
-            from modules.db import query_market_env_history
-            _mkt_df = query_market_env_history(days=7)
-            if _mkt_df is not None and not _mkt_df.empty:
-                regime = str(_mkt_df.iloc[0].get("regime", "UNKNOWN"))
-                detail["source"] = "cached"
-                logger.info("[ML DimG] Using cached regime from DB: %s", regime)
-            else:
+            from modules.market_env import assess as mkt_assess
+            mkt = mkt_assess(verbose=False)
+            regime = mkt.get("regime", "UNKNOWN") if isinstance(mkt, dict) else "UNKNOWN"
+            detail["source"] = "live"
+        except Exception as exc:
+            logger.debug("[ML DimG] live assess() failed: %s — trying DB cache", exc)
+            # ── Attempt 2: DuckDB cached regime ──────────────────────────
+            try:
+                from modules.db import query_market_env_history
+                _mkt_df = query_market_env_history(days=7)
+                if _mkt_df is not None and not _mkt_df.empty:
+                    regime = str(_mkt_df.iloc[0].get("regime", "UNKNOWN"))
+                    detail["source"] = "cached"
+                    logger.info("[ML DimG] Using cached regime from DB: %s", regime)
+                else:
+                    detail["source"] = "unavailable"
+                    logger.warning("[ML DimG] No cached market_env in DB either")
+            except Exception as exc2:
+                logger.debug("[ML DimG] DB cache also failed: %s", exc2)
                 detail["source"] = "unavailable"
-                logger.warning("[ML DimG] No cached market_env in DB either")
-        except Exception as exc2:
-            logger.debug("[ML DimG] DB cache also failed: %s", exc2)
-            detail["source"] = "unavailable"
 
     detail["regime"] = regime
 
@@ -894,7 +898,8 @@ def _build_trade_plan(stars: float, row: dict) -> dict:
 def analyze_ml(ticker: str,
                df: pd.DataFrame = None,
                rs_rank: Optional[float] = None,
-               print_report: bool = True) -> dict:
+               print_report: bool = True,
+               market_regime: Optional[str] = None) -> dict:
     """
     Full Martin Luk 7-dimension analysis for a single stock.
 
@@ -940,7 +945,7 @@ def analyze_ml(ticker: str,
     dim_d = _score_dim_d(df)
     dim_e = _score_dim_e(df)
     dim_f = _score_dim_f(df, rs_rank=rs_rank)
-    dim_g = _score_dim_g()
+    dim_g = _score_dim_g(market_regime=market_regime)
 
     dim_scores = {
         "A": dim_a, "B": dim_b, "C": dim_c, "D": dim_d,

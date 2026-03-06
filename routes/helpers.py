@@ -272,7 +272,7 @@ def _get_account_size() -> tuple:
                 nav = float(status["nav"])
                 buying_power = float(status.get("buying_power", 0))
                 account = status.get("account", "")
-                currency = C.ACCOUNT_BASE_CURRENCY
+                currency = (status.get("account_currency") or C.ACCOUNT_BASE_CURRENCY)
                 _save_nav_cache(nav, buying_power, account, currency)
                 return nav, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "LIVE"
         except Exception as e:
