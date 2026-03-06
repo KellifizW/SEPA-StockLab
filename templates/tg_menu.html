@@ -223,7 +223,7 @@
             z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.3s;
         }
         .loading-overlay.active { opacity: 1; pointer-events: all; }
-        .loading-text { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+        .loading-text { font-size: 13px; color: var(--text-dim); margin-top: 8px; text-align: center; white-space: pre-wrap; }
 
         /* ── Bottom nav ── */
         .bottom-nav {
@@ -257,7 +257,7 @@
 <body>
 
     <div class="loading-overlay" id="loadingOverlay">
-        <dotlottie-player src="/assets/scanning.lottie" autoplay loop style="width:110px;height:110px;"></dotlottie-player>
+        <dotlottie-player src="/assets/loading.lottie" autoplay loop style="width:110px;height:110px;"></dotlottie-player>
         <div class="loading-text" id="loadingText">掃描啟動中...</div>
     </div>
 
@@ -431,7 +431,17 @@
                 document.getElementById('tickerInput').focus();
                 return;
             }
-            window.location.href = `/tg/analyze/${ticker}?strategy=${strategy.toUpperCase()}`;
+            
+            // Show loading overlay with lottie animation
+            const overlay = document.getElementById('loadingOverlay');
+            const loadText = document.getElementById('loadingText');
+            overlay.classList.add('active');
+            loadText.textContent = `${strategy.toUpperCase()} 分析中...\n需要 30-60 秒`;
+            
+            // Navigate after a brief delay to ensure animation starts
+            setTimeout(() => {
+                window.location.href = `/tg/analyze/${ticker}?strategy=${strategy.toUpperCase()}`;
+            }, 300);
         }
 
         // Helper: trigger scan (shows loading, polls status, notifies on complete)
