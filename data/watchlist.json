@@ -27,6 +27,20 @@
       "price": 99.7,
       "sector": "Technology",
       "note": ""
+    },
+    "KPTI": {
+      "added_date": "2026-03-06",
+      "last_updated": "2026-03-06",
+      "rs_rank": null,
+      "tt_score": 9,
+      "tt_passes": true,
+      "vcp_grade": "D",
+      "vcp_score": 27,
+      "t_count": 4,
+      "pivot": 10.38,
+      "price": 8.82,
+      "sector": "Healthcare",
+      "note": "Qm"
     }
   },
   "B": {},
