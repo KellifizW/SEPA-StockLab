@@ -257,8 +257,8 @@
 <body>
 
     <div class="loading-overlay" id="loadingOverlay">
-        <dotlottie-player src="/assets/loading.lottie" autoplay loop style="width:88px;height:88px;"></dotlottie-player>
-        <div class="loading-text" id="loadingText">分析中...</div>
+        <dotlottie-player src="/assets/scanning.lottie" autoplay loop style="width:110px;height:110px;"></dotlottie-player>
+        <div class="loading-text" id="loadingText">掃描啟動中...</div>
     </div>
 
     <!-- Header -->
@@ -360,8 +360,8 @@
             </div>
         </div>
 
-        <!-- SEPA scan highlights -->
-        <div class="section-label">🚀 上次掃描摘要</div>
+        <!-- Combined scan highlights -->
+        <div class="section-label">🚀 上次 Combined 掃描摘要</div>
         <div class="data-card">
             <div class="card-header">
                 <span class="card-header-title">📡 SEPA Top 5</span>
@@ -389,39 +389,24 @@
             </div>
         </div>
 
+        <!-- ML scan highlights -->
+        <div class="data-card">
+            <div class="card-header">
+                <span class="card-header-title">🟢 ML Top 5</span>
+                <span class="card-header-link" onclick="navScan('ML')">搜尋分析 →</span>
+            </div>
+            <div id="mlBody">
+                <div class="empty-state">
+                    <div class="skeleton" style="height:12px;width:60%;margin:8px auto 6px;"></div>
+                    <div class="skeleton" style="height:12px;width:40%;margin:0 auto 8px;"></div>
+                </div>
+            </div>
+        </div>
+
     </div>
 
-    <!-- Bottom nav — TMA only, no web UI links -->
-    <nav class="bottom-nav">
-        <a class="nav-item active" onclick="go('/tg/menu')">
-            <span class="nav-icon">🏠</span>
-            <span class="nav-label">主頁</span>
-        </a>
-        <a class="nav-item" onclick="navScan('Combined')">
-            <span class="nav-icon">⚡</span>
-            <span class="nav-label">組合</span>
-        </a>
-        <a class="nav-item" onclick="navScan('SEPA')">
-            <span class="nav-icon">📡</span>
-            <span class="nav-label">SEPA</span>
-        </a>
-        <a class="nav-item" onclick="navScan('QM')">
-            <span class="nav-icon">🟡</span>
-            <span class="nav-label">QM</span>
-        </a>
-        <a class="nav-item" onclick="navScan('ML')">
-            <span class="nav-icon">🟢</span>
-            <span class="nav-label">ML</span>
-        </a>
-        <a class="nav-item" onclick="go('/tg/menu/account')">
-            <span class="nav-icon">👤</span>
-            <span class="nav-label">帳戶</span>
-        </a>
-        <a class="nav-item trade" onclick="go('/tg/trade')">
-            <span class="nav-icon">💹</span>
-            <span class="nav-label">交易</span>
-        </a>
-    </nav>
+    {% set tg_active_page = 'home' %}
+    {% include "_tg_bottom_nav.html" %}
 
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
@@ -620,6 +605,8 @@
                 const r = await fetch('/api/combined/scan/last').then(x => x.json());
                 const sepaRows = (r.sepa_rows || []).slice(0, 5);
                 const qmRows   = (r.qm_rows   || []).slice(0, 5);
+                const mlData   = await fetch('/api/ml/scan/last').then(x => x.json());
+                const mlRows   = (mlData.rows || []).slice(0, 5);
 
                 const sepaBody = document.getElementById('sepaBody');
                 if (sepaRows.length) {
@@ -663,9 +650,32 @@
                     qmBody.innerHTML = `<div class="empty-state"><div class="empty-icon">⚡</div>暫無 QM 掃描結果</div>`;
                 }
 
+                const mlBody = document.getElementById('mlBody');
+                if (mlRows.length) {
+                    mlBody.innerHTML = mlRows.map((m, i) => {
+                        const star = parseFloat(m.ml_star ?? m.stars ?? m.capped_stars ?? 0);
+                        const sCls = star >= 5 ? 'score-high' : star >= 4 ? 'score-mid' : 'score-low';
+                        const stars = '★'.repeat(Math.max(0, Math.floor(star)));
+                        const adr = m.adr != null ? `ADR ${parseFloat(m.adr).toFixed(1)}%` : '';
+                        const setup = m.setup_type || m.primary_setup || '';
+                        const sub = [adr, setup].filter(Boolean).join(' · ');
+                        return `<a class="data-row" onclick="go('/tg/analyze/${m.ticker}?strategy=ML')">
+                            <div class="row-rank">${i + 1}</div>
+                            <div style="margin-left:8px">
+                                <div class="row-ticker" style="color:var(--green)">${m.ticker}</div>
+                                ${sub ? `<div class="row-sub">${sub}</div>` : ''}
+                            </div>
+                            <div class="row-right"><div class="row-score ${sCls}">${stars} ${star.toFixed(1)}</div></div>
+                        </a>`;
+                    }).join('');
+                } else {
+                    mlBody.innerHTML = `<div class="empty-state"><div class="empty-icon">🟢</div>暫無 ML 掃描結果</div>`;
+                }
+
             } catch(e) {
                 document.getElementById('sepaBody').innerHTML = `<div class="empty-state">無法載入掃描結果</div>`;
                 document.getElementById('qmBody').innerHTML  = `<div class="empty-state">無法載入掃描結果</div>`;
+                document.getElementById('mlBody').innerHTML  = `<div class="empty-state">無法載入掃描結果</div>`;
             }
         }
 

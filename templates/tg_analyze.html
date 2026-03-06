@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>股票分析 - SEPA StockLab</title>
+    <script src="https://unpkg.com/@dotlottie/player-component@latest/dist/dotlottie-player.js" type="module"></script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -261,8 +262,8 @@
 </head>
 <body>
     <div id="loadingOverlay">
-        <dotlottie-player src="/assets/loading.lottie" autoplay loop style="width:88px;height:88px;"></dotlottie-player>
-        <div id="loadingText">分析中...</div>
+        <dotlottie-player src="/assets/scanning.lottie" autoplay loop style="width:110px;height:110px;"></dotlottie-player>
+        <div id="loadingText">掃描啟動中...</div>
     </div>
 
     <div class="header">
@@ -685,66 +686,6 @@
             });
         }
         
-        async function navScan(name) {
-            const overlay = document.getElementById('loadingOverlay');
-            const loadText = document.getElementById('loadingText');
-            
-            const apiMap = {
-                'Combined': '/api/combined/scan/run',
-                'SEPA': '/api/scan/run',
-                'QM': '/api/qm/scan/run',
-                'ML': '/api/ml/scan/run'
-            };
-            const apiUrl = apiMap[name];
-            if (!apiUrl) return;
-            
-            overlay.classList.add('active');
-            loadText.textContent = `${name} 掃描中...`;
-            
-            try {
-                const response = await fetch(apiUrl, {method: 'POST'});
-                const r = await response.json();
-                
-                if (!response.ok || !r.job_id) {
-                    loadText.textContent = `掃描失敗: ${r.error || r.message || '未知錯誤'}`;
-                    setTimeout(() => overlay.classList.remove('active'), 2000);
-                    return;
-                }
-                
-                const jobId = r.job_id;
-                const statusUrl = apiUrl.replace('/run', `/status/${jobId}`);
-                let done = false;
-                
-                while (!done) {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    try {
-                        const statusResponse = await fetch(statusUrl);
-                        const s = await statusResponse.json();
-                        
-                        if (s.status === 'completed' || s.stage === 'idle') {
-                            done = true;
-                            loadText.textContent = `${name} 掃描已完成！`;
-                            setTimeout(() => overlay.classList.remove('active'), 1500);
-                        } else if (s.status === 'error') {
-                            loadText.textContent = `掃描錯誤: ${s.error || 'Unknown'}`;
-                            setTimeout(() => overlay.classList.remove('active'), 2000);
-                            done = true;
-                        } else {
-                            const pct = Math.round((s.pct || 0) * 100) / 100;
-                            loadText.textContent = `${name} 掃描中... ${pct}%`;
-                        }
-                    } catch(e) {
-                        loadText.textContent = `狀態查詢失敗: ${e.message}`;
-                        setTimeout(() => overlay.classList.remove('active'), 2000);
-                        done = true;
-                    }
-                }
-            } catch(e) {
-                loadText.textContent = `掃描啟動失敗: ${e.message}`;
-                setTimeout(() => overlay.classList.remove('active'), 2000);
-            }
-        }
-        
         function showError(msg) {
             document.getElementById('result').style.display = 'block';
             const errorBox = document.getElementById('errorBox');
@@ -761,36 +702,8 @@
     </script>
     
     <!-- Bottom nav -->
-    <nav class="bottom-nav">
-        <a class="nav-item" onclick="window.location.href='/tg/menu'">
-            <span class="nav-icon">🏠</span>
-            <span class="nav-label">主頁</span>
-        </a>
-        <a class="nav-item" onclick="navScan('Combined')">
-            <span class="nav-icon">⚡</span>
-            <span class="nav-label">組合</span>
-        </a>
-        <a class="nav-item" onclick="navScan('SEPA')">
-            <span class="nav-icon">📡</span>
-            <span class="nav-label">SEPA</span>
-        </a>
-        <a class="nav-item" onclick="navScan('QM')">
-            <span class="nav-icon">🟡</span>
-            <span class="nav-label">QM</span>
-        </a>
-        <a class="nav-item" onclick="navScan('ML')">
-            <span class="nav-icon">🟢</span>
-            <span class="nav-label">ML</span>
-        </a>
-        <a class="nav-item" onclick="window.location.href='/tg/menu/account'">
-            <span class="nav-icon">👤</span>
-            <span class="nav-label">帳戶</span>
-        </a>
-        <a class="nav-item" onclick="window.location.href='/tg/trade'" style="color:#d4a574;">
-            <span class="nav-icon">💹</span>
-            <span class="nav-label">交易</span>
-        </a>
-    </nav>
+    {% set tg_active_page = '' %}
+    {% include "_tg_bottom_nav.html" %}
     
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </body>

@@ -221,7 +221,7 @@
     <div class="toast" id="toast"></div>
 
     <div class="header">
-        <a class="back-btn" onclick="go('/tg/menu')"></a>
+        <a class="back-btn" onclick="go('/tg/menu')">&larr;</a>
         <div>
             <div class="header-title">新增交易</div>
             <div class="header-subtitle" id="headerLockedTicker">請輸入股票代碼進行快速分析</div>
@@ -381,36 +381,8 @@
 
     </div>
 
-    <nav class="bottom-nav">
-        <a class="nav-item" onclick="go('/tg/menu')">
-            <span class="nav-icon"></span>
-            <span class="nav-label">主頁</span>
-        </a>
-        <a class="nav-item" onclick="navScan('Combined')">
-            <span class="nav-icon"></span>
-            <span class="nav-label">組合</span>
-        </a>
-        <a class="nav-item" onclick="navScan('SEPA')">
-            <span class="nav-icon">S</span>
-            <span class="nav-label">SEPA</span>
-        </a>
-        <a class="nav-item" onclick="navScan('QM')">
-            <span class="nav-icon">Q</span>
-            <span class="nav-label">QM</span>
-        </a>
-        <a class="nav-item" onclick="navScan('ML')">
-            <span class="nav-icon">M</span>
-            <span class="nav-label">ML</span>
-        </a>
-        <a class="nav-item" onclick="go('/tg/menu/account')">
-            <span class="nav-icon"></span>
-            <span class="nav-label">帳戶</span>
-        </a>
-        <a class="nav-item trade active">
-            <span class="nav-icon"></span>
-            <span class="nav-label">交易</span>
-        </a>
-    </nav>
+    {% set tg_active_page = 'trade' %}
+    {% include "_tg_bottom_nav.html" %}
 
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
@@ -431,29 +403,6 @@
         });
 
         function go(url) { window.location.href = url; }
-        
-        async function navScan(name) {
-            const apiMap = {
-                'Combined': '/api/combined/scan/run',
-                'SEPA': '/api/scan/run',
-                'QM': '/api/qm/scan/run',
-                'ML': '/api/ml/scan/run'
-            };
-            const apiUrl = apiMap[name];
-            if (!apiUrl) return;
-            
-            showToast(`${name} 掃描啟動中...`, 'success');
-            try {
-                const r = await fetch(apiUrl, {method: 'POST'}).then(r => r.json());
-                if (!r.ok) {
-                    showToast(`掃描失敗: ${r.error || '未知錯誤'}`, 'error');
-                    return;
-                }
-                showToast(`${name} 掃描已啟動，背景執行中...`, 'success');
-            } catch(e) {
-                showToast(`掃描啟動失敗: ${e.message}`, 'error');
-            }
-        }
 
         async function fetchQuote() {
             const ticker = document.getElementById('tickerInput').value.toUpperCase().trim();

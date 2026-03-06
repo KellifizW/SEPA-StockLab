@@ -1,0 +1,176 @@
+<style>
+    .tg-scan-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(10, 14, 26, 0.88);
+        backdrop-filter: blur(8px);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+    }
+
+    .tg-scan-overlay.active {
+        opacity: 1;
+        pointer-events: all;
+    }
+
+    .tg-scan-overlay-text {
+        font-size: 13px;
+        color: var(--text, #e8eaf6);
+        margin-top: 4px;
+    }
+
+    .bottom-nav {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(10, 14, 26, 0.95);
+        backdrop-filter: blur(20px);
+        border-top: 1px solid var(--border, #30363d);
+        display: flex;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 6px 4px 14px;
+        z-index: 50;
+        scrollbar-width: none;
+    }
+
+    .bottom-nav::-webkit-scrollbar {
+        display: none;
+    }
+
+    .nav-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        cursor: pointer;
+        padding: 4px 10px;
+        border-radius: 8px;
+        transition: all 0.2s;
+        text-decoration: none;
+        color: var(--text-dim, #8b949e);
+        -webkit-tap-highlight-color: transparent;
+        flex-shrink: 0;
+        min-width: 52px;
+    }
+
+    .nav-item:active {
+        transform: scale(0.88);
+    }
+
+    .nav-item:hover,
+    .nav-item.active {
+        color: var(--accent, #58a6ff);
+    }
+
+    .nav-icon {
+        font-size: 18px;
+        line-height: 1;
+    }
+
+    .nav-label {
+        font-size: 9px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .nav-item.trade {
+        color: var(--gold, #ffd54f);
+    }
+
+    .nav-item.trade:hover,
+    .nav-item.trade:active,
+    .nav-item.trade.active {
+        color: #ffe082;
+    }
+</style>
+
+<div class="tg-scan-overlay" id="tgScanOverlay">
+    <dotlottie-player src="/assets/scanning.lottie" autoplay loop style="width:110px;height:110px;"></dotlottie-player>
+    <div class="tg-scan-overlay-text" id="tgScanOverlayText">掃描啟動中...</div>
+</div>
+
+<nav class="bottom-nav">
+    <a class="nav-item {% if tg_active_page == 'home' %}active{% endif %}" onclick="go('/tg/menu')">
+        <span class="nav-icon">🏠</span>
+        <span class="nav-label">主頁</span>
+    </a>
+    <a class="nav-item" onclick="startCombinedScan()">
+        <span class="nav-icon">⚡</span>
+        <span class="nav-label">組合</span>
+    </a>
+    <a class="nav-item {% if tg_active_page == 'account' %}active{% endif %}" onclick="go('/tg/menu/account')">
+        <span class="nav-icon">👤</span>
+        <span class="nav-label">帳戶</span>
+    </a>
+    <a class="nav-item trade {% if tg_active_page == 'trade' %}active{% endif %}" onclick="go('/tg/trade')">
+        <span class="nav-icon">💹</span>
+        <span class="nav-label">交易</span>
+    </a>
+</nav>
+
+<script>
+    function go(url) {
+        window.location.href = url;
+    }
+
+    async function startCombinedScan() {
+        const overlay = document.getElementById('tgScanOverlay');
+        const txt = document.getElementById('tgScanOverlayText');
+        if (!overlay || !txt) return;
+
+        overlay.classList.add('active');
+        txt.textContent = '正在驗證 Telegram 身分...';
+
+        const tgApp = window.Telegram?.WebApp;
+        const initData = tgApp?.initData || '';
+        const chatId = tgApp?.initDataUnsafe?.user?.id || null;
+
+        if (!initData || !chatId) {
+            txt.textContent = '請從 Telegram 內開啟 Mini App 才可啟動組合掃描';
+            setTimeout(() => overlay.classList.remove('active'), 2200);
+            return;
+        }
+
+        txt.textContent = '已啟動 Combined 掃描...';
+        try {
+            const res = await fetch('/api/combined/scan/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    tg_webapp: true,
+                    init_data: initData,
+                    chat_id: String(chatId),
+                    source: 'tg-mini-app'
+                })
+            });
+            const r = await res.json();
+
+            if (!res.ok || !r.ok) {
+                txt.textContent = `啟動失敗: ${r.error || '未知錯誤'}`;
+                setTimeout(() => overlay.classList.remove('active'), 2200);
+                return;
+            }
+
+            txt.textContent = '掃描進行中，完成後會由 TG Bot 通知';
+            if (tgApp?.showPopup) {
+                tgApp.showPopup({
+                    title: '已啟動掃描',
+                    message: 'Combined scan 已在背景運行，完成後會由 Telegram Bot 通知你。',
+                    buttons: [{ type: 'ok' }]
+                });
+            }
+            setTimeout(() => overlay.classList.remove('active'), 2200);
+        } catch (e) {
+            txt.textContent = '無法啟動掃描，請稍後重試';
+            setTimeout(() => overlay.classList.remove('active'), 2200);
+        }
+    }
+</script>

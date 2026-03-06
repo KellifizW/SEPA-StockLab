@@ -1018,6 +1018,42 @@ def api_combined_scan_run():
     min_star      = float(data["min_star"]) if "min_star" in data else None
     top_n         = int(data["top_n"]) if "top_n" in data else None
     strict_rs     = bool(data.get("strict_rs", False))
+    tg_webapp     = bool(data.get("tg_webapp", False))
+    tg_chat_id    = None
+
+    # TG Mini App trigger: require Telegram identity verification so we can notify exact chat_id.
+    if tg_webapp:
+        init_data = str(data.get("init_data", "") or "").strip()
+        if not init_data:
+            return jsonify({"ok": False, "error": "Missing Telegram init_data"}), 403
+
+        verified = _verify_tg_init_data(init_data)
+        if not verified.get("ok"):
+            return jsonify({"ok": False, "error": verified.get("error", "Telegram verification failed")}), 403
+
+        tg_chat_id = str(verified.get("chat_id") or "").strip()
+        hint_chat_id = str(data.get("chat_id", "") or "").strip()
+        if hint_chat_id and hint_chat_id != tg_chat_id:
+            return jsonify({"ok": False, "error": "Telegram chat_id mismatch"}), 403
+
+        try:
+            from modules.telegram_bot import _is_approved
+            if not _is_approved(tg_chat_id):
+                return jsonify({"ok": False, "error": "chat_id is not approved"}), 403
+        except Exception as exc:
+            logging.error("[TG_COMBINED] approval check failed: %s", exc, exc_info=True)
+            return jsonify({"ok": False, "error": "Failed to verify Telegram approval"}), 500
+
+        try:
+            from modules.telegram_bot import send_message
+            send_message(
+                "🚀 <b>Combined 掃描已啟動</b>\n\n系統正在背景執行，完成後會再通知你結果摘要。",
+                chat_id=tg_chat_id,
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logging.warning("[TG_COMBINED] start notify failed for chat_id=%s: %s", tg_chat_id, exc)
+
     jid           = _new_job()
     cancel_ev     = _get_cancel(jid)
 
@@ -1174,6 +1210,23 @@ def api_combined_scan_run():
 
             log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
             _finish_job(jid, result=result, log_file=log_rel)
+
+            if tg_chat_id:
+                try:
+                    from modules.telegram_bot import send_message
+                    send_message(
+                        (
+                            "✅ <b>Combined 掃描完成</b>\n"
+                            f"SEPA: <b>{len(sepa_rows)}</b> | "
+                            f"QM: <b>{len(qm_rows)}</b> | "
+                            f"ML: <b>{len(ml_rows)}</b>\n"
+                            "可在 Mini App 主頁查看摘要結果。"
+                        ),
+                        chat_id=tg_chat_id,
+                        parse_mode="HTML",
+                    )
+                except Exception as exc:
+                    logging.warning("[TG_COMBINED] completion notify failed for chat_id=%s: %s", tg_chat_id, exc)
         except Exception as exc:
             logging.exception("[CRITICAL] Combined scan thread encountered unhandled exception:")
             logging.error("[CRITICAL] Exception type: %s", type(exc).__name__)
@@ -1184,6 +1237,17 @@ def api_combined_scan_run():
             if log_handler in logging.root.handlers:
                 logging.root.removeHandler(log_handler)
             _finish_job(jid, error=str(exc), log_file=log_rel)
+
+            if tg_chat_id:
+                try:
+                    from modules.telegram_bot import send_message
+                    send_message(
+                        f"❌ <b>Combined 掃描失敗</b>\n{str(exc)[:160]}",
+                        chat_id=tg_chat_id,
+                        parse_mode="HTML",
+                    )
+                except Exception as notify_exc:
+                    logging.warning("[TG_COMBINED] failure notify failed for chat_id=%s: %s", tg_chat_id, notify_exc)
         finally:
             logging.info(f"[COMBINED SCAN {jid}] Cleaning up handlers...")
             if jid in _scan_file_handlers:
@@ -1205,7 +1269,7 @@ def api_combined_scan_run():
 
     threading.Thread(target=_run, daemon=True).start()
     try:
-        response = jsonify({"job_id": jid})
+        response = jsonify({"ok": True, "job_id": jid})
         logging.info(f"[COMBINED SCAN {jid}] Initial response created successfully")
         return response
     except Exception as e:
@@ -2882,8 +2946,8 @@ def _verify_tg_init_data(init_data: str) -> dict:
         sorted_items = sorted(params_for_check.items())
         data_check_string = "\n".join(f"{k}={v}" for k, v in sorted_items)
         
-        # 計算簽名：HMAC-SHA256(key=SHA256(bot_token), message=data_check_string)
-        secret_key = hashlib.sha256(C.TG_BOT_TOKEN.encode()).digest()
+        # 計算簽名：HMAC-SHA256(key=HMAC_SHA256("WebAppData", bot_token), message=data_check_string)
+        secret_key = hmac.new(b"WebAppData", C.TG_BOT_TOKEN.encode(), hashlib.sha256).digest()
         hash_computed = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
         
         # 驗證簽名
