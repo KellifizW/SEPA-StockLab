@@ -1,4 +1,13 @@
 {
   "account_size": 10000.0,
-  "last_updated": "2026-03-03T17:40:34.670919"
+  "last_updated": "2026-03-06T16:11:14.583046+00:00",
+  "auto_trade_min_star_qm": 3.5,
+  "auto_trade_min_star_ml": 3.5,
+  "auto_trade_min_watch_score": 70,
+  "auto_trade_max_buys_per_day": 3,
+  "auto_trade_max_candidates_qm": 15,
+  "auto_trade_max_candidates_ml": 15,
+  "auto_trade_poll_interval_sec": 300,
+  "auto_trade_order_type": "LMT",
+  "auto_trade_attach_stop": true
 }

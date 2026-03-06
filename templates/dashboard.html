@@ -9,25 +9,34 @@
 <!-- Metric cards -->
 <div class="row g-3 mb-4">
   <div class="col-6 col-md-3">
-    <div class="metric-card">
+    <div class="metric-card h-100">
       <div class="metric-val">{{ positions|length }}</div>
       <div class="metric-lbl">Open Positions</div>
     </div>
   </div>
   <div class="col-6 col-md-3">
-    <div class="metric-card">
-      <div class="metric-val" style="color:#3fb950">{{ wl_counts.A }}</div>
-      <div class="metric-lbl">Grade-A Watchlist</div>
+    <div class="metric-card h-100">
+      <div class="metric-val" style="color:#58a6ff">{{ wl_counts.get('SEPA', 0) }}</div>
+      <div class="metric-lbl">SEPA Watchlist</div>
     </div>
   </div>
   <div class="col-6 col-md-3">
-    <div class="metric-card">
-      <div class="metric-val" style="color:#e3b341">{{ wl_counts.B }}</div>
-      <div class="metric-lbl">Grade-B Watchlist</div>
+    <div class="metric-card h-100">
+      <div class="metric-val" style="color:#e3b341">{{ wl_counts.get('QM', 0) }}</div>
+      <div class="metric-lbl">QM Watchlist</div>
     </div>
   </div>
   <div class="col-6 col-md-3">
-    <div class="metric-card" style="cursor:pointer; position:relative;" title="點擊編輯帳戶大小 Click to edit">
+    <div class="metric-card h-100">
+      <div class="metric-val" style="color:#3fb950">{{ wl_counts.get('ML', 0) }}</div>
+      <div class="metric-lbl">ML Watchlist</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-12 col-lg-4 ms-lg-auto">
+    <div class="metric-card h-100" style="cursor:pointer; position:relative;" title="點擊編輯帳戶大小 Click to edit">
       <div class="metric-val" id="accountSizeDisplay">{{ account_size_display }}</div>
       <div class="metric-lbl">
         Account Size 
@@ -38,6 +47,14 @@
           onclick="toggleCurrency(event)"
           title="Click to switch currency / 點擊切換貨幣">
           {{ currency }}
+        </button>
+        <button
+          id="ibkrSyncBtn"
+          class="btn btn-sm btn-outline-info ms-1"
+          style="padding: 2px 6px; font-size: 0.75rem; line-height: 1;"
+          onclick="manualSyncIbkr(event)"
+          title="手動同步 IBKR NAV + 持倉 Manual sync from IBKR">
+          Sync
         </button>
         <i class="bi bi-pencil-square" style="font-size:0.8rem; margin-left:4px; opacity:0.6; cursor:pointer;" onclick="editAccountSize()"></i>
       </div>
@@ -56,13 +73,13 @@
       </div>
       {% endif %}
 
-      <div class="d-flex align-items-center justify-content-center gap-2 mt-2" style="min-height:78px;">
-        <div style="width:64px; height:64px; position:relative;">
-          <canvas id="accountAssetDonut" width="64" height="64" aria-label="資產分佈 Asset Mix" role="img"></canvas>
+      <div class="d-flex align-items-center justify-content-center gap-2 mt-2" style="min-height:64px;">
+        <div style="width:56px; height:56px; position:relative;">
+          <canvas id="accountAssetDonut" width="56" height="56" aria-label="資產分佈 Asset Mix" role="img"></canvas>
         </div>
-        <div class="text-start" style="font-size:10px; line-height:1.35; min-width:84px;">
-          <div id="assetCashLine" style="color:#3fb950;">現金 Cash: --</div>
-          <div id="assetStockLine" style="color:#58a6ff;">股票 Stocks: --</div>
+        <div class="text-start" style="font-size:10px; line-height:1.3; min-width:80px;">
+          <div id="assetCashLine" style="color:#3fb950;">可買 Cash Ready: --</div>
+          <div id="assetStockLine" style="color:#58a6ff;">持股 Stock Used: --</div>
           <div id="assetOtherLine" style="color:#d29922;">其他 Other: --</div>
         </div>
       </div>
@@ -111,20 +128,20 @@
     </div>
   </div>
 
-  <!-- Grade-A Watchlist preview -->
+  <!-- SEPA Watchlist preview -->
   <div class="col-12 col-lg-5">
     <div class="card h-100">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-bookmark-star me-2"></i>Grade A Watchlist</span>
+        <span><i class="bi bi-bookmark-star me-2"></i>SEPA Watchlist</span>
         <a href="/watchlist" class="btn btn-sm btn-outline-secondary">All</a>
       </div>
       <div class="card-body p-0">
-        {% if wl.A %}
+        {% if wl.SEPA %}
         <div class="table-responsive">
           <table class="table table-hover mb-0">
             <thead><tr><th>Ticker</th><th>RS</th><th>VCP</th><th>Pivot</th></tr></thead>
             <tbody>
-            {% for t, d in wl.A.items() %}
+            {% for t, d in wl.SEPA.items() %}
             <tr>
               <td><strong><a href="/analyze?ticker={{ t }}" class="text-decoration-none" style="color:var(--accent)">{{ t }}</a></strong></td>
               <td>{{ d.rs_rank|int if d.rs_rank else '—' }}</td>
@@ -137,7 +154,7 @@
         </div>
         {% else %}
         <div class="p-4 text-center text-muted">
-          <i class="bi bi-star fs-2 d-block mb-2"></i>No Grade-A stocks yet.
+          <i class="bi bi-star fs-2 d-block mb-2"></i>No SEPA watchlist stocks yet.
           <a href="/watchlist" class="d-block mt-2">Add to watchlist →</a>
         </div>
         {% endif %}
@@ -421,6 +438,46 @@ async function toggleCurrency(event) {
     }
   } catch(e) {
     toast(`❌ Error: ${e.message}`, false);
+  }
+}
+
+async function manualSyncIbkr(event) {
+  event.stopPropagation();
+  const btn = document.getElementById('ibkrSyncBtn');
+  if (!btn) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+
+  try {
+    const syncResp = await fetch('/api/ibkr/sync-all', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({force: true})
+    }).then(x => x.json());
+
+    if (!syncResp.ok) {
+      toast(`❌ Sync failed: ${syncResp.error || 'Unknown error'}`, false);
+      return;
+    }
+
+    const c = await fetch('/api/currency').then(x => x.json());
+    if (c.ok) {
+      const toggleBtn = document.getElementById('currencyToggleBtn');
+      const display = document.getElementById('accountSizeDisplay');
+      if (toggleBtn) toggleBtn.textContent = c.currency;
+      if (display) display.textContent = c.nav_display;
+    }
+
+    await initAccountAssetDonut();
+    toast(`✅ IBKR synced: ${syncResp.data?.synced_count ?? 0} positions`, true);
+    setTimeout(() => location.reload(), 900);
+  } catch (e) {
+    toast(`❌ Sync error: ${e.message}`, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 

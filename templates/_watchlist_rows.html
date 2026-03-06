@@ -7,22 +7,22 @@
        prepended with OOB <span> elements that update the badge counts.
   Action buttons use hx-* attributes; no per-page JS functions needed.
 ─────────────────────────────────────────────────────────────────────────────#}
-{%- set _gc = {'A':'success','B':'warning','C':'info'} -%}
-{%- set _total = wl.get('A',{})|length + wl.get('B',{})|length + wl.get('C',{})|length -%}
-{% for g in ['A','B','C'] %}
-  {% for ticker, d in wl.get(g, {}).items() %}
-  <tr data-grade="{{ g }}" id="wl-row-{{ ticker }}">
-    <td><span class="badge bg-{{ _gc[g] }}">{{ g }}</span></td>
+{%- set _sc = {'SEPA':'info','QM':'warning','ML':'success'} -%}
+{%- set _total = wl.get('SEPA',{})|length + wl.get('QM',{})|length + wl.get('ML',{})|length -%}
+{% for s in ['SEPA','QM','ML'] %}
+  {% for ticker, d in wl.get(s, {}).items() %}
+  <tr data-strategy="{{ s }}" id="wl-row-{{ ticker }}">
+    {% if s == 'QM' %}
+      {% set analyze_url = '/qm/analyze?ticker=' ~ ticker %}
+    {% elif s == 'ML' %}
+      {% set analyze_url = '/ml/analyze?ticker=' ~ ticker %}
+    {% else %}
+      {% set analyze_url = '/analyze?ticker=' ~ ticker %}
+    {% endif %}
+    <td><span class="badge bg-{{ _sc[s] }}">{{ s }}</span></td>
     <td>
-      <a href="/analyze?ticker={{ ticker }}"
+      <a href="{{ analyze_url }}"
          class="fw-bold text-decoration-none" style="color:var(--accent)">{{ ticker }}</a>
-    </td>
-    <td>
-      {%- if d.strategy -%}
-        <span class="badge bg-dark" style="border:1px solid #30363d; color:#58a6ff; font-size:0.75rem;">{{ d.strategy }}</span>
-      {%- else -%}
-        <span class="text-muted small">—</span>
-      {%- endif -%}
     </td>
     <td>{{ (d.rs_rank|int) if d.rs_rank else '—' }}</td>
     <td>
@@ -35,16 +35,18 @@
     <td class="text-muted small">{{ d.note or '' }}</td>
     <td>
       <div class="btn-group btn-group-sm">
-        <a href="/vcp?ticker={{ ticker }}" class="btn btn-outline-secondary" title="VCP">
-          <i class="bi bi-activity"></i></a>
-        <button class="btn btn-outline-success" title="Promote to higher grade"
-                hx-post="/htmx/watchlist/promote"
-                hx-vals='{"ticker":"{{ ticker }}"}'
-                hx-target="#wlBody" hx-swap="innerHTML">↑</button>
-        <button class="btn btn-outline-warning" title="Demote to lower grade"
-                hx-post="/htmx/watchlist/demote"
-                hx-vals='{"ticker":"{{ ticker }}"}'
-                hx-target="#wlBody" hx-swap="innerHTML">↓</button>
+      <button class="btn btn-outline-info" title="Move to SEPA"
+        hx-post="/htmx/watchlist/move"
+        hx-vals='{"ticker":"{{ ticker }}","strategy":"SEPA"}'
+        hx-target="#wlBody" hx-swap="innerHTML">SEPA</button>
+      <button class="btn btn-outline-warning" title="Move to QM"
+        hx-post="/htmx/watchlist/move"
+        hx-vals='{"ticker":"{{ ticker }}","strategy":"QM"}'
+        hx-target="#wlBody" hx-swap="innerHTML">QM</button>
+      <button class="btn btn-outline-success" title="Move to ML"
+        hx-post="/htmx/watchlist/move"
+        hx-vals='{"ticker":"{{ ticker }}","strategy":"ML"}'
+        hx-target="#wlBody" hx-swap="innerHTML">ML</button>
         <button class="btn btn-outline-danger" title="Remove from watchlist"
                 hx-post="/htmx/watchlist/remove"
                 hx-vals='{"ticker":"{{ ticker }}"}'

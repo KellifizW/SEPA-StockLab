@@ -180,6 +180,9 @@
         <button class="btn btn-accent btn-sm" onclick="analyzeStock()">
           <i class="bi bi-search me-1"></i>分析 Analyze
         </button>
+        <button class="btn btn-outline-warning btn-sm" onclick="addQmToWatchlist()">
+          <i class="bi bi-bookmark-plus me-1"></i>Watchlist
+        </button>
       </div>
     </div>
   </div>
@@ -533,6 +536,27 @@ async function analyzeStock() {
     document.getElementById('loadingArea').classList.add('d-none');
     document.getElementById('emptyState').classList.remove('d-none');
     toast('網絡錯誤：' + e, false);
+  }
+}
+
+async function addQmToWatchlist() {
+  const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
+  if (!ticker) {
+    toast('請先輸入股票代號 Please enter a ticker', false);
+    return;
+  }
+  const r = await fetch('/api/watchlist/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ticker, strategy: 'QM'})
+  }).then(x => x.json());
+
+  if (r.job_id) {
+    pollJob(`/api/watchlist/add/status/${r.job_id}`,
+      () => toast(`✅ ${ticker} added to QM watchlist`, true),
+      err => toast(`Error: ${err}`, false));
+  } else {
+    toast(`Error: ${r.error || 'Failed to add to watchlist'}`, false);
   }
 }
 

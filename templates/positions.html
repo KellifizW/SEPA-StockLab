@@ -3,9 +3,42 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h4 class="mb-0"><i class="bi bi-briefcase me-2" style="color:var(--accent)"></i>Position Monitor</h4>
-  <button class="btn btn-sm btn-outline-info" onclick="checkAll()">
-    <i class="bi bi-shield-check me-1"></i>Daily Health Check
-  </button>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-secondary" onclick="syncIbkrPositions()">
+      <i class="bi bi-arrow-repeat me-1"></i>Sync IBKR
+    </button>
+    <button class="btn btn-sm btn-outline-info" onclick="checkAll()">
+      <i class="bi bi-shield-check me-1"></i>Daily Health Check
+    </button>
+  </div>
+</div>
+
+<!-- Portfolio Summary -->
+<div class="row g-2 mb-3" id="positionSummaryRow">
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="sumPosCount">0</div>
+      <div class="metric-lbl">Open Positions 持倉數</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="sumInvested">$0</div>
+      <div class="metric-lbl">Invested Capital 已投入</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="sumUnrealized">$0</div>
+      <div class="metric-lbl">Unrealized PnL 未實現盈虧</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="metric-card">
+      <div class="metric-val" id="sumRisk">$0</div>
+      <div class="metric-lbl">Open Risk 開倉風險</div>
+    </div>
+  </div>
 </div>
 
 <!-- Add Position Form -->
@@ -41,6 +74,14 @@
           <input class="form-control" id="pStop" name="stop_loss" type="number" step="0.01" placeholder="480.00" required>
         </div>
         <div class="col-6 col-md-2">
+          <label class="form-label text-muted small">Pool 倉位</label>
+          <select class="form-select" id="pPool" name="pool">
+            <option value="FREE" selected>FREE 自由倉</option>
+            <option value="QM">QM 倉</option>
+            <option value="ML">ML 倉</option>
+          </select>
+        </div>
+        <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Target (optional)</label>
           <input class="form-control" id="pTarget" name="target" type="number" step="0.01" placeholder="560.00">
         </div>
@@ -61,19 +102,38 @@
 
 <!-- Positions Table -->
 <div class="card mb-3" id="posCard">
-  <div class="card-header"><i class="bi bi-table me-2"></i>Open Positions</div>
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-table me-2"></i>Open Positions</span>
+    <div class="d-flex gap-2">
+      <input id="posFilterText" class="form-control form-control-sm" style="width:180px" placeholder="Filter ticker...">
+      <select id="posFilterStrategy" class="form-select form-select-sm" style="width:130px">
+        <option value="ALL">All Strategies</option>
+        <option value="QM">QM</option>
+        <option value="ML">ML</option>
+        <option value="FREE">FREE/Other</option>
+      </select>
+    </div>
+  </div>
   <div class="table-responsive">
     <table class="table table-hover mb-0">
       <thead>
         <tr><th>Ticker</th><th>Strategy</th><th>Entry</th><th>Stop</th><th>Target</th>
-            <th>R:R</th><th>Shares</th><th>Risk $</th><th>Days</th>
+            <th>R:R</th><th>Shares</th><th>Current</th><th>PnL%</th><th>Risk $</th><th>Days</th>
             <th>Note</th><th>Actions</th></tr>
       </thead>
       <tbody id="posBody">
         {% if positions %}
           {% for t, p in positions.items() %}
-          <tr id="pos-{{ t }}">
-            <td><a href="/analyze?ticker={{ t }}" class="fw-bold text-decoration-none" style="color:var(--accent)">{{ t }}</a></td>
+          {% set strategy = (p.strategy|default('FREE'))|upper %}
+          {% if strategy == 'QM' %}
+            {% set analyze_url = '/qm/analyze?ticker=' ~ t %}
+          {% elif strategy == 'ML' %}
+            {% set analyze_url = '/ml/analyze?ticker=' ~ t %}
+          {% else %}
+            {% set analyze_url = '/analyze?ticker=' ~ t %}
+          {% endif %}
+          <tr id="pos-{{ t }}" data-ticker="{{ t }}" data-strategy="{{ p.strategy|default('FREE') }}">
+            <td><a href="{{ analyze_url }}" class="fw-bold text-decoration-none" style="color:var(--accent)">{{ t }}</a></td>
             <td>
               {%- if p.strategy -%}
                 <span class="badge bg-dark" style="border:1px solid #30363d; color:#58a6ff; font-size:0.75rem;">{{ p.strategy }}</span>
@@ -86,10 +146,21 @@
             <td class="text-success">${{ "%.2f"|format(p.target|default(0)) }}</td>
             <td>{{ "%.1f"|format(p.rr|default(0)) }}:1</td>
             <td>{{ "{:,}".format((p.shares|default(p.qty|default(0)))|int) }}</td>
+            <td>${{ "%.2f"|format(p.market_price|default(0)) if p.market_price else '—' }}</td>
+            <td class="{{ 'text-success' if (p.unrealized_pnl_pct|default(0)) >= 0 else 'text-danger' }}">
+              {% if p.unrealized_pnl_pct is defined and p.unrealized_pnl_pct is not none %}
+                {{ "%+.1f"|format(p.unrealized_pnl_pct) }}%
+              {% else %}
+                —
+              {% endif %}
+            </td>
             <td>${{ "{:,.0f}".format(p.risk_dollar|default(0)) }}</td>
             <td>{{ p.days_held|default('—') }}</td>
             <td class="text-muted small">{{ p.note }}</td>
             <td>
+              <a class="btn btn-sm btn-outline-secondary" href="{{ analyze_url }}" title="Analyze">
+                <i class="bi bi-graph-up"></i>
+              </a>
               <button class="btn btn-sm btn-outline-danger" onclick="closePos('{{ t }}')">
                 <i class="bi bi-door-open me-1"></i>Close
               </button>
@@ -97,7 +168,7 @@
           </tr>
           {% endfor %}
         {% else %}
-          <tr><td colspan="11" class="text-center text-muted py-4">
+          <tr><td colspan="13" class="text-center text-muted py-4">
             <i class="bi bi-inbox fs-2 d-block mb-2"></i>No open positions. Use the form above to add one.
           </td></tr>
         {% endif %}
@@ -123,8 +194,14 @@
       <div class="modal-body">
         <label class="form-label">Exit Price</label>
         <input class="form-control" id="exitPrice" type="number" step="0.01" placeholder="Current market price">
+        <label class="form-label mt-3">Shares to Close (optional)</label>
+        <input class="form-control" id="exitShares" type="number" step="1" min="1" placeholder="Leave blank = full close">
         <label class="form-label mt-3">Reason (optional)</label>
         <input class="form-control" id="exitReason" placeholder="e.g. Stop hit, Target reached">
+        <div class="form-check form-switch mt-3">
+          <input class="form-check-input" type="checkbox" id="exitIbkrExecute" checked>
+          <label class="form-check-label" for="exitIbkrExecute">Send SELL order to IBKR 同步IBKR賣出</label>
+        </div>
       </div>
       <div class="modal-footer border-secondary">
         <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -152,6 +229,7 @@ window.addEventListener('DOMContentLoaded', () => {
       document.getElementById('pShares').value  = d.shares||'';
       document.getElementById('pStop').value    = d.stop||'';
       document.getElementById('pTarget').value  = d.target||'';
+      document.getElementById('pPool').value    = (d.strategy || 'FREE');
       new bootstrap.Collapse(document.getElementById('addForm'), {show:true});
     } catch(e) {}
   }
@@ -173,31 +251,100 @@ function handlePosAdded(event) {
   if (collapseEl.classList.contains('show')) {
     bootstrap.Collapse.getInstance(collapseEl)?.hide();
   }
+  refreshPositionSummary();
 }
 
 function closePos(ticker) {
   _closingTicker = ticker;
   document.getElementById('closeTicker').textContent = ticker;
   document.getElementById('exitPrice').value = '';
+  document.getElementById('exitShares').value = '';
   document.getElementById('exitReason').value = '';
+  document.getElementById('exitIbkrExecute').checked = true;
   closeModal.show();
 }
 
 async function confirmClose() {
   const exitP = parseFloat(document.getElementById('exitPrice').value);
+  const sharesRaw = document.getElementById('exitShares').value.trim();
+  const sharesToClose = sharesRaw ? parseInt(sharesRaw, 10) : null;
+  const ibkrExecute = document.getElementById('exitIbkrExecute').checked;
   const reason = document.getElementById('exitReason').value;
   if (!exitP) { toast('Enter exit price', false); return; }
+  if (sharesRaw && (!sharesToClose || sharesToClose <= 0)) {
+    toast('Invalid shares_to_close', false);
+    return;
+  }
   closeModal.hide();
   const r = await fetch('/api/positions/close', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ticker:_closingTicker, exit_price:exitP, reason})
+    body: JSON.stringify({
+      ticker:_closingTicker,
+      exit_price:exitP,
+      reason,
+      shares_to_close: sharesToClose,
+      ibkr_execute: ibkrExecute,
+    })
   }).then(x=>x.json());
   if (r.ok) {
-    toastCompletion(`✅ ${_closingTicker} 持倉已平倉`, true);
+    if (r.ibkr && r.ibkr.order_id) {
+      toastCompletion(`✅ ${_closingTicker} 已平倉 (IBKR #${r.ibkr.order_id})`, true);
+    } else {
+      toastCompletion(`✅ ${_closingTicker} 持倉已平倉`, true);
+    }
     // After brief delay, reload page
     setTimeout(() => window.location.reload(), 1500);
   }
   else toast(`Error: ${r.error}`, false);
+}
+
+async function syncIbkrPositions() {
+  toast('Syncing from IBKR...');
+  const r = await fetch('/api/ibkr/positions').then(x => x.json());
+  if (r.ok) {
+    toastCompletion('✅ IBKR positions synced', true);
+    setTimeout(() => window.location.reload(), 1200);
+  } else {
+    toast(`Sync failed: ${r.error || 'unknown error'}`, false);
+  }
+}
+
+function refreshPositionSummary() {
+  const rows = Array.from(document.querySelectorAll('#posBody tr[id^="pos-"]'));
+  let invested = 0;
+  let unrealized = 0;
+  let risk = 0;
+  rows.forEach(row => {
+    const tds = row.querySelectorAll('td');
+    if (tds.length < 13) return;
+    const entry = Number((tds[2].textContent || '').replace(/[$,]/g, '')) || 0;
+    const shares = Number((tds[6].textContent || '').replace(/[$,]/g, '')) || 0;
+    const cur = Number((tds[7].textContent || '').replace(/[$,]/g, '')) || 0;
+    const riskDol = Number((tds[9].textContent || '').replace(/[$,]/g, '')) || 0;
+    invested += entry * shares;
+    if (cur > 0 && shares > 0) unrealized += (cur - entry) * shares;
+    risk += riskDol;
+  });
+
+  document.getElementById('sumPosCount').textContent = rows.length;
+  document.getElementById('sumInvested').textContent = '$' + Math.round(invested).toLocaleString();
+  const sumUnrealized = document.getElementById('sumUnrealized');
+  sumUnrealized.textContent = (unrealized >= 0 ? '+' : '') + '$' + Math.round(unrealized).toLocaleString();
+  sumUnrealized.className = 'metric-val ' + (unrealized >= 0 ? 'text-success' : 'text-danger');
+  document.getElementById('sumRisk').textContent = '$' + Math.round(risk).toLocaleString();
+}
+
+function applyPositionFilters() {
+  const txt = (document.getElementById('posFilterText').value || '').trim().toUpperCase();
+  const strategy = document.getElementById('posFilterStrategy').value;
+  const rows = Array.from(document.querySelectorAll('#posBody tr[id^="pos-"]'));
+  rows.forEach(row => {
+    const t = (row.getAttribute('data-ticker') || '').toUpperCase();
+    const s = (row.getAttribute('data-strategy') || 'FREE').toUpperCase();
+    const passText = !txt || t.includes(txt);
+    const passStrategy = strategy === 'ALL' || s === strategy || (strategy === 'FREE' && (!s || s === 'FREE'));
+    row.classList.toggle('d-none', !(passText && passStrategy));
+  });
 }
 
 async function checkAll() {
@@ -262,6 +409,14 @@ function renderHealth(results) {
 // ── Position mini charts ──────────────────────────────────────────────────────
 const _posCharts = {};
 const _posChartObservers = {};
+
+document.addEventListener('DOMContentLoaded', () => {
+  refreshPositionSummary();
+  const txt = document.getElementById('posFilterText');
+  const stg = document.getElementById('posFilterStrategy');
+  txt?.addEventListener('input', applyPositionFilters);
+  stg?.addEventListener('change', applyPositionFilters);
+});
 
 function _getPosChartWidth(div) {
   if (!div) return 0;

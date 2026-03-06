@@ -20,6 +20,11 @@
       <div class="col-auto">
         <button class="btn btn-accent" onclick="analyze()"><i class="bi bi-play-fill me-1"></i>Analyze</button>
       </div>
+        <div class="col-auto">
+          <button class="btn btn-outline-info" onclick="addCurrentToWatchlist()">
+            <i class="bi bi-bookmark-plus me-1"></i>加入觀察清單 Add Watchlist
+          </button>
+        </div>
     </div>
   </div>
 </div>
@@ -459,10 +464,10 @@ async function loadPriceHistory(ticker, priceLines = {}) {
   }
 }
 
-async function addToWatchlist(ticker) {
+async function addToWatchlist(ticker, strategy = 'SEPA') {
   const r = await fetch('/api/watchlist/add', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ticker})
+    body: JSON.stringify({ticker, strategy})
   }).then(x => x.json());
   
   if (r.job_id) {
@@ -473,6 +478,15 @@ async function addToWatchlist(ticker) {
   } else {
     toast(`Error: ${r.error || 'Failed to add to watchlist'}`, false);
   }
+}
+
+function addCurrentToWatchlist() {
+  const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
+  if (!ticker) {
+    toast('Enter a ticker symbol first', false);
+    return;
+  }
+  addToWatchlist(ticker, 'SEPA');
 }
 
 async function resetYfSession() {

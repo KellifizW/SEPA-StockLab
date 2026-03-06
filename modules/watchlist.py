@@ -1,11 +1,12 @@
 """
 modules/watchlist.py
 ──────────────────────
-A/B/C Grade Watchlist Management  (Minervini Part 8.1)
+Strategy-based Watchlist Management.
 
-Grade A: "Ready to trade"   — 3-8 stocks, analysis done, awaiting breakout
-Grade B: "Close to ready"   — 10-20 stocks, passes TT but base not mature
-Grade C: "Long-term track"  — 20-50 stocks, strong fundamentals, tech not ready
+Primary buckets:
+    • SEPA
+    • QM
+    • ML
 
 Storage: data/watchlist.json  (auto-created on first use)
 """
@@ -33,12 +34,14 @@ logger = logging.getLogger(__name__)
 
 WATCHLIST_FILE = ROOT / C.DATA_DIR / "watchlist.json"
 
-GRADE_LIMITS = {"A": 8, "B": 20, "C": 50}
-GRADE_LABELS = {
-    "A": "Ready to Trade  (awaiting breakout)",
-    "B": "Close to Ready  (base forming)",
-    "C": "Long-term Track (monitoring)",
+STRATEGY_KEYS = ("SEPA", "QM", "ML")
+STRATEGY_LABELS = {
+    "SEPA": "SEPA Watchlist",
+    "QM": "Qullamaggie Watchlist",
+    "ML": "Martin Luk Watchlist",
 }
+
+_LEGACY_GRADE_TO_STRATEGY = {"A": "SEPA", "B": "SEPA", "C": "SEPA"}
 
 # ANSI colours
 _GREEN  = "\033[92m"
@@ -58,17 +61,20 @@ def _load() -> dict:
     if WATCHLIST_FILE.exists():
         try:
             data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+            data = _normalize_watchlist(data)
             logger.debug("[watchlist] Loaded from JSON")
             return data
         except Exception as exc:
             logger.warning("[watchlist] JSON load failed: %s", exc)
-    return {"A": {}, "B": {}, "C": {}}
+    return _empty_watchlist()
 
 
 def _save(data: dict):
     """Save watchlist: JSON sync (fast) + DuckDB async background thread."""
     if not data:
         return
+
+    data = _normalize_watchlist(data)
 
     # 1. JSON write — synchronous, always first (source of truth)
     try:
@@ -108,15 +114,16 @@ def _bg_wl_db_save(data: dict):
 def add(ticker: str, grade: Optional[str] = None, note: str = ""):
     """
     Add a ticker to the watchlist.
-    If grade is None, auto-assigns grade based on SEPA score.
+    `grade` is kept for backward compatibility and mapped to strategy buckets.
     """
     ticker = ticker.upper().strip()
     wl = _load()
+    strategy = _normalize_strategy(grade)
 
     # Check if already in watchlist
-    for g in "ABC":
-        if ticker in wl[g]:
-            print(f"  {ticker} already in Grade-{g} watchlist — updating...")
+    for s in STRATEGY_KEYS:
+        if ticker in wl[s]:
+            print(f"  {ticker} already in {s} watchlist — updating...")
             break
 
     print(f"\nAdding {ticker} to watchlist...")
@@ -128,8 +135,8 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
         tt      = validate_trend_template(ticker, df=df, rs_rank=rs)
         vcp     = detect_vcp(df) if df is not None and not df.empty else {}
 
-        if grade is None:
-            grade = _auto_grade(tt, vcp, rs)
+        if strategy is None:
+            strategy = _auto_strategy(tt, vcp, rs)
 
         entry = {
             "added_date":   datetime.now().strftime("%Y-%m-%d"),
@@ -144,11 +151,12 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
             "price":        round(df.iloc[-1]["Close"], 2) if df is not None and not df.empty else None,
             "sector":       snap.get("Sector", ""),
             "note":         note,
+            "strategy":     strategy,
         }
-        # Remove from other grades first
-        for g in "ABC":
-            wl[g].pop(ticker, None)
-        wl[grade][ticker] = entry
+        # Remove from other buckets first
+        for s in STRATEGY_KEYS:
+            wl[s].pop(ticker, None)
+        wl[strategy][ticker] = entry
         _save(wl)
 
         # — DuckDB 異動日誌 ————————————————────
@@ -160,13 +168,13 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
                     score = float(score)
                 except (ValueError, TypeError):
                     score = None
-                log_watchlist_action(ticker, "ADD", grade=grade,
+                log_watchlist_action(ticker, "ADD", grade=strategy,
                                      sepa_score=score, note=note)
             except Exception:
                 pass
 
-        g_colour = _GREEN if grade == "A" else _YELLOW if grade == "B" else _CYAN
-        print(f"  ✓ {ticker} added to {g_colour}Grade-{grade}{_RESET}: {GRADE_LABELS[grade]}")
+            s_colour = _GREEN if strategy == "SEPA" else _YELLOW if strategy == "QM" else _CYAN
+            print(f"  ✓ {ticker} added to {s_colour}{strategy}{_RESET}: {STRATEGY_LABELS[strategy]}")
         print(f"    TT: {tt.get('score', 0)}/10  RS: {rs:.0f}  "
               f"VCP: {vcp.get('grade', 'D')} (score {vcp.get('vcp_score', 0)})")
     except Exception as exc:
@@ -178,19 +186,21 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
             "note":         note,
             "error":        str(exc),
         }
-        wl[grade or "C"][ticker] = entry
+        strategy = strategy or "SEPA"
+        entry["strategy"] = strategy
+        wl[strategy][ticker] = entry
         _save(wl)
         
         # — DuckDB 異動日誌 ————————————————————
         if getattr(C, "DB_ENABLED", True):
             try:
                 from modules.db import log_watchlist_action
-                log_watchlist_action(ticker, "ADD", grade=grade or "C",
+                log_watchlist_action(ticker, "ADD", grade=strategy,
                                      sepa_score=None, note=note)
             except Exception:
                 pass
 
-        print(f"  Added {ticker} to Grade-{grade or 'C'} (no analysis data: {exc})")
+            print(f"  Added {ticker} to {strategy} (no analysis data: {exc})")
 
 
 def remove(ticker: str):
@@ -199,12 +209,12 @@ def remove(ticker: str):
     wl = _load()
     removed = False
     removed_grade = None
-    for g in "ABC":
-        if ticker in wl[g]:
-            del wl[g][ticker]
+    for s in STRATEGY_KEYS:
+        if ticker in wl[s]:
+            del wl[s][ticker]
             removed = True
-            removed_grade = g
-            print(f"  ✓ Removed {ticker} from Grade-{g} watchlist")
+            removed_grade = s
+            print(f"  ✓ Removed {ticker} from {s} watchlist")
     if not removed:
         print(f"  {ticker} not found in watchlist")
     else:
@@ -220,54 +230,66 @@ def remove(ticker: str):
 
 
 def promote(ticker: str):
-    """Manually promote a ticker to the next higher grade."""
+    """Backward-compatible wrapper: move ticker to next strategy bucket."""
     ticker = ticker.upper().strip()
     wl = _load()
-    for g, next_g in [("C", "B"), ("B", "A")]:
-        if ticker in wl[g]:
-            entry = wl[g].pop(ticker)
-            entry["last_updated"] = datetime.now().strftime("%Y-%m-%d")
-            wl[next_g][ticker] = entry
-            _save(wl)
-            print(f"  ✓ {ticker} promoted: Grade-{g} → Grade-{next_g}")
+    order = ["SEPA", "QM", "ML"]
+    for idx, s in enumerate(order):
+        if ticker in wl[s]:
+            if idx == len(order) - 1:
+                print(f"  {ticker} already at {s}")
+                return
+            move_to_strategy(ticker, order[idx + 1])
             return
-    if ticker in wl["A"]:
-        print(f"  {ticker} already at Grade-A (highest)")
-    else:
-        print(f"  {ticker} not in watchlist — use 'add' first")
+    print(f"  {ticker} not in watchlist — use 'add' first")
 
 
 def demote(ticker: str):
-    """Manually demote a ticker to the next lower grade."""
+    """Backward-compatible wrapper: move ticker to previous strategy bucket."""
     ticker = ticker.upper().strip()
     wl = _load()
-    for g, next_g in [("A", "B"), ("B", "C")]:
-        if ticker in wl[g]:
-            entry = wl[g].pop(ticker)
-            entry["last_updated"] = datetime.now().strftime("%Y-%m-%d")
-            wl[next_g][ticker] = entry
-            _save(wl)
-            print(f"  ✓ {ticker} demoted: Grade-{g} → Grade-{next_g}")
+    order = ["SEPA", "QM", "ML"]
+    for idx, s in enumerate(order):
+        if ticker in wl[s]:
+            if idx == 0:
+                print(f"  {ticker} already at {s}")
+                return
+            move_to_strategy(ticker, order[idx - 1])
             return
-    if ticker in wl["C"]:
-        print(f"  {ticker} already at Grade-C (lowest)")
-    else:
-        print(f"  {ticker} not in watchlist — use 'add' first")
+    print(f"  {ticker} not in watchlist — use 'add' first")
+
+
+def move_to_strategy(ticker: str, strategy: str):
+    """Move ticker to target strategy bucket (SEPA/QM/ML)."""
+    ticker = ticker.upper().strip()
+    strategy = _normalize_strategy(strategy) or "SEPA"
+    wl = _load()
+
+    for s in STRATEGY_KEYS:
+        if ticker in wl[s]:
+            entry = wl[s].pop(ticker)
+            entry["last_updated"] = datetime.now().strftime("%Y-%m-%d")
+            entry["strategy"] = strategy
+            wl[strategy][ticker] = entry
+            _save(wl)
+            print(f"  ✓ {ticker} moved: {s} → {strategy}")
+            return
+    print(f"  {ticker} not in watchlist — use 'add' first")
 
 
 def list_all(verbose: bool = True):
-    """Display the complete watchlist grouped by grade."""
+    """Display the complete watchlist grouped by strategy."""
     wl  = _load()
     sep = "─" * 60
     print(f"\n{_BOLD}{'═'*60}{_RESET}")
     print(f"{_BOLD}  MINERVINI WATCHLIST{_RESET}")
     print(f"{_BOLD}{'═'*60}{_RESET}")
 
-    for g in "ABC":
-        items    = wl[g]
-        g_colour = _GREEN if g == "A" else _YELLOW if g == "B" else _CYAN
-        print(f"\n  {g_colour}{_BOLD}Grade-{g}  —  {GRADE_LABELS[g]}  "
-              f"({len(items)}/{GRADE_LIMITS[g]}){_RESET}")
+    for s in STRATEGY_KEYS:
+        items    = wl[s]
+        s_colour = _GREEN if s == "SEPA" else _YELLOW if s == "QM" else _CYAN
+        print(f"\n  {s_colour}{_BOLD}{s}  —  {STRATEGY_LABELS[s]}  "
+              f"({len(items)}){_RESET}")
         print(f"  {sep}")
         if not items:
             print("  (empty)")
@@ -281,13 +303,13 @@ def list_all(verbose: bool = True):
             added     = data.get("added_date", "—")
             note      = data.get("note", "")
             pivot_str = f"Pivot: ${pivot:.2f}" if pivot else ""
-            print(f"  {g_colour}{ticker:<6}{_RESET}  "
-                  f"${str(price):<8}  RS:{str(rs):<5}  "
-                  f"TT:{str(tt):<3}/10  VCP:{vcp_g}  "
-                  f"{pivot_str:<18}  Added:{added}"
-                  + (f"  [{note}]" if note else ""))
+            print(f"  {s_colour}{ticker:<6}{_RESET}  "
+                f"${str(price):<8}  RS:{str(rs):<5}  "
+                f"TT:{str(tt):<3}/10  VCP:{vcp_g}  "
+                f"{pivot_str:<18}  Added:{added}"
+                + (f"  [{note}]" if note else ""))
 
-    total = sum(len(wl[g]) for g in "ABC")
+        total = sum(len(wl[s]) for s in STRATEGY_KEYS)
     print(f"\n  Total: {total} stocks tracked")
     print(f"{'═'*60}\n")
     return wl
@@ -299,16 +321,16 @@ def refresh(verbose: bool = True):
     Prints a summary of changes.
     """
     wl = _load()
-    total = sum(len(wl[g]) for g in "ABC")
+    total = sum(len(wl[s]) for s in STRATEGY_KEYS)
     if total == 0:
         print("Watchlist is empty — nothing to refresh")
         return
 
     print(f"\nRefreshing {total} watchlist stocks...")
-    all_tickers = {k: g for g in "ABC" for k in wl[g].keys()}
+    all_tickers = {k: s for s in STRATEGY_KEYS for k in wl[s].keys()}
     changes = []
 
-    for ticker, current_grade in all_tickers.items():
+    for ticker, current_strategy in all_tickers.items():
         print(f"  Updating {ticker}...", end="\r")
         try:
             df  = get_enriched(ticker, period="2y")
@@ -316,10 +338,10 @@ def refresh(verbose: bool = True):
             tt  = validate_trend_template(ticker, df=df, rs_rank=rs)
             vcp = detect_vcp(df) if df is not None and not df.empty else {}
 
-            new_grade = _auto_grade(tt, vcp, rs)
+            new_strategy = current_strategy
 
             # Update entry
-            entry = wl[current_grade].get(ticker, {})
+            entry = wl[current_strategy].get(ticker, {})
             entry.update({
                 "last_updated": datetime.now().strftime("%Y-%m-%d"),
                 "rs_rank":      round(rs, 1) if rs != RS_NOT_RANKED else None,
@@ -331,14 +353,15 @@ def refresh(verbose: bool = True):
                 "pivot":        vcp.get("pivot_price"),
                 "price":        round(float(df.iloc[-1]["Close"]), 2)
                                 if df is not None and not df.empty else None,
+                "strategy":     current_strategy,
             })
 
-            if new_grade != current_grade:
-                wl[current_grade].pop(ticker, None)
-                wl[new_grade][ticker] = entry
-                changes.append((ticker, current_grade, new_grade))
+            if new_strategy != current_strategy:
+                wl[current_strategy].pop(ticker, None)
+                wl[new_strategy][ticker] = entry
+                changes.append((ticker, current_strategy, new_strategy))
             else:
-                wl[current_grade][ticker] = entry
+                wl[current_strategy][ticker] = entry
 
         except Exception as exc:
             logger.warning(f"Refresh error for {ticker}: {exc}")
@@ -347,38 +370,69 @@ def refresh(verbose: bool = True):
     print(f"\n  ✓ Refresh complete")
 
     if changes:
-        print(f"\n  Grade changes:")
-        for ticker, old_g, new_g in changes:
-            arrow = "⬆️" if new_g < old_g else "⬇️"
-            print(f"    {arrow}  {ticker}: Grade-{old_g} → Grade-{new_g}")
+        print(f"\n  Strategy changes:")
+        for ticker, old_s, new_s in changes:
+            print(f"    {ticker}: {old_s} → {new_s}")
     else:
-        print("  No grade changes")
+        print("  No strategy changes")
 
     list_all()
 
 
 def get_grade_a_tickers() -> list:
-    """Return list of Grade-A ticker symbols."""
+    """Backward-compatible helper: return SEPA strategy ticker symbols."""
     wl = _load()
-    return list(wl["A"].keys())
+    return list(wl["SEPA"].keys())
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _auto_grade(tt: dict, vcp: dict, rs_rank: float) -> str:
+def _auto_strategy(tt: dict, vcp: dict, rs_rank: float) -> str:
     """
-    Automatically assign A/B/C grade based on analysis results.
-    Grade A: passes TT + valid VCP + RS ≥ 80
-    Grade B: passes TT + RS ≥ 70 (base forming but not complete VCP)
-    Grade C: everything else that clears basic criteria
+    Default strategy assignment for new entries when caller does not specify.
+    Existing behavior keeps entries in SEPA bucket by default.
     """
-    tt_pass  = tt.get("passes", False)
-    vcp_ok   = vcp.get("is_valid_vcp", False)
-    vcp_grade = vcp.get("grade", "D")
+    return "SEPA"
 
-    if tt_pass and vcp_ok and rs_rank >= C.TT9_IDEAL_RS_RANK:
-        return "A"
-    elif tt_pass and rs_rank >= C.TT9_MIN_RS_RANK:
-        return "B"
-    else:
-        return "C"
+
+def _empty_watchlist() -> dict:
+    return {k: {} for k in STRATEGY_KEYS}
+
+
+def _normalize_strategy(strategy: Optional[str]) -> Optional[str]:
+    if strategy is None:
+        return None
+    s = str(strategy).upper().strip()
+    if s in STRATEGY_KEYS:
+        return s
+    return _LEGACY_GRADE_TO_STRATEGY.get(s)
+
+
+def _normalize_watchlist(data: dict) -> dict:
+    """Normalize watchlist shape and migrate legacy A/B/C structure."""
+    out = _empty_watchlist()
+    if not isinstance(data, dict):
+        return out
+
+    # Legacy shape: {"A": {...}, "B": {...}, "C": {...}}
+    if any(k in data for k in ("A", "B", "C")):
+        for grade, target in _LEGACY_GRADE_TO_STRATEGY.items():
+            bucket = data.get(grade, {}) or {}
+            if not isinstance(bucket, dict):
+                continue
+            for ticker, entry in bucket.items():
+                e = dict(entry or {})
+                e["strategy"] = target
+                out[target][ticker] = e
+
+    # New shape: {"SEPA": {...}, "QM": {...}, "ML": {...}}
+    for s in STRATEGY_KEYS:
+        bucket = data.get(s, {}) or {}
+        if not isinstance(bucket, dict):
+            continue
+        for ticker, entry in bucket.items():
+            e = dict(entry or {})
+            e["strategy"] = s
+            out[s][ticker] = e
+
+    return out

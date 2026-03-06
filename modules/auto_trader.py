@@ -28,7 +28,7 @@ import logging
 import sys
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -309,9 +309,9 @@ def _run_one_cycle(dry_run: bool):
                     C.AUTO_TRADE_MAX_BUYS_PER_DAY)
     else:
         # Process QM candidates first (breakout = more time-sensitive)
-        total_to_process = min(len(qm_filtered), C.AUTO_TRADE_MAX_CANDIDATES) + min(
-            len(ml_filtered), C.AUTO_TRADE_MAX_CANDIDATES
-        )
+        qm_limit = _max_candidates_for_strategy("QM")
+        ml_limit = _max_candidates_for_strategy("ML")
+        total_to_process = min(len(qm_filtered), qm_limit) + min(len(ml_filtered), ml_limit)
         processed = 0
         _update_status(
             current_phase="phase3",
@@ -319,7 +319,7 @@ def _run_one_cycle(dry_run: bool):
             total_candidates=total_to_process,
             phase_progress_pct=40,
         )
-        for cand in qm_filtered[:C.AUTO_TRADE_MAX_CANDIDATES]:
+        for cand in qm_filtered[:qm_limit]:
             if remaining_buys <= 0:
                 break
             if _cancel_event.is_set():
@@ -340,7 +340,7 @@ def _run_one_cycle(dry_run: bool):
                 remaining_buys -= 1
 
         # Process ML candidates
-        for cand in ml_filtered[:C.AUTO_TRADE_MAX_CANDIDATES]:
+        for cand in ml_filtered[:ml_limit]:
             if remaining_buys <= 0:
                 break
             if _cancel_event.is_set():
@@ -474,7 +474,15 @@ def _phase2_prefilter(candidates: list, strategy: str, regime: str,
         key=lambda r: float(r.get(star_key) or r.get("stars") or 0),
         reverse=True,
     )
-    return passed[:C.AUTO_TRADE_MAX_CANDIDATES]
+    return passed[:_max_candidates_for_strategy(strategy)]
+
+
+def _max_candidates_for_strategy(strategy: str) -> int:
+    """Return per-strategy candidate cap, with fallback to legacy global setting."""
+    fallback = int(getattr(C, "AUTO_TRADE_MAX_CANDIDATES", 10))
+    if strategy == "QM":
+        return max(1, int(getattr(C, "AUTO_TRADE_MAX_CANDIDATES_QM", fallback)))
+    return max(1, int(getattr(C, "AUTO_TRADE_MAX_CANDIDATES_ML", fallback)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1041,7 +1049,8 @@ def _log_action(db, row: dict, strategy: str, stars: float,
     try:
         db.append_auto_trade({
             "trade_date":  date.today().isoformat(),
-            "trade_time":  datetime.now().isoformat(),
+            # Persist in UTC to avoid ambiguous local-time interpretation in UI.
+            "trade_time":  datetime.now(timezone.utc).isoformat(),
             "ticker":      row.get("ticker", ""),
             "strategy":    strategy,
             "stars":       stars,

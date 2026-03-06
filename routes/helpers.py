@@ -513,12 +513,29 @@ def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
 
 
 def _load_combined_last() -> dict:
+    data = {}
     try:
         if _COMBINED_LAST_FILE.exists():
-            return json.loads(_COMBINED_LAST_FILE.read_text(encoding="utf-8"))
+            data = json.loads(_COMBINED_LAST_FILE.read_text(encoding="utf-8"))
     except Exception:
-        pass
-    return {}
+        data = {}
+
+    # Backfill ML summary so dashboard combined highlights can show SEPA + QM + ML
+    # even when combined scan did not persist ML fields.
+    try:
+        ml = _load_ml_last_scan()
+        ml_rows = ml.get("rows") or ml.get("ml_rows") or []
+        if "ml_rows" not in data:
+            data["ml_rows"] = ml_rows[:20]
+        if "ml_count" not in data:
+            data["ml_count"] = int(ml.get("count", len(ml_rows)))
+        if "ml_saved_at" not in data and ml.get("saved_at"):
+            data["ml_saved_at"] = ml.get("saved_at")
+    except Exception:
+        data.setdefault("ml_rows", [])
+        data.setdefault("ml_count", 0)
+
+    return data
 
 
 def _save_combined_scan_csv(sepa_df, qm_df, scan_ts=None) -> tuple:
@@ -566,7 +583,7 @@ def _load_watchlist() -> dict:
                 return json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 pass
-    return {"A": {}, "B": {}, "C": {}}
+    return {"SEPA": {}, "QM": {}, "ML": {}}
 
 
 def _load_positions() -> dict:
@@ -625,12 +642,12 @@ def df_to_rows(df, label: str = "") -> list:
 def htmx_wl_rows(wl: dict, trigger_msg: Optional[str] = None):
     """Build HTMX response with OOB badge-count spans + tbody rows."""
     rows_html = render_template("_watchlist_rows.html", wl=wl)
-    total = sum(len(wl.get(g, {})) for g in ["A", "B", "C"])
+    total = sum(len(wl.get(s, {})) for s in ["SEPA", "QM", "ML"])
     oob = (
         f'<span id="cnt-all" hx-swap-oob="innerHTML">{total}</span>'
-        f'<span id="cnt-A"   hx-swap-oob="innerHTML">{len(wl.get("A", {}))}</span>'
-        f'<span id="cnt-B"   hx-swap-oob="innerHTML">{len(wl.get("B", {}))}</span>'
-        f'<span id="cnt-C"   hx-swap-oob="innerHTML">{len(wl.get("C", {}))}</span>'
+        f'<span id="cnt-SEPA" hx-swap-oob="innerHTML">{len(wl.get("SEPA", {}))}</span>'
+        f'<span id="cnt-QM"   hx-swap-oob="innerHTML">{len(wl.get("QM", {}))}</span>'
+        f'<span id="cnt-ML"   hx-swap-oob="innerHTML">{len(wl.get("ML", {}))}</span>'
     )
     resp = make_response(oob + rows_html)
     if trigger_msg:

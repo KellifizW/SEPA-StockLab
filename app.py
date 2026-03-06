@@ -532,7 +532,7 @@ def _load_watchlist() -> dict:
                 return json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 pass
-    return {"A": {}, "B": {}, "C": {}}
+    return {"SEPA": {}, "QM": {}, "ML": {}}
 
 
 def _load_positions() -> dict:
@@ -566,13 +566,29 @@ def _latest_report() -> Optional[Path]:
 
 @app.route("/")
 def dashboard():
-    wl   = _load_watchlist()
-    pos  = _load_positions()
+    from routes.helpers import _get_account_size, _load_currency_setting, _convert_amount
+
+    wl = _load_watchlist()
+    pos = _load_positions()
     wl_counts = {g: len(v) for g, v in wl.items()}
-    return render_template("dashboard.html",
-                           wl=wl, wl_counts=wl_counts,
-                           positions=pos, account_size=C.ACCOUNT_SIZE,
-                           today=date.today().isoformat())
+    account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    currency, usd_hkd_rate = _load_currency_setting()
+    _, currency_symbol, account_size_display = _convert_amount(account_size, currency)
+
+    return render_template(
+        "dashboard.html",
+        wl=wl,
+        wl_counts=wl_counts,
+        positions=pos,
+        account_size=account_size,
+        account_size_display=account_size_display,
+        currency=currency,
+        currency_symbol=currency_symbol,
+        usd_hkd_rate=usd_hkd_rate,
+        nav_sync_time=nav_sync_time,
+        nav_sync_status=nav_sync_status,
+        today=date.today().isoformat(),
+    )
 
 
 @app.route("/scan")
@@ -2064,14 +2080,14 @@ def api_watchlist_get():
 def api_watchlist_add():
     data   = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
-    grade  = data.get("grade")
+    strategy = data.get("strategy") or data.get("grade")
     note   = data.get("note", "")
     jid    = _new_job()
 
     def _run():
         try:
             from modules.watchlist import add
-            add(ticker, grade=grade, note=note)
+            add(ticker, grade=strategy, note=note)
             _finish_job(jid, result={"ticker": ticker, "watchlist": _load_watchlist()})
         except Exception as exc:
             _finish_job(jid, error=str(exc))
@@ -2142,6 +2158,19 @@ def api_watchlist_refresh_status(jid):
     return jsonify(_get_job(jid))
 
 
+@app.route("/api/watchlist/move", methods=["POST"])
+def api_watchlist_move():
+    data = request.get_json(silent=True) or {}
+    ticker = str(data.get("ticker", "")).upper().strip()
+    strategy = str(data.get("strategy", "")).upper().strip()
+    try:
+        from modules.watchlist import move_to_strategy
+        move_to_strategy(ticker, strategy)
+        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # HTMX – Watchlist  (return HTML fragments, not JSON)
 # Used by hx-* buttons in _watchlist_rows.html and htmx.ajax() calls in watchlist.html.
@@ -2151,16 +2180,16 @@ def api_watchlist_refresh_status(jid):
 def _htmx_wl_rows(wl, trigger_msg=None):
     """Build htmx response: OOB badge-count <span>s prepended to tbody rows.
 
-    The OOB spans update #cnt-all / #cnt-A / #cnt-B / #cnt-C in the tab nav.
+    The OOB spans update #cnt-all / #cnt-SEPA / #cnt-QM / #cnt-ML in the tab nav.
     The remaining rows are swapped into #wlBody by the caller's hx-target.
     """
     rows_html = render_template("_watchlist_rows.html", wl=wl)
-    total = sum(len(wl.get(g, {})) for g in ["A", "B", "C"])
+    total = sum(len(wl.get(s, {})) for s in ["SEPA", "QM", "ML"])
     oob = (
         f'<span id="cnt-all" hx-swap-oob="innerHTML">{total}</span>'
-        f'<span id="cnt-A"   hx-swap-oob="innerHTML">{len(wl.get("A", {}))}</span>'
-        f'<span id="cnt-B"   hx-swap-oob="innerHTML">{len(wl.get("B", {}))}</span>'
-        f'<span id="cnt-C"   hx-swap-oob="innerHTML">{len(wl.get("C", {}))}</span>'
+        f'<span id="cnt-SEPA" hx-swap-oob="innerHTML">{len(wl.get("SEPA", {}))}</span>'
+        f'<span id="cnt-QM"   hx-swap-oob="innerHTML">{len(wl.get("QM", {}))}</span>'
+        f'<span id="cnt-ML"   hx-swap-oob="innerHTML">{len(wl.get("ML", {}))}</span>'
     )
     resp = make_response(oob + rows_html)
     if trigger_msg:
@@ -2213,6 +2242,20 @@ def htmx_wl_remove():
         return resp
 
 
+@app.route("/htmx/watchlist/move", methods=["POST"])
+def htmx_wl_move():
+    ticker = (request.form.get("ticker") or "").upper().strip()
+    strategy = (request.form.get("strategy") or "").upper().strip()
+    try:
+        from modules.watchlist import move_to_strategy
+        move_to_strategy(ticker, strategy)
+        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} moved to {strategy}")
+    except Exception as exc:
+        resp = make_response("", 200)
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
+        return resp
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # API – Positions
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2243,6 +2286,7 @@ def api_positions_add():
             float(data["stop_loss"]),
             float(data["target"]) if data.get("target") else None,
             str(data.get("note", "")),
+            str(data.get("pool") or data.get("strategy") or "FREE"),
         )
         t2 = time.time()
         logging.info(f"[API] add_position() completed in {(t2-t1):.3f}s")
@@ -2271,6 +2315,7 @@ def api_positions_add():
                 "target": round(target, 2),
                 "rr": round(rr, 2),
                 "risk_dollar": round(risk_dol, 2),
+                "strategy": str(data.get("pool") or data.get("strategy") or "FREE").upper(),
                 "buy_date": None,
                 "days_held": 0,
                 "note": str(data.get("note", "")),
@@ -2291,14 +2336,76 @@ def api_positions_add():
 
 @app.route("/api/positions/close", methods=["POST"])
 def api_positions_close():
-    data       = request.get_json(silent=True) or {}
-    ticker     = str(data.get("ticker", "")).upper().strip()
-    exit_price = float(data.get("exit_price", 0))
-    reason     = str(data.get("reason", ""))
+    data = request.get_json(silent=True) or {}
+    ticker = str(data.get("ticker", "")).upper().strip()
+    exit_price = float(data.get("exit_price", 0) or 0)
+    reason = str(data.get("reason", ""))
+    shares_to_close_raw = data.get("shares_to_close")
+    ibkr_execute = bool(data.get("ibkr_execute", False))
+
+    if not ticker:
+        return jsonify({"ok": False, "error": "Missing ticker"}), 400
+    if exit_price <= 0:
+        return jsonify({"ok": False, "error": "exit_price must be > 0"}), 400
+
+    positions = _load_positions()
+    pos = positions.get(ticker)
+    if not pos:
+        return jsonify({"ok": False, "error": f"{ticker} not found in open positions"}), 404
+
+    current_shares = int(pos.get("shares") or pos.get("qty") or 0)
+    if current_shares <= 0:
+        return jsonify({"ok": False, "error": f"{ticker} has no shares to close"}), 400
+
+    shares_to_close = None
+    if shares_to_close_raw not in (None, ""):
+        try:
+            shares_to_close = int(shares_to_close_raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "shares_to_close must be an integer"}), 400
+        if shares_to_close <= 0:
+            return jsonify({"ok": False, "error": "shares_to_close must be > 0"}), 400
+        if shares_to_close > current_shares:
+            return jsonify({"ok": False, "error": "shares_to_close exceeds current shares"}), 400
+
+    ibkr_result = None
+    qty_to_sell = shares_to_close or current_shares
+
     try:
+        if ibkr_execute:
+            if not C.IBKR_ENABLED:
+                return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 503
+
+            from modules import ibkr_client
+            if not ibkr_client.is_ibkr_connected():
+                return jsonify({"ok": False, "error": "IBKR is not connected"}), 503
+
+            ibkr_result = ibkr_client.place_order(
+                ticker=ticker,
+                action="SELL",
+                qty=qty_to_sell,
+                order_type="MKT",
+            )
+            if not ibkr_result.get("success"):
+                return jsonify({
+                    "ok": False,
+                    "error": ibkr_result.get("message", "IBKR sell order failed"),
+                    "ibkr": ibkr_result,
+                }), 502
+
         from modules.position_monitor import close_position
-        close_position(ticker, exit_price, reason=reason)
-        return jsonify({"ok": True, "positions": _load_positions()})
+        close_position(
+            ticker,
+            exit_price,
+            reason=reason,
+            shares_to_close=shares_to_close,
+        )
+        return jsonify({
+            "ok": True,
+            "positions": _load_positions(),
+            "ibkr": ibkr_result,
+            "closed_shares": qty_to_sell,
+        })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -2360,6 +2467,7 @@ def htmx_positions_add():
         target_raw = request.form.get("target", "").strip()
         target    = float(target_raw) if target_raw else None
         note      = request.form.get("note", "")
+        pool      = (request.form.get("pool") or request.form.get("strategy") or "FREE").upper().strip()
 
         if not ticker or not buy_price or not shares or not stop_loss:
             resp = make_response("", 200)
@@ -2367,7 +2475,7 @@ def htmx_positions_add():
             return resp
 
         from modules.position_monitor import add_position
-        add_position(ticker, buy_price, shares, stop_loss, target, note)
+        add_position(ticker, buy_price, shares, stop_loss, target, note, pool)
 
         # Compute display values (mirrors api_positions_add logic)
         if target is None:
@@ -2383,6 +2491,7 @@ def htmx_positions_add():
             "target":      round(target, 2),
             "rr":          round(rr, 2),
             "risk_dollar": round(risk_dol, 2),
+            "strategy":    pool,
             "days_held":   0,
             "note":        note,
         }
@@ -2496,8 +2605,7 @@ def api_quick_add_watch():
     """Global quick-add to watchlist. Called from any scan page."""
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
-    grade = data.get("grade", "C")  # Default to C if not specified
-    strategy = data.get("strategy", "")  # SEPA, QM, ML, or ''
+    strategy = (data.get("strategy") or data.get("grade") or "SEPA")
     note = data.get("note", "")
     
     if not ticker:
@@ -2507,20 +2615,15 @@ def api_quick_add_watch():
         from modules.watchlist import add
         from modules import db
         
-        # Add to watchlist
-        add(ticker, grade=grade, note=note)
-        
-        # Update strategy tag in DuckDB
-        wl = _load_watchlist()
-        if grade in wl and ticker in wl[grade]:
-            wl[grade][ticker]["strategy"] = strategy
-        db.wl_save(wl)
+        # Add to watchlist with target strategy bucket
+        add(ticker, grade=strategy, note=note)
+        db.wl_save(_load_watchlist())
         
         # Store in session for potential client-side tracking
         wl = _load_watchlist()
         return jsonify({
             "ok": True,
-            "message": f"✅ {ticker} 已加入觀察名單 (Grade {grade})",
+            "message": f"✅ {ticker} 已加入觀察名單 ({str(strategy).upper()})",
             "watchlist": wl
         })
     except Exception as exc:
@@ -2538,7 +2641,7 @@ def api_quick_add_position():
     stop_loss = float(data.get("stop_loss") or 0)
     target = data.get("target")
     target = float(target) if target else None
-    strategy = data.get("strategy", "")  # SEPA, QM, ML, or ''
+    strategy = str(data.get("strategy") or "FREE").upper().strip()
     note = data.get("note", "")
     
     if not ticker or not buy_price or not shares or not stop_loss:
@@ -2546,17 +2649,11 @@ def api_quick_add_position():
     
     try:
         from modules.position_monitor import add_position
-        from modules import db
         
-        # Add position
-        add_position(ticker, buy_price, shares, stop_loss, target, note)
-        
-        # Update strategy tag in DuckDB
-        pos = _load_positions()
-        if ticker in pos["positions"]:
-            pos["positions"][ticker]["strategy"] = strategy
-        db.pos_save(pos)
-        
+        # Add position into selected pool so exit engine applies corresponding rules.
+        pool = strategy if strategy in ("QM", "ML", "FREE") else "FREE"
+        add_position(ticker, buy_price, shares, stop_loss, target, note, pool)
+
         pos = _load_positions()
         return jsonify({
             "ok": True,
@@ -3260,14 +3357,14 @@ def api_tg_watchlist_data():
     try:
         wl_data = _load_watchlist()
         
-        # 轉換為菜單格式 (watchlist 結構: {"A": {...}, "B": {...}, "C": {...}})
+        # 轉換為菜單格式 (watchlist 結構: {"SEPA": {...}, "QM": {...}, "ML": {...}})
         items = []
-        for grade in ["A", "B", "C"]:
-            grade_dict = wl_data.get(grade, {})
-            for ticker, entry in grade_dict.items():
+        for strategy in ["SEPA", "QM", "ML"]:
+            strategy_dict = wl_data.get(strategy, {})
+            for ticker, entry in strategy_dict.items():
                 items.append({
                     "ticker": ticker,
-                    "grade": grade,
+                    "strategy": strategy,
                     "added_date": entry.get("added_date", "N/A"),
                     "status": entry.get("status", "watch")
                 })
@@ -4893,13 +4990,11 @@ register_blueprints(app)
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route("/htmx/dashboard/highlights")
 def htmx_dashboard_highlights():
-    r: dict = {}
-    _combined_last = ROOT / "data" / "combined_last_scan.json"
     try:
-        if _combined_last.exists():
-            r = json.loads(_combined_last.read_text(encoding="utf-8"))
+        from routes.helpers import _load_combined_last
+        r = _load_combined_last()
     except Exception:
-        pass
+        r = {}
     return render_template("_dashboard_highlights.html", r=r)
 
 

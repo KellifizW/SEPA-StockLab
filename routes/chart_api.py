@@ -872,6 +872,30 @@ def _get_ml_intraday_signals(
     daily_dim_g_score: float,
 ) -> dict:
     """Martin Luk intraday watch signal engine."""
+    def _cfg(name: str, default):
+        return getattr(C, name, default)
+
+    # Safe defaults for projects where ML watch constants are not defined.
+    ws_vwap_above = _cfg("ML_WSCORE_VWAP_ABOVE", 10)
+    ws_vwap_below = _cfg("ML_WSCORE_VWAP_BELOW", -10)
+    ws_ema9_above = _cfg("ML_WSCORE_EMA9_ABOVE", 6)
+    ws_ema9_below = _cfg("ML_WSCORE_EMA9_BELOW", -6)
+    ws_ema21_above = _cfg("ML_WSCORE_EMA21_ABOVE", 8)
+    ws_ema21_below = _cfg("ML_WSCORE_EMA21_BELOW", -10)
+    ws_orh_break = _cfg("ML_WSCORE_ORH_BREAK", 8)
+    ws_orl_break = _cfg("ML_WSCORE_ORL_BREAK", -8)
+    ws_chase_ok = _cfg("ML_WSCORE_CHASE_OK", 6)
+    ws_chase_high = _cfg("ML_WSCORE_CHASE_HIGH", -10)
+    ws_flush_v = _cfg("ML_WSCORE_FLUSH_V", 7)
+    ws_hl_confirmed = _cfg("ML_WSCORE_HL_CONFIRMED", 8)
+    ws_hl_lower = _cfg("ML_WSCORE_HL_LOWER", -8)
+    ws_mkt_bull = _cfg("ML_WSCORE_MKT_BULL", 6)
+    ws_mkt_bear = _cfg("ML_WSCORE_MKT_BEAR", -10)
+    watch_orh_window_min = int(_cfg("ML_WATCH_ORH_WINDOW_MIN", 30))
+    watch_max_chase_pct = float(_cfg("ML_WATCH_MAX_CHASE_PCT", 5.0))
+    watch_flush_v_min_pct = float(_cfg("ML_WATCH_FLUSH_V_MIN_PCT", 1.0))
+    watch_flush_v_recovery_pct = float(_cfg("ML_WATCH_FLUSH_V_RECOVERY_PCT", 0.6))
+
     signals: list = []
     w_score = 0
     w_breakdown: list = []
@@ -884,13 +908,13 @@ def _get_ml_intraday_signals(
     vwap_above = current_price > vwap if vwap > 0 else False
     if vwap_above:
         signals.append("🟢 股價在 VWAP 上方 Price above VWAP — 多頭主導")
-        w_score += C.ML_WSCORE_VWAP_ABOVE
-        w_breakdown.append({"dim": "VWAP", "pts": C.ML_WSCORE_VWAP_ABOVE,
+        w_score += ws_vwap_above
+        w_breakdown.append({"dim": "VWAP", "pts": ws_vwap_above,
                             "note": f"股價在 VWAP ${vwap:.2f} 上方 ({vwap_diff:+.1f}%)"})
     elif vwap > 0:
         signals.append("🔴 股價在 VWAP 下方 Price below VWAP — 空方主導")
-        w_score += C.ML_WSCORE_VWAP_BELOW
-        w_breakdown.append({"dim": "VWAP", "pts": C.ML_WSCORE_VWAP_BELOW,
+        w_score += ws_vwap_below
+        w_breakdown.append({"dim": "VWAP", "pts": ws_vwap_below,
                             "note": f"股價在 VWAP ${vwap:.2f} 下方 ({vwap_diff:+.1f}%)"})
     else:
         w_breakdown.append({"dim": "VWAP", "pts": 0, "note": "VWAP 數據不可用"})
@@ -902,56 +926,56 @@ def _get_ml_intraday_signals(
     above_ema21 = current_price > ema21 if ema21 > 0 else False
 
     if above_ema9:
-        w_score += C.ML_WSCORE_EMA9_ABOVE
+        w_score += ws_ema9_above
         signals.append(f"🟢 股價在 EMA9 ${ema9:.2f} 上方")
     else:
-        w_score += C.ML_WSCORE_EMA9_BELOW
+        w_score += ws_ema9_below
         signals.append(f"🔴 股價跌穿 EMA9 ${ema9:.2f}")
 
     if above_ema21:
-        w_score += C.ML_WSCORE_EMA21_ABOVE
+        w_score += ws_ema21_above
         signals.append(f"🟢 股價在 EMA21 ${ema21:.2f} 上方")
     else:
-        w_score += C.ML_WSCORE_EMA21_BELOW
+        w_score += ws_ema21_below
         signals.append(f"🔴 股價跌穿 EMA21 ${ema21:.2f} — 關鍵支撐失守")
     w_breakdown.append({"dim": "EMA 排列",
-                        "pts": (C.ML_WSCORE_EMA9_ABOVE if above_ema9 else C.ML_WSCORE_EMA9_BELOW) +
-                               (C.ML_WSCORE_EMA21_ABOVE if above_ema21 else C.ML_WSCORE_EMA21_BELOW),
+                        "pts": (ws_ema9_above if above_ema9 else ws_ema9_below) +
+                               (ws_ema21_above if above_ema21 else ws_ema21_below),
                         "note": f"EMA9 {'▲' if above_ema9 else '▼'} EMA21 {'▲' if above_ema21 else '▼'}"})
 
     # ORH breakout / breakdown (Chapter 7)
     orh_broken = orl_broken = False
-    orh_candle_count = max(1, C.ML_WATCH_ORH_WINDOW_MIN // 5)
+    orh_candle_count = max(1, watch_orh_window_min // 5)
     if len(candles_5m) > orh_candle_count and orh > 0:
         rest = candles_5m[orh_candle_count:]
         orh_broken = any(c["close"] > orh for c in rest)
         orl_broken = any(c["close"] < orl for c in rest)
 
     if orh_broken:
-        w_score += C.ML_WSCORE_ORH_BREAK
+        w_score += ws_orh_break
         signals.append(f"🟢 突破 ORH ${orh:.2f} — Opening Range High 突破確認")
-        w_breakdown.append({"dim": "ORH 突破", "pts": C.ML_WSCORE_ORH_BREAK, "note": f"ORH ${orh:.2f} 已突破"})
+        w_breakdown.append({"dim": "ORH 突破", "pts": ws_orh_break, "note": f"ORH ${orh:.2f} 已突破"})
     elif orl_broken:
-        w_score += C.ML_WSCORE_ORL_BREAK
+        w_score += ws_orl_break
         signals.append(f"🔴 跌破 ORL ${orl:.2f} — Opening Range Low 失守")
-        w_breakdown.append({"dim": "ORH 突破", "pts": C.ML_WSCORE_ORL_BREAK, "note": f"ORL ${orl:.2f} 已跌破"})
+        w_breakdown.append({"dim": "ORH 突破", "pts": ws_orl_break, "note": f"ORL ${orl:.2f} 已跌破"})
     else:
         w_breakdown.append({"dim": "ORH 突破", "pts": 0, "note": "ORH 範圍內整理中"})
 
     # Chase distance from LOD (Chapter 9)
     chase_pct = ((current_price - lod) / lod * 100) if lod > 0 else 0
-    chase_safe = chase_pct <= C.ML_WATCH_MAX_CHASE_PCT
+    chase_safe = chase_pct <= watch_max_chase_pct
     if chase_safe:
-        w_score += C.ML_WSCORE_CHASE_OK
-        w_breakdown.append({"dim": "追價距離", "pts": C.ML_WSCORE_CHASE_OK,
+        w_score += ws_chase_ok
+        w_breakdown.append({"dim": "追價距離", "pts": ws_chase_ok,
                             "note": f"距 LOD {chase_pct:.1f}% — 安全入場區"})
     else:
-        w_score += C.ML_WSCORE_CHASE_HIGH
-        signals.append(f"🔴 追價過高 距 LOD {chase_pct:.1f}% — Martin 規則：>{C.ML_WATCH_MAX_CHASE_PCT}% 禁入場")
-        w_breakdown.append({"dim": "追價距離", "pts": C.ML_WSCORE_CHASE_HIGH,
+        w_score += ws_chase_high
+        signals.append(f"🔴 追價過高 距 LOD {chase_pct:.1f}% — Martin 規則：>{watch_max_chase_pct}% 禁入場")
+        w_breakdown.append({"dim": "追價距離", "pts": ws_chase_high,
                             "note": f"距 LOD {chase_pct:.1f}% — 超過安全線"})
         w_iron_rules.append({"rule": "CHASE_TOO_HIGH",
-                             "msg": f"追價 {chase_pct:.1f}% 超過 {C.ML_WATCH_MAX_CHASE_PCT}% 上限",
+                             "msg": f"追價 {chase_pct:.1f}% 超過 {watch_max_chase_pct}% 上限",
                              "severity": "warn"})
 
     # Flush → V-recovery (Chapter 7)
@@ -959,17 +983,17 @@ def _get_ml_intraday_signals(
     flush_depth = flush_recovery = 0
     if len(candles_5m) >= 4:
         open_px = candles_5m[0]["open"]
-        flush_window = candles_5m[:max(3, C.ML_FLUSH_MAX_MINUTES // 5)]
+        flush_window = candles_5m[:max(3, int(_cfg("ML_FLUSH_MAX_MINUTES", 20)) // 5)]
         min_low = min(c["low"] for c in flush_window)
         flush_depth = ((open_px - min_low) / open_px * 100) if open_px > 0 else 0
-        if flush_depth >= C.ML_WATCH_FLUSH_V_MIN_PCT:
+        if flush_depth >= watch_flush_v_min_pct:
             recovery = (current_price - min_low) / (open_px - min_low) if open_px != min_low else 0
             flush_recovery = recovery
-            if recovery >= C.ML_WATCH_FLUSH_V_RECOVERY_PCT:
+            if recovery >= watch_flush_v_recovery_pct:
                 flush_detected = True
-                w_score += C.ML_WSCORE_FLUSH_V
+                w_score += ws_flush_v
                 signals.append(f"🟢 Flush→V 反彈信號 深度 {flush_depth:.1f}% 恢復 {recovery * 100:.0f}%")
-                w_breakdown.append({"dim": "Flush V", "pts": C.ML_WSCORE_FLUSH_V,
+                w_breakdown.append({"dim": "Flush V", "pts": ws_flush_v,
                                     "note": f"V 形反彈確認 (深度{flush_depth:.1f}%)"})
 
     # Higher lows intraday (Chapter 7)
@@ -987,13 +1011,13 @@ def _get_ml_intraday_signals(
             hl_trend = "ascending" if hl_valid else ("mixed" if hl_count > 0 else "descending")
 
     if hl_valid:
-        w_score += C.ML_WSCORE_HL_CONFIRMED
+        w_score += ws_hl_confirmed
         signals.append(f"🟢 更高低點 Higher lows ({hl_count}) — 上升結構")
-        w_breakdown.append({"dim": "低點結構", "pts": C.ML_WSCORE_HL_CONFIRMED, "note": f"{hl_count} 個更高低點"})
+        w_breakdown.append({"dim": "低點結構", "pts": ws_hl_confirmed, "note": f"{hl_count} 個更高低點"})
     elif hl_trend == "descending":
-        w_score += C.ML_WSCORE_HL_LOWER
+        w_score += ws_hl_lower
         signals.append("🔴 低點下移 — 弱勢結構")
-        w_breakdown.append({"dim": "低點結構", "pts": C.ML_WSCORE_HL_LOWER, "note": "低點持續下移"})
+        w_breakdown.append({"dim": "低點結構", "pts": ws_hl_lower, "note": "低點持續下移"})
     else:
         w_breakdown.append({"dim": "低點結構", "pts": 0, "note": "結構不明"})
 
@@ -1013,11 +1037,11 @@ def _get_ml_intraday_signals(
 
     # Market regime from daily analysis (Dim G)
     if daily_dim_g_score >= 0:
-        w_score += C.ML_WSCORE_MKT_BULL
-        w_breakdown.append({"dim": "市場環境", "pts": C.ML_WSCORE_MKT_BULL, "note": "日線市場環境有利"})
+        w_score += ws_mkt_bull
+        w_breakdown.append({"dim": "市場環境", "pts": ws_mkt_bull, "note": "日線市場環境有利"})
     else:
-        w_score += C.ML_WSCORE_MKT_BEAR
-        w_breakdown.append({"dim": "市場環境", "pts": C.ML_WSCORE_MKT_BEAR, "note": "日線市場環境不利"})
+        w_score += ws_mkt_bear
+        w_breakdown.append({"dim": "市場環境", "pts": ws_mkt_bear, "note": "日線市場環境不利"})
         if daily_dim_g_score <= -0.5:
             w_iron_rules.append({"rule": "MARKET_BEARISH",
                                  "msg": "市場環境嚴重不利 — 建議觀望不入場",
@@ -1138,7 +1162,7 @@ def ml_watch_signals(ticker: str):
         if candles_5m:
             hod = max(c["high"] for c in candles_5m)
             lod = min(c["low"] for c in candles_5m)
-            orh_n = max(1, C.ML_WATCH_ORH_WINDOW_MIN // 5)
+            orh_n = max(1, int(getattr(C, "ML_WATCH_ORH_WINDOW_MIN", 30)) // 5)
             if len(candles_5m) >= orh_n:
                 orh = max(c["high"] for c in candles_5m[:orh_n])
                 orl = min(c["low"] for c in candles_5m[:orh_n])

@@ -30,14 +30,14 @@ def api_watchlist_get():
 def api_watchlist_add():
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
-    grade = data.get("grade")
+    strategy = data.get("strategy") or data.get("grade")
     note = data.get("note", "")
     jid = _new_job()
 
     def _run():
         try:
             from modules.watchlist import add
-            add(ticker, grade=grade, note=note)
+            add(ticker, grade=strategy, note=note)
             _finish_job(jid, result={"ticker": ticker, "watchlist": _load_watchlist()})
         except Exception as exc:
             _finish_job(jid, error=str(exc))
@@ -82,6 +82,19 @@ def api_watchlist_demote():
     try:
         from modules.watchlist import demote
         demote(ticker)
+        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@bp.route("/api/watchlist/move", methods=["POST"])
+def api_watchlist_move():
+    data = request.get_json(silent=True) or {}
+    ticker = str(data.get("ticker", "")).upper().strip()
+    strategy = str(data.get("strategy", "")).upper().strip()
+    try:
+        from modules.watchlist import move_to_strategy
+        move_to_strategy(ticker, strategy)
         return jsonify({"ok": True, "watchlist": _load_watchlist()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -156,6 +169,20 @@ def htmx_wl_remove():
         return resp
 
 
+@bp.route("/htmx/watchlist/move", methods=["POST"])
+def htmx_wl_move():
+    ticker = (request.form.get("ticker") or "").upper().strip()
+    strategy = (request.form.get("strategy") or "").upper().strip()
+    try:
+        from modules.watchlist import move_to_strategy
+        move_to_strategy(ticker, strategy)
+        return htmx_wl_rows(_load_watchlist(), f"✅ {ticker} moved to {strategy}")
+    except Exception as exc:
+        resp = make_response("", 200)
+        resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
+        return resp
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Positions JSON API
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -186,6 +213,7 @@ def api_positions_add():
             float(data["stop_loss"]),
             float(data["target"]) if data.get("target") else None,
             str(data.get("note", "")),
+            str(data.get("pool") or data.get("strategy") or "FREE"),
         )
         t2 = time.time()
         logging.info("[API] add_position() completed in %.3fs", t2 - t1)
@@ -212,6 +240,7 @@ def api_positions_add():
                 "target": round(target, 2),
                 "rr": round(rr, 2),
                 "risk_dollar": round(risk_dol, 2),
+                "strategy": str(data.get("pool") or data.get("strategy") or "FREE").upper(),
                 "buy_date": None,
                 "days_held": 0,
                 "note": str(data.get("note", "")),
@@ -234,12 +263,74 @@ def api_positions_add():
 def api_positions_close():
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
-    exit_price = float(data.get("exit_price", 0))
+    exit_price = float(data.get("exit_price", 0) or 0)
     reason = str(data.get("reason", ""))
+    shares_to_close_raw = data.get("shares_to_close")
+    ibkr_execute = bool(data.get("ibkr_execute", False))
+
+    if not ticker:
+        return jsonify({"ok": False, "error": "Missing ticker"}), 400
+    if exit_price <= 0:
+        return jsonify({"ok": False, "error": "exit_price must be > 0"}), 400
+
+    positions = _load_positions()
+    pos = positions.get(ticker)
+    if not pos:
+        return jsonify({"ok": False, "error": f"{ticker} not found in open positions"}), 404
+
+    current_shares = int(pos.get("shares") or pos.get("qty") or 0)
+    if current_shares <= 0:
+        return jsonify({"ok": False, "error": f"{ticker} has no shares to close"}), 400
+
+    shares_to_close = None
+    if shares_to_close_raw not in (None, ""):
+        try:
+            shares_to_close = int(shares_to_close_raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "shares_to_close must be an integer"}), 400
+        if shares_to_close <= 0:
+            return jsonify({"ok": False, "error": "shares_to_close must be > 0"}), 400
+        if shares_to_close > current_shares:
+            return jsonify({"ok": False, "error": "shares_to_close exceeds current shares"}), 400
+
+    ibkr_result = None
+    qty_to_sell = shares_to_close or current_shares
+
     try:
+        if ibkr_execute:
+            if not C.IBKR_ENABLED:
+                return jsonify({"ok": False, "error": "IBKR integration is disabled"}), 503
+
+            from modules import ibkr_client
+            if not ibkr_client.is_ibkr_connected():
+                return jsonify({"ok": False, "error": "IBKR is not connected"}), 503
+
+            ibkr_result = ibkr_client.place_order(
+                ticker=ticker,
+                action="SELL",
+                qty=qty_to_sell,
+                order_type="MKT",
+            )
+            if not ibkr_result.get("success"):
+                return jsonify({
+                    "ok": False,
+                    "error": ibkr_result.get("message", "IBKR sell order failed"),
+                    "ibkr": ibkr_result,
+                }), 502
+
         from modules.position_monitor import close_position
-        close_position(ticker, exit_price, reason=reason)
-        return jsonify({"ok": True, "positions": _load_positions()})
+        close_position(
+            ticker,
+            exit_price,
+            reason=reason,
+            shares_to_close=shares_to_close,
+        )
+        return jsonify({
+            "ok": True,
+            "positions": _load_positions(),
+            "ibkr": ibkr_result,
+            "closed_shares": qty_to_sell,
+        })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -297,6 +388,7 @@ def htmx_positions_add():
         target_raw = request.form.get("target", "").strip()
         target = float(target_raw) if target_raw else None
         note = request.form.get("note", "")
+        pool = (request.form.get("pool") or request.form.get("strategy") or "FREE").upper().strip()
 
         if not ticker or not buy_price or not shares or not stop_loss:
             resp = make_response("", 200)
@@ -304,7 +396,7 @@ def htmx_positions_add():
             return resp
 
         from modules.position_monitor import add_position
-        add_position(ticker, buy_price, shares, stop_loss, target, note)
+        add_position(ticker, buy_price, shares, stop_loss, target, note, pool)
 
         if target is None:
             risk = buy_price - stop_loss
@@ -319,6 +411,7 @@ def htmx_positions_add():
             "target": round(target, 2),
             "rr": round(rr, 2),
             "risk_dollar": round(risk_dol, 2),
+            "strategy": pool,
             "days_held": 0,
             "note": note,
         }

@@ -71,10 +71,10 @@
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #0d1117; }
     ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
-    /* htmx: watchlist grade filter (CSS-driven via data-grade-filter on tbody) */
-    #wlBody[data-grade-filter="A"] tr:not([data-grade="A"]) { display: none; }
-    #wlBody[data-grade-filter="B"] tr:not([data-grade="B"]) { display: none; }
-    #wlBody[data-grade-filter="C"] tr:not([data-grade="C"]) { display: none; }
+    /* htmx: watchlist strategy filter (CSS-driven via data-strategy-filter on tbody) */
+    #wlBody[data-strategy-filter="SEPA"] tr:not([data-strategy="SEPA"]) { display: none; }
+    #wlBody[data-strategy-filter="QM"] tr:not([data-strategy="QM"]) { display: none; }
+    #wlBody[data-strategy-filter="ML"] tr:not([data-strategy="ML"]) { display: none; }
     /* htmx: dim buttons while a request from this element is in flight */
     button.htmx-request { opacity: 0.6; pointer-events: none; }
   </style>

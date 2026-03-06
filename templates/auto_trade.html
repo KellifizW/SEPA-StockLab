@@ -53,11 +53,66 @@
                 <tr><td class="text-muted">ML Min Star</td><td id="cfgMinStarML">—</td></tr>
                 <tr><td class="text-muted">Min Watch Score</td><td id="cfgMinWatch">—</td></tr>
                 <tr><td class="text-muted">Max Buys/Day</td><td id="cfgMaxBuys">—</td></tr>
+                <tr><td class="text-muted">QM Candidates/Cycle</td><td id="cfgMaxCandQM">—</td></tr>
+                <tr><td class="text-muted">ML Candidates/Cycle</td><td id="cfgMaxCandML">—</td></tr>
                 <tr><td class="text-muted">Poll Interval</td><td id="cfgPollSec">—</td></tr>
                 <tr><td class="text-muted">Order Type</td><td id="cfgOrderType">—</td></tr>
                 <tr><td class="text-muted">Attach Stop</td><td id="cfgAttachStop">—</td></tr>
               </tbody>
             </table>
+          </div>
+
+          <hr class="border-secondary">
+
+          <div style="font-size:12px">
+            <div class="row g-2">
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">QM Min Star</label>
+                <input id="cfgInpMinStarQM" type="number" class="form-control form-control-sm" min="0" max="6" step="0.1">
+              </div>
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">ML Min Star</label>
+                <input id="cfgInpMinStarML" type="number" class="form-control form-control-sm" min="0" max="6" step="0.1">
+              </div>
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">Min Watch Score</label>
+                <input id="cfgInpMinWatch" type="number" class="form-control form-control-sm" min="0" max="100" step="1">
+              </div>
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">Max Buys / Day</label>
+                <input id="cfgInpMaxBuys" type="number" class="form-control form-control-sm" min="1" max="100" step="1">
+              </div>
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">QM Candidates / Cycle</label>
+                <input id="cfgInpCandQM" type="number" class="form-control form-control-sm" min="1" max="100" step="1">
+              </div>
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">ML Candidates / Cycle</label>
+                <input id="cfgInpCandML" type="number" class="form-control form-control-sm" min="1" max="100" step="1">
+              </div>
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">Poll Interval (sec)</label>
+                <input id="cfgInpPollSec" type="number" class="form-control form-control-sm" min="30" max="3600" step="1">
+              </div>
+              <div class="col-6">
+                <label class="form-label text-muted mb-1">Order Type</label>
+                <select id="cfgInpOrderType" class="form-select form-select-sm">
+                  <option value="LMT">LMT</option>
+                  <option value="MKT">MKT</option>
+                </select>
+              </div>
+              <div class="col-6 d-flex align-items-center">
+                <div class="form-check form-switch mt-3">
+                  <input class="form-check-input" type="checkbox" id="cfgInpAttachStop">
+                  <label class="form-check-label" for="cfgInpAttachStop">Attach Stop</label>
+                </div>
+              </div>
+              <div class="col-6 d-flex align-items-center justify-content-end">
+                <button class="btn btn-sm btn-outline-info mt-3" onclick="saveAutoTradeConfig()">
+                  <i class="bi bi-save me-1"></i>Save 設定保存
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -447,6 +502,7 @@
 {% block extra_js %}
 <script>
 let _pollTimer = null;
+let _cfgLoaded = false;
 
 function atStart() {
   const dryRun = document.getElementById('atDryRunToggle').checked;
@@ -529,6 +585,8 @@ function _pollStatus() {
     document.getElementById('cfgMinStarML').textContent = cfg.min_star_ml || '—';
     document.getElementById('cfgMinWatch').textContent = cfg.min_watch_score || '—';
     document.getElementById('cfgMaxBuys').textContent = cfg.max_buys_per_day || '—';
+    document.getElementById('cfgMaxCandQM').textContent = cfg.max_candidates_qm || '—';
+    document.getElementById('cfgMaxCandML').textContent = cfg.max_candidates_ml || '—';
     document.getElementById('cfgPollSec').textContent = (cfg.poll_interval_sec || 300) + 's';
     document.getElementById('cfgOrderType').textContent = cfg.order_type || '—';
     document.getElementById('cfgAttachStop').textContent = cfg.attach_stop ? 'Yes' : 'No';
@@ -553,8 +611,9 @@ function _pollStatus() {
     } else {
       body.innerHTML = cands.map(c => {
         const cls = c.action === 'BUY' ? 'score-high' : c.action === 'BLOCKED' ? 'score-low' : '';
+        const link = _strategyAnalyzeLink(c.ticker, c.strategy);
         return `<tr>
-          <td><strong>${_esc(c.ticker)}</strong></td>
+          <td><strong><a href="${_esc(link)}" style="color:var(--accent);text-decoration:none">${_esc(c.ticker)}</a></strong></td>
           <td>${_esc(c.strategy)}</td>
           <td>${(c.stars||0).toFixed(1)}</td>
           <td class="${cls}">${_esc(c.action)}</td>
@@ -586,13 +645,15 @@ function loadHistory() {
       return;
     }
     body.innerHTML = rows.map(r => {
-      const t = r.trade_time ? new Date(r.trade_time).toLocaleString('en-US', {
-        month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false
-      }) : '—';
+      const tHk = r.trade_time_hk || '—';
+      const tUs = r.trade_time_us || '—';
       const actionCls = r.action === 'BUY' ? 'score-high' :
                         r.action === 'BLOCKED' ? 'score-low' : 'text-muted';
       return `<tr>
-        <td style="font-size:11px">${_esc(t)}</td>
+        <td style="font-size:11px">
+          <div>${_esc(tHk)}</div>
+          <div class="text-muted" style="font-size:10px">${_esc(tUs)}</div>
+        </td>
         <td><strong>${_esc(r.ticker)}</strong></td>
         <td>${_esc(r.strategy)}</td>
         <td>${(r.stars||0).toFixed(1)}</td>
@@ -621,6 +682,14 @@ function _esc(s) {
   return d.innerHTML;
 }
 
+function _strategyAnalyzeLink(ticker, strategy) {
+  const t = encodeURIComponent(String(ticker || '').toUpperCase());
+  const s = String(strategy || '').toUpperCase();
+  if (s === 'QM') return `/qm/analyze?ticker=${t}`;
+  if (s === 'ML') return `/ml/analyze?ticker=${t}`;
+  return `/analyze?ticker=${t}`;
+}
+
 function _toast(msg, type) {
   const c = document.getElementById('toast-container');
   if (!c) return;
@@ -631,9 +700,58 @@ function _toast(msg, type) {
   setTimeout(() => el.remove(), 4000);
 }
 
+function loadAutoTradeConfig() {
+  fetch('/api/auto-trade/config')
+  .then(r => r.json())
+  .then(d => {
+    if (!d.ok) return;
+    document.getElementById('cfgInpMinStarQM').value = d.auto_trade_min_star_qm;
+    document.getElementById('cfgInpMinStarML').value = d.auto_trade_min_star_ml;
+    document.getElementById('cfgInpMinWatch').value = d.auto_trade_min_watch_score;
+    document.getElementById('cfgInpMaxBuys').value = d.auto_trade_max_buys_per_day;
+    document.getElementById('cfgInpCandQM').value = d.auto_trade_max_candidates_qm;
+    document.getElementById('cfgInpCandML').value = d.auto_trade_max_candidates_ml;
+    document.getElementById('cfgInpPollSec').value = d.auto_trade_poll_interval_sec;
+    document.getElementById('cfgInpOrderType').value = d.auto_trade_order_type;
+    document.getElementById('cfgInpAttachStop').checked = !!d.auto_trade_attach_stop;
+    _cfgLoaded = true;
+  })
+  .catch(() => {});
+}
+
+function saveAutoTradeConfig() {
+  const payload = {
+    auto_trade_min_star_qm: Number(document.getElementById('cfgInpMinStarQM').value || 0),
+    auto_trade_min_star_ml: Number(document.getElementById('cfgInpMinStarML').value || 0),
+    auto_trade_min_watch_score: Number(document.getElementById('cfgInpMinWatch').value || 0),
+    auto_trade_max_buys_per_day: Number(document.getElementById('cfgInpMaxBuys').value || 1),
+    auto_trade_max_candidates_qm: Number(document.getElementById('cfgInpCandQM').value || 1),
+    auto_trade_max_candidates_ml: Number(document.getElementById('cfgInpCandML').value || 1),
+    auto_trade_poll_interval_sec: Number(document.getElementById('cfgInpPollSec').value || 300),
+    auto_trade_order_type: document.getElementById('cfgInpOrderType').value,
+    auto_trade_attach_stop: document.getElementById('cfgInpAttachStop').checked,
+  };
+  fetch('/api/auto-trade/config', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      _toast('Config saved 設定已保存', 'ok');
+      _pollStatus();
+    } else {
+      _toast('Save failed: ' + (d.error || 'unknown error'), 'err');
+    }
+  })
+  .catch(e => _toast('Save failed: ' + e, 'err'));
+}
+
 // Init
 document.addEventListener('DOMContentLoaded', () => {
   _pollStatus();
+  loadAutoTradeConfig();
   loadHistory();
   loadPoolStatus();
   loadPoolLog();

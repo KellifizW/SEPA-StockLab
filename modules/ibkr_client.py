@@ -70,6 +70,14 @@ _last_error = ""
 _connection_failed_count = 0
 
 
+def _ensure_thread_event_loop() -> None:
+    """ib_insync may call asyncio.get_event_loop() in request threads."""
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper: Determine active port based on environment
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,6 +271,53 @@ async def _connect_async(host: str, port: int, client_id: int) -> IB:
     return ib
 
 
+async def _read_account_snapshot_async() -> Dict[str, Any]:
+    """Read account values/summary safely on the IB event loop thread."""
+    return {
+        "managed_accounts": list(_ib.managedAccounts()) if _ib else [],
+        "account_values": list(_ib.accountValues()) if _ib else [],
+        "account_summary": list(_ib.accountSummary()) if _ib else [],
+    }
+
+
+async def _read_portfolio_async() -> List[Any]:
+    """Read portfolio safely on the IB event loop thread."""
+    return list(_ib.portfolio()) if _ib else []
+
+
+async def _read_trades_async() -> List[Any]:
+    """Read trade objects safely on the IB event loop thread."""
+    return list(_ib.trades()) if _ib else []
+
+
+def _read_account_snapshot_cached() -> Dict[str, Any]:
+    """Read account snapshot from ib_insync wrapper caches without network calls."""
+    if not _ib:
+        return {"managed_accounts": [], "account_values": [], "account_summary": []}
+
+    wrapper = getattr(_ib, "wrapper", None)
+    managed_accounts = []
+    account_values = []
+    account_summary = []
+
+    if wrapper is not None:
+        managed_accounts = list(getattr(wrapper, "accounts", []) or [])
+        account_values = list((getattr(wrapper, "accountValues", {}) or {}).values())
+        account_summary = list((getattr(wrapper, "acctSummary", {}) or {}).values())
+
+    if not managed_accounts:
+        try:
+            managed_accounts = list(_ib.managedAccounts())
+        except Exception:
+            managed_accounts = []
+
+    return {
+        "managed_accounts": managed_accounts,
+        "account_values": account_values,
+        "account_summary": account_summary,
+    }
+
+
 def disconnect() -> Dict[str, Any]:
     """
     Safely disconnect from IBKR and clean up resources.
@@ -312,7 +367,7 @@ def is_ibkr_connected() -> bool:
         True if connected, False otherwise
     """
     with _ib_lock:
-        return _connection_state == "CONNECTED" and _ib and _ib.isConnected()
+        return _connection_state == "CONNECTED" and _ib is not None
 
 
 def get_status() -> Dict[str, Any]:
@@ -333,7 +388,8 @@ def get_status() -> Dict[str, Any]:
         }
     """
     with _ib_lock:
-        if _connection_state != "CONNECTED" or not _ib or not _ib.isConnected():
+        _ensure_thread_event_loop()
+        if _connection_state != "CONNECTED" or not _ib:
             return {
                 "state": _connection_state,
                 "connected": False,
@@ -347,45 +403,57 @@ def get_status() -> Dict[str, Any]:
             }
         
         try:
-            # Get account safely
-            managed_accts = _ib.managedAccounts() if _ib else []
+            snap = _read_account_snapshot_cached()
+            managed_accts = list(snap.get("managed_accounts", []))
             account = managed_accts[0] if managed_accts else "UNKNOWN"
-            
-            # Get ALL account values with full object (not just dict)
-            all_acct_vals = _ib.accountValues()
-            acct_vals = {
-                av.tag: av.value for av in all_acct_vals
-            }
-            
-            # Try to detect account currency from various possible fields
-            account_currency = "USD"  # default
-            
-            # Method 1: Direct Currency field
-            if "Currency" in acct_vals:
-                account_currency = acct_vals["Currency"].upper()
-            # Method 2: BaseCurrency field
-            elif "BaseCurrency" in acct_vals:
-                account_currency = acct_vals["BaseCurrency"].upper()
-            # Method 3: Check AccountCurrency field (might exist)
-            elif "AccountCurrency" in acct_vals:
-                account_currency = acct_vals["AccountCurrency"].upper()
-            # Method 4: Look for currency in the raw AccountValue objects
-            else:
-                for av in all_acct_vals:
-                    if hasattr(av, 'currency') and av.currency:
-                        account_currency = av.currency.upper()
-                        break
-                    # Check if tag contains currency info
-                    if av.tag == "Currency":
-                        account_currency = av.value.upper()
-                        break
-            
-            nav = float(acct_vals.get("NetLiquidation", 0))
-            buying_power = float(acct_vals.get("BuyingPower", 0))
-            unrealized_pnl = float(acct_vals.get("UnrealizedPnL", 0))
-            cash = float(acct_vals.get("CashBalance", 0))
-            
-            # Fallback logic: if buying_power is 0, use cash or nav (解決購買力為 0 的問題)
+
+            all_acct_vals = list(snap.get("account_values", []))
+            summary_vals = list(snap.get("account_summary", []))
+
+            def _to_float(v: Any) -> float:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            def _pick_tag(tag: str, preferred_ccy: str = "") -> float:
+                """Pick a numeric tag value with priority: BASE -> preferred_ccy -> any."""
+                for src in (summary_vals, all_acct_vals):
+                    for row in src:
+                        if getattr(row, "tag", "") == tag and getattr(row, "currency", "") == "BASE":
+                            return _to_float(getattr(row, "value", 0))
+                if preferred_ccy:
+                    for src in (summary_vals, all_acct_vals):
+                        for row in src:
+                            if getattr(row, "tag", "") == tag and getattr(row, "currency", "") == preferred_ccy:
+                                return _to_float(getattr(row, "value", 0))
+                for src in (summary_vals, all_acct_vals):
+                    for row in src:
+                        if getattr(row, "tag", "") == tag:
+                            return _to_float(getattr(row, "value", 0))
+                return 0.0
+
+            account_currency = "USD"
+            for row in summary_vals + all_acct_vals:
+                if getattr(row, "tag", "") == "Currency" and getattr(row, "value", ""):
+                    account_currency = str(getattr(row, "value")).upper()
+                    break
+            if not account_currency:
+                account_currency = "USD"
+            if account_currency == "BASE":
+                account_currency = C.ACCOUNT_BASE_CURRENCY
+
+            nav = _pick_tag("NetLiquidation", account_currency)
+            buying_power = _pick_tag("BuyingPower", account_currency)
+            unrealized_pnl = _pick_tag("UnrealizedPnL", account_currency)
+
+            # Use canonical cash tags first; fall back if broker/account type omits them.
+            cash = _pick_tag("SettledCash", account_currency)
+            if cash == 0:
+                cash = _pick_tag("TotalCashValue", account_currency)
+            if cash == 0:
+                cash = _pick_tag("CashBalance", account_currency)
+
             if buying_power <= 0:
                 buying_power = cash if cash > 0 else nav
             
@@ -443,106 +511,81 @@ def get_account_detail() -> Dict[str, Any]:
         }
     """
     with _ib_lock:
-        if _connection_state != "CONNECTED" or not _ib or not _ib.isConnected():
+        _ensure_thread_event_loop()
+        if _connection_state != "CONNECTED" or not _ib:
             return {"connected": False, "error": "Not connected to IBKR"}
 
         try:
-            managed_accts = _ib.managedAccounts() if _ib else []
+            snap = _read_account_snapshot_cached()
+            managed_accts = list(snap.get("managed_accounts", []))
             account = managed_accts[0] if managed_accts else "UNKNOWN"
 
-            all_acct_vals = _ib.accountValues()
+            all_acct_vals = list(snap.get("account_values", []))
+            summary_vals = list(snap.get("account_summary", []))
+
+            def _to_float(v: Any) -> float:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            def _pick_tag(tag: str, preferred_ccy: str = "") -> float:
+                for src in (summary_vals, all_acct_vals):
+                    for row in src:
+                        if getattr(row, "tag", "") == tag and getattr(row, "currency", "") == "BASE":
+                            return _to_float(getattr(row, "value", 0))
+                if preferred_ccy:
+                    for src in (summary_vals, all_acct_vals):
+                        for row in src:
+                            if getattr(row, "tag", "") == tag and getattr(row, "currency", "") == preferred_ccy:
+                                return _to_float(getattr(row, "value", 0))
+                for src in (summary_vals, all_acct_vals):
+                    for row in src:
+                        if getattr(row, "tag", "") == tag:
+                            return _to_float(getattr(row, "value", 0))
+                return 0.0
+
+            account_currency = ""
+            for row in summary_vals + all_acct_vals:
+                if getattr(row, "tag", "") == "Currency" and getattr(row, "value", ""):
+                    account_currency = str(getattr(row, "value")).upper()
+                    break
+            if not account_currency:
+                import trader_config as _C
+                account_currency = _C.ACCOUNT_BASE_CURRENCY
+            if account_currency == "BASE":
+                account_currency = C.ACCOUNT_BASE_CURRENCY
 
             cash_by_currency: Dict[str, float] = {}
-            stock_value = 0.0
-            total_cash_value = 0.0
-            settled_cash = 0.0
-            nav = 0.0
-            unrealized_pnl = 0.0
-            realized_pnl = 0.0
-            buying_power = 0.0
-            available_funds = 0.0
-            excess_liquidity = 0.0
-            maint_margin = 0.0
-            init_margin = 0.0
-            gross_position = 0.0
-            base_currency = "HKD"  # default; will be overridden
-
             for av in all_acct_vals:
-                try:
-                    val = float(av.value)
-                except (ValueError, TypeError):
+                if getattr(av, "tag", "") != "CashBalance":
                     continue
+                ccy = str(getattr(av, "currency", "") or "").upper()
+                if not ccy or ccy == "BASE":
+                    continue
+                cash_by_currency[ccy] = cash_by_currency.get(ccy, 0.0) + _to_float(getattr(av, "value", 0))
 
-                # Cash balance per individual currency (exclude BASE summary)
-                if av.tag == "CashBalance" and av.currency and av.currency != "BASE":
-                    if av.currency not in cash_by_currency:
-                        cash_by_currency[av.currency] = 0.0
-                    cash_by_currency[av.currency] += val
+            nav = _pick_tag("NetLiquidation", account_currency)
+            gross_position = abs(_pick_tag("GrossPositionValue", account_currency))
+            total_cash_value = _pick_tag("TotalCashValue", account_currency)
+            settled_cash = _pick_tag("SettledCash", account_currency)
 
-                # IBKR canonical: total cash value in base currency
-                elif av.tag == "TotalCashValue" and av.currency == "BASE":
-                    total_cash_value = val
-
-                # IBKR canonical: settled cash in base currency
-                elif av.tag == "SettledCash" and av.currency == "BASE":
-                    settled_cash = val
-
-                # Stock market value in base currency
-                elif av.tag == "StockMarketValue" and av.currency == "BASE":
-                    stock_value = val
-
-                # Net Liquidation in base currency
-                elif av.tag == "NetLiquidation" and av.currency == "BASE":
-                    nav = val
-
-                # Unrealized PnL
-                elif av.tag == "UnrealizedPnL" and av.currency == "BASE":
-                    unrealized_pnl = val
-
-                # Realized PnL (today's closed trades)
-                elif av.tag == "RealizedPnL" and av.currency == "BASE":
-                    realized_pnl = val
-
-                # Buying power (max purchasable including margin)
-                elif av.tag == "BuyingPower" and av.currency == "BASE":
-                    buying_power = val
-
-                # Available funds (cash after margin requirements)
-                elif av.tag == "AvailableFunds" and av.currency == "BASE":
-                    available_funds = val
-
-                # Excess liquidity (margin safety buffer to avoid liquidation)
-                elif av.tag == "ExcessLiquidity" and av.currency == "BASE":
-                    excess_liquidity = val
-
-                # Maintenance margin requirement
-                elif av.tag == "MaintMarginReq" and av.currency == "BASE":
-                    maint_margin = val
-
-                # Initial margin requirement for new positions
-                elif av.tag == "InitMarginReq" and av.currency == "BASE":
-                    init_margin = val
-
-                # Gross position value (total market value of all positions)
-                elif av.tag == "GrossPositionValue" and av.currency == "BASE":
-                    gross_position = abs(val)
-
-                # Detect base currency
-                elif av.tag == "ExchangeRate" and av.currency:
-                    base_currency = av.currency  # ExchangeRate currency = base currency
-
-            # Fallback: use config
-            if base_currency == "HKD":
-                import trader_config as _C
-                base_currency = _C.ACCOUNT_BASE_CURRENCY
-
-            # Fallbacks for brokers/accounts where some tags may be blank.
-            if total_cash_value == 0 and nav > 0:
-                total_cash_value = float(acct_vals.get("TotalCashBalance", 0) or 0)
-            if settled_cash == 0 and total_cash_value != 0:
+            # Fallbacks for account types that omit canonical tags.
+            if total_cash_value == 0:
+                total_cash_value = _pick_tag("TotalCashBalance", account_currency)
+            if settled_cash == 0:
                 settled_cash = total_cash_value
 
-            stock_value = gross_position if gross_position > 0 else max(0.0, stock_value)
+            stock_value = gross_position
+            unrealized_pnl = _pick_tag("UnrealizedPnL", account_currency)
+            realized_pnl = _pick_tag("RealizedPnL", account_currency)
+            buying_power = _pick_tag("BuyingPower", account_currency)
+            available_funds = _pick_tag("AvailableFunds", account_currency)
+            excess_liquidity = _pick_tag("ExcessLiquidity", account_currency)
+            maint_margin = _pick_tag("MaintMarginReq", account_currency)
+            init_margin = _pick_tag("InitMarginReq", account_currency)
+
+            base_currency = account_currency
 
             stock_alloc_pct = (stock_value / nav * 100.0) if nav > 0 else 0.0
             cash_available_pct = (settled_cash / nav * 100.0) if nav > 0 else 0.0
@@ -574,6 +617,56 @@ def get_account_detail() -> Dict[str, Any]:
 
         except Exception as e:
             _logger.error(f"{_RED}Error getting account detail: {e}{_RESET}")
+            return {"connected": False, "error": str(e)}
+
+
+def get_account_tags_snapshot() -> Dict[str, Any]:
+    """Return raw IBKR account tags for verification/debugging."""
+    with _ib_lock:
+        _ensure_thread_event_loop()
+        if _connection_state != "CONNECTED" or not _ib:
+            return {"connected": False, "error": "Not connected to IBKR"}
+
+        try:
+            interesting = {
+                "NetLiquidation", "GrossPositionValue", "TotalCashValue", "SettledCash",
+                "BuyingPower", "AvailableFunds", "CashBalance", "StockMarketValue",
+                "TotalCashBalance", "UnrealizedPnL", "RealizedPnL",
+            }
+
+            account_values = []
+            snap = _read_account_snapshot_cached()
+
+            for row in list(snap.get("account_values", [])):
+                tag = str(getattr(row, "tag", "") or "")
+                if tag not in interesting:
+                    continue
+                account_values.append({
+                    "tag": tag,
+                    "value": str(getattr(row, "value", "")),
+                    "currency": str(getattr(row, "currency", "")),
+                    "account": str(getattr(row, "account", "")),
+                })
+
+            account_summary = []
+            for row in list(snap.get("account_summary", [])):
+                tag = str(getattr(row, "tag", "") or "")
+                if tag not in interesting:
+                    continue
+                account_summary.append({
+                    "tag": tag,
+                    "value": str(getattr(row, "value", "")),
+                    "currency": str(getattr(row, "currency", "")),
+                    "account": str(getattr(row, "account", "")),
+                })
+
+            return {
+                "connected": True,
+                "account_values": account_values,
+                "account_summary": account_summary,
+            }
+        except Exception as e:
+            _logger.error(f"{_RED}Error getting account tag snapshot: {e}{_RESET}")
             return {"connected": False, "error": str(e)}
 
 
@@ -743,17 +836,11 @@ def get_positions() -> List[Dict[str, Any]]:
         ]
     """
     with _ib_lock:
+        _ensure_thread_event_loop()
         # Check connection state AND verify actual connection
         if _connection_state != "CONNECTED" or not _ib:
             _logger.warning(
                 f"❌ Not connected to IBKR (state={_connection_state}, _ib={_ib is not None})"
-            )
-            return []
-        
-        # Double-check actual connection status
-        if not _ib.isConnected():
-            _logger.warning(
-                f"❌ IBKR connection lost or broken (isConnected()=False)"
             )
             return []
         
@@ -762,7 +849,7 @@ def get_positions() -> List[Dict[str, Any]]:
             # positions() only returns: account, contract, position, avgCost (no market data)
             positions = []
             _logger.debug("Fetching portfolio items via ib_insync...")
-            portfolio_list = list(_ib.portfolio())
+            portfolio_list = list(_run_async(_read_portfolio_async()))
 
             _logger.debug(f"Raw portfolio list count: {len(portfolio_list)}")
 
@@ -785,16 +872,25 @@ def get_positions() -> List[Dict[str, Any]]:
 
                         positions.append({
                             "ticker": ticker,
+                            "con_id": int(item.contract.conId) if getattr(item.contract, "conId", 0) else 0,
+                            "sec_type": str(item.contract.secType or ""),
+                            "exchange": str(item.contract.exchange or ""),
+                            "primary_exchange": str(getattr(item.contract, "primaryExchange", "") or ""),
+                            "currency": str(item.contract.currency or ""),
+                            "account": str(getattr(item, "account", "") or ""),
                             "qty": qty,
                             "avg_cost": float(item.averageCost) if item.averageCost else 0,
                             "market_value": float(item.marketValue) if item.marketValue else 0,
                             "unrealized_pnl": float(item.unrealizedPNL) if item.unrealizedPNL else 0,
+                            "realized_pnl": float(item.realizedPNL) if getattr(item, "realizedPNL", None) else 0,
                             "unrealized_pnl_pct": (
                                 (float(item.unrealizedPNL) / float(item.marketValue) * 100)
                                 if item.marketValue and float(item.marketValue) != 0
                                 else 0
                             ),
                             "market_price": float(item.marketPrice) if item.marketPrice else 0,
+                            "cost_basis": float(item.averageCost * qty) if item.averageCost else 0,
+                            "last_sync": datetime.now(timezone.utc).isoformat(),
                         })
                     except Exception as parse_err:
                         _logger.error(
@@ -816,12 +912,21 @@ def get_positions() -> List[Dict[str, Any]]:
                             continue
                         positions.append({
                             "ticker": ticker,
+                            "con_id": int(pos.contract.conId) if getattr(pos.contract, "conId", 0) else 0,
+                            "sec_type": str(pos.contract.secType or ""),
+                            "exchange": str(pos.contract.exchange or ""),
+                            "primary_exchange": str(getattr(pos.contract, "primaryExchange", "") or ""),
+                            "currency": str(pos.contract.currency or ""),
+                            "account": str(getattr(pos, "account", "") or ""),
                             "qty": qty,
                             "avg_cost": float(pos.avgCost) if pos.avgCost else 0,
                             "market_value": 0,
                             "unrealized_pnl": 0,
+                            "realized_pnl": 0,
                             "unrealized_pnl_pct": 0,
                             "market_price": 0,
+                            "cost_basis": float(pos.avgCost * qty) if pos.avgCost else 0,
+                            "last_sync": datetime.now(timezone.utc).isoformat(),
                         })
                     except Exception as parse_err:
                         _logger.error(f"  ❌ Error parsing position {idx}: {parse_err}", exc_info=True)
@@ -848,47 +953,46 @@ def _sync_historical_fills():
         
         from modules import db
         
-        # Scan all current trades and extract fills
         with _ib_lock:
             if _connection_state != "CONNECTED" or not _ib:
                 _logger.debug("_sync_historical_fills: not connected")
                 return
-            
-            trades = list(_ib.trades())
-            _logger.debug(f"_sync_historical_fills: scanning {len(trades)} trades")
-            
-            synced = 0
-            for trade in trades:
-                for fill in getattr(trade, 'fills', []):
-                    try:
-                        exec_obj = fill.execution
-                        comm = (float(fill.commissionReport.commission) 
-                               if fill.commissionReport else None)
-                        
-                        db.append_ibkr_order({
-                            "order_id": getattr(exec_obj, 'orderId', 0),
-                            "order_time": str(exec_obj.time),
-                            "ticker": trade.contract.symbol.upper(),
-                            "action": exec_obj.side,
-                            "order_type": "MKT",  # best guess from fill
-                            "qty": int(exec_obj.shares),
-                            "limit_price": None,
-                            "aux_price": None,
-                            "trail_pct": None,
-                            "fill_price": float(exec_obj.price),
-                            "status": "Filled",
-                            "commission": comm,
-                            "pnl": None,
-                            "note": "Synced from IB Gateway",
-                        })
-                        synced += 1
-                    except Exception as _e:
-                        _logger.warning(f"Failed to sync fill: {_e}")
-            
-            if synced > 0:
-                _logger.info(
-                    f"{_GREEN}✓ Synced {synced} fills to DuckDB for persistent history{_RESET}"
-                )
+
+        trades = _run_async(_read_trades_async())
+        _logger.debug(f"_sync_historical_fills: scanning {len(trades)} trades")
+
+        synced = 0
+        for trade in trades:
+            for fill in getattr(trade, 'fills', []):
+                try:
+                    exec_obj = fill.execution
+                    comm = (float(fill.commissionReport.commission)
+                           if fill.commissionReport else None)
+
+                    db.append_ibkr_order({
+                        "order_id": getattr(exec_obj, 'orderId', 0),
+                        "order_time": str(exec_obj.time),
+                        "ticker": trade.contract.symbol.upper(),
+                        "action": exec_obj.side,
+                        "order_type": "MKT",  # best guess from fill
+                        "qty": int(exec_obj.shares),
+                        "limit_price": None,
+                        "aux_price": None,
+                        "trail_pct": None,
+                        "fill_price": float(exec_obj.price),
+                        "status": "Filled",
+                        "commission": comm,
+                        "pnl": None,
+                        "note": "Synced from IB Gateway",
+                    })
+                    synced += 1
+                except Exception as _e:
+                    _logger.warning(f"Failed to sync fill: {_e}")
+
+        if synced > 0:
+            _logger.info(
+                f"{_GREEN}✓ Synced {synced} fills to DuckDB for persistent history{_RESET}"
+            )
     except ImportError:
         _logger.debug("_sync_historical_fills: db module unavailable")
     except Exception as e:

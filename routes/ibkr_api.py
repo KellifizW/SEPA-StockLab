@@ -236,6 +236,22 @@ def api_account_detail():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@bp.route("/api/account/tags", methods=["GET"])
+def api_account_tags():
+    """Return raw IBKR account tags for verification against TWS/Gateway."""
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
+    try:
+        tags = _client().get_account_tags_snapshot()
+        if not tags.get("connected"):
+            return jsonify({"ok": False, "error": tags.get("error", "Not connected")}), 503
+        return jsonify({"ok": True, "data": tags})
+    except Exception as exc:
+        logger.error("api_account_tags error: %s", exc, exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @bp.route("/api/account/convert", methods=["POST"])
 def api_account_convert():
     """Convert currency via IBKR IDEALPRO FOREX."""
@@ -324,10 +340,12 @@ def api_ibkr_positions():
             if ticker in local_data["positions"]:
                 # Update market data for existing position
                 local_data["positions"][ticker].update({
+                    "shares": ibkr_pos["qty"],
                     "market_price": ibkr_pos["market_price"],
                     "unrealized_pnl": ibkr_pos["unrealized_pnl"],
                     "unrealized_pnl_pct": ibkr_pos["unrealized_pnl_pct"],
                     "qty": ibkr_pos["qty"],
+                    "avg_cost": ibkr_pos["avg_cost"],
                     "market_value": ibkr_pos["market_value"],
                 })
             else:
@@ -371,6 +389,87 @@ def api_ibkr_positions():
                                  "synced_count": len(ibkr_positions)}})
     except Exception as exc:
         logger.error("api_ibkr_positions error: %s", exc, exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/api/ibkr/sync-all", methods=["POST"])
+def api_ibkr_sync_all():
+    """Hard-sync NAV + positions from IBKR and mirror local holdings exactly."""
+    available, error_msg = _check_ib_available()
+    if not available:
+        return jsonify({"ok": False, "error": error_msg}), 503
+
+    try:
+        from modules import position_monitor
+        from routes.helpers import _save_nav_cache
+
+        client = _client()
+        if not client.is_ibkr_connected():
+            return jsonify({"ok": False, "error": "IBKR disconnected"}), 503
+
+        status = client.get_status()
+        positions = client.get_positions()
+
+        # NAV sync
+        nav = float(status.get("nav", 0) or 0)
+        if nav > 0:
+            _save_nav_cache(
+                nav=nav,
+                buying_power=float(status.get("buying_power", 0) or 0),
+                account=status.get("account", ""),
+                currency=status.get("account_currency") or C.ACCOUNT_BASE_CURRENCY,
+            )
+
+        # Exact mirror: local open positions = IBKR current positions
+        local_data = position_monitor._load()
+        mirrored: dict = {}
+        for p in positions:
+            ticker = p["ticker"]
+            qty = p.get("qty", 0)
+            avg_cost = p.get("avg_cost", 0)
+
+            existing = local_data.get("positions", {}).get(ticker, {})
+            mirrored[ticker] = {
+                "buy_price": avg_cost,
+                "entry_price": avg_cost,
+                "stop_loss": float(existing.get("stop_loss", 0) or 0),
+                "target": float(existing.get("target", 0) or 0),
+                "rr": float(existing.get("rr", 0) or 0),
+                "shares": qty,
+                "qty": qty,
+                "avg_cost": avg_cost,
+                "con_id": p.get("con_id", 0),
+                "sec_type": p.get("sec_type", ""),
+                "exchange": p.get("exchange", ""),
+                "primary_exchange": p.get("primary_exchange", ""),
+                "currency": p.get("currency", ""),
+                "account": p.get("account", ""),
+                "market_price": p.get("market_price", 0),
+                "market_value": p.get("market_value", 0),
+                "unrealized_pnl": p.get("unrealized_pnl", 0),
+                "unrealized_pnl_pct": p.get("unrealized_pnl_pct", 0),
+                "realized_pnl": p.get("realized_pnl", 0),
+                "cost_basis": p.get("cost_basis", 0),
+                "source": "ibkr_sync_exact",
+                "last_sync": datetime.now().isoformat(timespec="seconds"),
+            }
+
+        local_data["positions"] = mirrored
+        position_monitor._save(local_data)
+
+        return jsonify({
+            "ok": True,
+            "data": {
+                "account": status.get("account", ""),
+                "nav": nav,
+                "positions": positions,
+                "synced_count": len(positions),
+                "mode": "exact_mirror",
+            },
+            "message": f"Synced {len(positions)} positions from IBKR (exact mirror)",
+        })
+    except Exception as exc:
+        logger.error("api_ibkr_sync_all error: %s", exc, exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
