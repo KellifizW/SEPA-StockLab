@@ -49,6 +49,15 @@ def _get_conn():
         raise RuntimeError("duckdb not installed. Run: pip install duckdb")
 
 
+def _safe_alter_add_col(conn, table: str, column: str, col_type: str) -> None:
+    """Add a column to an existing table if it does not already exist (migration helper)."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}")
+    except Exception:
+        # DuckDB <0.8 fallback: ignore 'already exists' errors silently
+        pass
+
+
 def _ensure_schema(conn):
     """Create all tables if they don't exist yet."""
     conn.execute("""
@@ -291,26 +300,41 @@ def _ensure_schema(conn):
     # ── Auto-Trade log ─────────────────────────────────────────────────────
     conn.execute("""
         CREATE TABLE IF NOT EXISTS auto_trade_log (
-            id              INTEGER PRIMARY KEY,
-            trade_date      DATE NOT NULL,
-            trade_time      TIMESTAMP NOT NULL,
-            ticker          VARCHAR NOT NULL,
-            strategy        VARCHAR,              -- QM or ML
-            stars           DOUBLE,
-            watch_score     INTEGER,
-            regime          VARCHAR,
-            action          VARCHAR,              -- BUY, SKIP, BLOCKED
-            reason          VARCHAR,
-            order_type      VARCHAR,
-            qty             INTEGER,
-            limit_price     DOUBLE,
-            stop_price      DOUBLE,
-            order_id        INTEGER,
-            dry_run         BOOLEAN DEFAULT TRUE,
-            iron_rules      VARCHAR,              -- JSON list of triggered iron rules
-            dim_summary     VARCHAR               -- JSON summary of dimension scores
+            id                      INTEGER PRIMARY KEY,
+            trade_date              DATE NOT NULL,
+            trade_time              TIMESTAMP NOT NULL,
+            ticker                  VARCHAR NOT NULL,
+            strategy                VARCHAR,              -- QM or ML
+            screener_stars          DOUBLE,               -- Phase 2 screener star rating
+            stars                   DOUBLE,               -- Phase 3 deep-analysis star rating
+            watch_score             INTEGER,
+            regime                  VARCHAR,
+            action                  VARCHAR,              -- BUY, SKIP, BLOCKED
+            reason                  VARCHAR,
+            order_type              VARCHAR,
+            qty                     INTEGER,
+            limit_price             DOUBLE,
+            stop_price              DOUBLE,
+            current_price           DOUBLE,               -- Price at evaluation time
+            scan_data_age_min       INTEGER,              -- How old was scan data (minutes)
+            portfolio_exposure_pct  DOUBLE,               -- Total exposure % at order time
+            caution_flag            BOOLEAN DEFAULT FALSE, -- ML decision tree = CAUTION
+            order_id                INTEGER,
+            stop_order_id           INTEGER,              -- IBKR stop-loss order ID
+            stop_attached           BOOLEAN DEFAULT FALSE, -- Whether stop was successfully attached
+            dry_run                 BOOLEAN DEFAULT TRUE,
+            iron_rules              VARCHAR,              -- JSON list of triggered iron rules
+            dim_summary             VARCHAR               -- JSON summary of dimension scores
         )
     """)
+    # Migrate existing tables: add columns introduced after initial deployment
+    _safe_alter_add_col(conn, "auto_trade_log", "screener_stars",         "DOUBLE")
+    _safe_alter_add_col(conn, "auto_trade_log", "current_price",          "DOUBLE")
+    _safe_alter_add_col(conn, "auto_trade_log", "scan_data_age_min",      "INTEGER")
+    _safe_alter_add_col(conn, "auto_trade_log", "portfolio_exposure_pct", "DOUBLE")
+    _safe_alter_add_col(conn, "auto_trade_log", "caution_flag",           "BOOLEAN DEFAULT FALSE")
+    _safe_alter_add_col(conn, "auto_trade_log", "stop_order_id",          "INTEGER")
+    _safe_alter_add_col(conn, "auto_trade_log", "stop_attached",          "BOOLEAN DEFAULT FALSE")
 
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_auto_trade_log_date
@@ -1595,16 +1619,20 @@ def append_auto_trade(entry: dict) -> bool:
             conn = _get_conn()
             conn.execute("""
                 INSERT INTO auto_trade_log
-                    (trade_date, trade_time, ticker, strategy, stars,
-                     watch_score, regime, action, reason, order_type,
-                     qty, limit_price, stop_price, order_id, dry_run,
-                     iron_rules, dim_summary)
-                VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?)
+                    (trade_date, trade_time, ticker, strategy,
+                     screener_stars, stars, watch_score, regime,
+                     action, reason, order_type,
+                     qty, limit_price, stop_price, current_price,
+                     scan_data_age_min, portfolio_exposure_pct, caution_flag,
+                     order_id, stop_order_id, stop_attached,
+                     dry_run, iron_rules, dim_summary)
+                VALUES (?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?, ?)
             """, [
                 entry.get("trade_date"),
                 entry.get("trade_time"),
                 entry.get("ticker", ""),
                 entry.get("strategy", ""),
+                _to_float(entry.get("screener_stars")),
                 _to_float(entry.get("stars")),
                 _to_int(entry.get("watch_score")),
                 entry.get("regime", ""),
@@ -1614,7 +1642,13 @@ def append_auto_trade(entry: dict) -> bool:
                 _to_int(entry.get("qty")),
                 _to_float(entry.get("limit_price")),
                 _to_float(entry.get("stop_price")),
+                _to_float(entry.get("current_price")),
+                _to_int(entry.get("scan_data_age_min")),
+                _to_float(entry.get("portfolio_exposure_pct")),
+                bool(entry.get("caution_flag", False)),
                 _to_int(entry.get("order_id")),
+                _to_int(entry.get("stop_order_id")),
+                bool(entry.get("stop_attached", False)),
                 entry.get("dry_run", True),
                 _json.dumps(entry.get("iron_rules", []), ensure_ascii=False),
                 _json.dumps(entry.get("dim_summary", {}), ensure_ascii=False),
@@ -1633,19 +1667,25 @@ def query_auto_trade_log(days: int = 30) -> list:
         try:
             conn = _get_conn()
             rows = conn.execute(f"""
-                SELECT trade_date, trade_time, ticker, strategy, stars,
-                       watch_score, regime, action, reason, order_type,
-                       qty, limit_price, stop_price, order_id, dry_run,
-                       iron_rules, dim_summary
+                SELECT trade_date, trade_time, ticker, strategy,
+                       screener_stars, stars, watch_score, regime,
+                       action, reason, order_type,
+                       qty, limit_price, stop_price, current_price,
+                       scan_data_age_min, portfolio_exposure_pct, caution_flag,
+                       order_id, stop_order_id, stop_attached,
+                       dry_run, iron_rules, dim_summary
                 FROM auto_trade_log
                 WHERE trade_date >= CURRENT_DATE - INTERVAL {days} DAY
                 ORDER BY trade_time DESC
             """).fetchall()
             conn.close()
-            cols = ["trade_date", "trade_time", "ticker", "strategy", "stars",
-                    "watch_score", "regime", "action", "reason", "order_type",
-                    "qty", "limit_price", "stop_price", "order_id", "dry_run",
-                    "iron_rules", "dim_summary"]
+            cols = ["trade_date", "trade_time", "ticker", "strategy",
+                    "screener_stars", "stars", "watch_score", "regime",
+                    "action", "reason", "order_type",
+                    "qty", "limit_price", "stop_price", "current_price",
+                    "scan_data_age_min", "portfolio_exposure_pct", "caution_flag",
+                    "order_id", "stop_order_id", "stop_attached",
+                    "dry_run", "iron_rules", "dim_summary"]
             return [dict(zip(cols, row)) for row in rows]
         except Exception as exc:
             logger.error("[DB] query_auto_trade_log failed: %s", exc)

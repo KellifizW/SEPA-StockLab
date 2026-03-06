@@ -4818,10 +4818,10 @@ def api_qm_backtest_log(jid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# IBKR routes  (registered as blueprint — all routes are new, no conflicts)
+# Register all routes blueprints
 # ═══════════════════════════════════════════════════════════════════════════════
-from routes.ibkr_api import bp as _ibkr_bp
-app.register_blueprint(_ibkr_bp)
+from routes import register_blueprints
+register_blueprints(app)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

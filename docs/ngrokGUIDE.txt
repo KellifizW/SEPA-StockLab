@@ -1,0 +1,4 @@
+我 ngrok 的auth token:XYZXYZ
+請幫我啟動ngrok, 給我新的TG_MINI_APP_BASE_URL, 記住我的tg mini app 網址需要是https://kathaleen-cephalalgic-leonida.ngrok-free.dev/tg/menu , 之後為我驗證是否能順利打開
+
+你要我做的是：用你提供的 token 啟動 ngrok、拿到新的 TG_MINI_APP_BASE_URL，並確保使用你指定的網址 https://kathaleen-cephalalgic-leonida.ngrok-free.dev/tg/menu，最後實測可否打開。先快速讀取專案規範與目前環境，再直接啟動與驗證。

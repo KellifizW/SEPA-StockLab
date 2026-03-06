@@ -4,8 +4,9 @@
 
 {% set sepa_rows = (r.get('sepa_rows') or [])[:5] %}
 {% set qm_rows   = (r.get('qm_rows')   or [])[:5] %}
+{% set ml_rows   = (r.get('ml_rows')   or [])[:5] %}
 
-{% if not r or (not sepa_rows and not qm_rows and not r.get('saved_at')) %}
+{% if not r or (not sepa_rows and not qm_rows and not ml_rows and not r.get('saved_at')) %}
 {# ── Empty state ─────────────────────────────────────────────────────────── #}
 <div class="p-4 text-center text-muted">
   <i class="bi bi-layers d-block mb-2 fs-3"></i>
@@ -22,6 +23,8 @@
 {% set sepa_ct = r.get('sepa_count', sepa_rows | length) %}
 {% set qm_4ct  = r.get('qm_count_4star') %}
 {% set qm_ct   = r.get('qm_count', qm_rows | length) %}
+{% set ml_3ct  = r.get('ml_count_3star') %}
+{% set ml_ct   = r.get('ml_count', ml_rows | length) %}
 {% set total_s = timing.get('total_secs') %}
 
 {% if regime == 'CONFIRMED_UPTREND' %}{% set regime_cls = 'bg-success' %}
@@ -46,16 +49,25 @@
       {% endif %}
     </strong>
   </span>
+  <span class="small text-muted">ML 通過:
+    <strong style="color:#d49fff">
+      {% if ml_3ct is not none and ml_ct is not none and ml_ct != ml_3ct %}
+        {{ ml_3ct }} <small class="text-muted">(★3+ / {{ ml_ct }} total)</small>
+      {% else %}
+        {{ ml_ct }}
+      {% endif %}
+    </strong>
+  </span>
   {% if total_s %}
   <span class="small text-muted">掃描用時: <strong>{{ '%.0f' | format(total_s | float) }}s</strong></span>
   {% endif %}
 </div>
 
-{# ── SEPA + QM top-5 side by side ─────────────────────────────────────────── #}
+{# ── SEPA + QM + ML top-5 ────────────────────────────────────────────────── #}
 <div class="row g-0">
 
   {# SEPA Top 5 #}
-  <div class="col-12 col-lg-6" style="border-right:1px solid rgba(255,255,255,.08)">
+  <div class="col-12 col-xl-4" style="border-right:1px solid rgba(255,255,255,.08)">
     <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
       <i class="bi bi-funnel" style="color:var(--accent)"></i>
       <span class="small fw-bold text-muted">SEPA Top 5</span>
@@ -106,7 +118,7 @@
   </div>
 
   {# QM Top 5 #}
-  <div class="col-12 col-lg-6">
+  <div class="col-12 col-xl-4" style="border-right:1px solid rgba(255,255,255,.08)">
     <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
       <i class="bi bi-lightning-charge" style="color:#e3b341"></i>
       <span class="small fw-bold text-muted">QM Top 5</span>
@@ -155,6 +167,59 @@
           {% endfor %}
         {% else %}
           <tr><td colspan="5" class="text-muted text-center small py-3">無 QM 結果</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {# ML Top 5 #}
+  <div class="col-12 col-xl-4">
+    <div class="px-3 pt-2 pb-1 border-bottom d-flex align-items-center gap-2">
+      <i class="bi bi-tsunami" style="color:#d49fff"></i>
+      <span class="small fw-bold text-muted">ML Top 5</span>
+    </div>
+    <table class="table table-hover mb-0" style="font-size:13px">
+      <thead><tr>
+        <th style="width:26px">#</th>
+        <th>Ticker</th>
+        <th>Stars</th>
+        <th>ADR%</th>
+        <th>Type</th>
+      </tr></thead>
+      <tbody>
+        {% if ml_rows %}
+          {% set ml_type_lbl = {
+            'PB':'PB','BR':'BR','BO':'BO','EP':'EP','CHG':'CHG','PAR':'PAR'
+          } %}
+          {% for m_row in ml_rows %}
+          {% set star_val = (m_row.get('ml_star') or m_row.get('stars') or 0) | float %}
+          {% if star_val >= 5 %}{% set star_clr = '#3fb950' %}
+          {% elif star_val >= 4 %}{% set star_clr = '#e3b341' %}
+          {% else %}{% set star_clr = '#8b949e' %}{% endif %}
+          {% set full_s  = star_val | int %}
+          {% set half_s  = (star_val - (star_val | int)) >= 0.5 %}
+          {% set star_str = '★' * full_s + ('½' if half_s else '') %}
+          {% set adr_val = m_row.get('adr') %}
+          {% set setup_code = (m_row.get('setup_type') or m_row.get('channel') or '') %}
+          {% set setup_lbl  = ml_type_lbl.get(setup_code, setup_code or '—') %}
+          <tr onclick="window.location='/ml/analyze?ticker={{ m_row.ticker }}'" style="cursor:pointer">
+            <td class="text-muted small">{{ loop.index }}</td>
+            <td>
+              <a href="/ml/analyze?ticker={{ m_row.ticker }}" class="fw-bold" style="color:#d49fff">{{ m_row.ticker }}</a>
+            </td>
+            <td class="fw-bold" style="color:{{ star_clr }}">
+              {{ star_str }} <small>({{ '%.1f' | format(star_val) }})</small>
+            </td>
+            <td class="text-muted small">
+              {% if adr_val is not none %}{{ '%.1f' | format(adr_val | float) }}%{% else %}—{% endif %}
+            </td>
+            <td>
+              <span class="badge bg-secondary" style="font-size:10px">{{ setup_lbl }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="5" class="text-muted text-center small py-3">無 ML 結果</td></tr>
         {% endif %}
       </tbody>
     </table>

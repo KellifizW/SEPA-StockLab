@@ -165,7 +165,7 @@
 </div><!-- container -->
 {% endblock %}
 
-{% block extra_scripts %}
+{% block extra_js %}
 <script>
 let _pollTimer = null;
 
@@ -246,10 +246,10 @@ function _pollStatus() {
 
     // Config
     const cfg = s.config || {};
-    document.getElementById('cfgMinStarQM').textContent = cfg.min_star_qm || '—';
-    document.getElementById('cfgMinStarML').textContent = cfg.min_star_ml || '—';
+    document.getElementById('cfgMinStarQM').textContent = cfg.min_screener_star_qm || cfg.min_star_qm || '—';
+    document.getElementById('cfgMinStarML').textContent = cfg.min_screener_star_ml || cfg.min_star_ml || '—';
     document.getElementById('cfgMinWatch').textContent = cfg.min_watch_score || '—';
-    document.getElementById('cfgMaxBuys').textContent = cfg.max_buys_per_day || '—';
+    document.getElementById('cfgMaxBuys').textContent = (cfg.max_buys_qm || 2) + ' + ' + (cfg.max_buys_ml || 2);
     document.getElementById('cfgPollSec').textContent = (cfg.poll_interval_sec || 300) + 's';
     document.getElementById('cfgOrderType').textContent = cfg.order_type || '—';
     document.getElementById('cfgAttachStop').textContent = cfg.attach_stop ? 'Yes' : 'No';
