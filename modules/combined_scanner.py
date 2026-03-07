@@ -737,10 +737,13 @@ def run_combined_scan(custom_filters: dict | None = None,
 
             logger.info("[Combined QM] Starting Stage 2 with %d tickers", len(qm_screened))
             _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 2 (ADR + Momentum) starting", indent=False)
+            # Pass only the QM subset so Stage 2 iterates the intended universe.
+            # This avoids scanning the full union map and reduces API pressure.
+            qm_enriched = {t: enriched_map[t] for t in qm_screened if t in enriched_map}
             # Stage 2 — QM uses its own pre-screened tickers.  Stage 1.5B already
             # eliminated stocks with insufficient ADR and negative momentum.
             s2_passed = run_qm_stage2(qm_screened, verbose=verbose,
-                                      enriched_map=enriched_map, shared=True)
+                                      enriched_map=qm_enriched, shared=True)
             logger.info("[Combined QM] Stage 2 completed: %d passing gate", len(s2_passed))
             _log_detail("Stage 2-3 -- Parallel Analysis", f"QM: Stage 2 done: {len(s2_passed)} passed gate")
 
@@ -759,7 +762,7 @@ def run_combined_scan(custom_filters: dict | None = None,
             # Stage 3 quality scoring (returns all scored rows, capped at QM_SCAN_TOP_N)
             logger.info("[Combined QM] Starting Stage 3 scoring with %d candidates", len(s2_passed))
             _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 3 (6-Dimension Star Rating) starting", indent=False)
-            qm_df_all_scored = run_qm_stage3(s2_passed, enriched_cache=enriched_map)
+            qm_df_all_scored = run_qm_stage3(s2_passed, enriched_cache=qm_enriched)
             if qm_df_all_scored is None:
                 logger.warning("[Combined QM] Stage 3 returned None")
                 _log_detail("Stage 2-3 -- Parallel Analysis", "QM: Stage 3 returned None")

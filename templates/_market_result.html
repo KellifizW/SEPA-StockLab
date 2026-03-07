@@ -36,6 +36,9 @@
         {{ regime.replace('_', ' ') }}
       </div>
       <div class="text-muted small">Assessed: {{ d.get('assessed_at', '') }}</div>
+      {% if d.get('cached_saved_at') %}
+      <div class="text-muted small">Cached Snapshot: {{ d.get('cached_saved_at') }}</div>
+      {% endif %}
     </div>
     <div class="ms-auto text-end" style="max-width:350px; font-size:0.85rem">
       {{ am.get('note', '') }}

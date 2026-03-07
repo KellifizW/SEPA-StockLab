@@ -124,6 +124,7 @@ STAGE2_MAX_WORKERS    = 32         # Parallel threads for Stage 2 TT validation 
 STAGE2_BATCH_SIZE     = 50         # Tickers per yf.download() batch in Stage 2
 STAGE2_BATCH_SLEEP    = 1.5        # Sleep between Stage 2 download batches (sec)
 STAGE3_MAX_WORKERS    = 32         # Parallel threads for Stage 3 SEPA scoring
+FUNDAMENTALS_MAX_CONCURRENT = 4    # Global cap for concurrent fundamentals requests (across all scan threads)
 FUNDAMENTALS_CACHE_DAYS = 1        # How many days before re-fetching fundamentals
 FINVIZ_CACHE_TTL_HOURS  = 4        # Cache finviz screener results for N hours
 FINVIZ_TIMEOUT_SEC    = 600.0      # 10 minutes max (finvizfinance needs ~2 sec per page × 464 pages = 15 min for full scan)
@@ -136,10 +137,21 @@ YFINANCE_MAX_RETRIES     = 1        # Reduced from 2: 401/crumb errors often not
 YFINANCE_RETRY_BACKOFF   = 0.5      # Base delay (sec) between retry attempts (exponential: 0.5s, 1s, 2s...)
 FUNDAMENTALS_TIMEOUT_SEC = 5.0      # Per-ticker fundamental fetch timeout (crisp fail instead of hanging)
 FUNDAMENTALS_SKIP_ON_TIMEOUT = True # Skip ticker on timeout instead of retrying endlessly
+FUNDAMENTALS_ENABLE_SEC_FALLBACK = True     # Use SEC CompanyFacts as free fallback for US fundamentals
+SEC_USER_AGENT = "SEPA-StockLab/1.0 (contact: local@localhost)"  # SEC requires a descriptive User-Agent
+SEC_HTTP_TIMEOUT_SEC = 8.0                  # SEC endpoint timeout (seconds)
+FUNDAMENTALS_ENABLE_FINVIZ_FALLBACK = True  # Use free finviz quote snapshot when yfinance info is empty
+FUNDAMENTALS_USE_STALE_FALLBACK = True  # If live fetch degrades, reuse recent stale fundamentals cache
+FUNDAMENTALS_STALE_FALLBACK_DAYS = 7    # Max stale age (days) allowed for fallback in scan mode
 CRUMB_RESET_COOLDOWN     = 3.0      # Min interval between session resets (prevent auth cascade)
 OHLCV_TIMEOUT_SEC        = 10.0     # Per-ticker OHLCV fetch timeout
 FINVIZ_MAX_PAGES      = 60         # If using pagination limiting (currently unused; finvizfinance loads all pages)
 FINVIZ_MIN_TARGET_ROWS = 800       # Minimum rows before accepting results
+
+# Stage 3 fairness control: randomize scoring order to avoid alphabetical bias
+# when external fundamentals endpoints degrade mid-run.
+SEPA_STAGE3_SHUFFLE = True
+SEPA_STAGE3_SHUFFLE_SEED = None    # None => daily seed (YYYYMMDD); set int for deterministic debugging
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ACCOUNT DRAWDOWN ALERT LEVELS  (Minervini H1-H5)

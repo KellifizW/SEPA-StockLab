@@ -6,46 +6,118 @@
   <span class="text-muted small">{{ today }}</span>
 </div>
 
-<!-- Metric cards -->
-<div class="row g-3 mb-4">
-  <div class="col-6 col-md-3">
-    <div class="metric-card h-100">
-      <div class="metric-val">{{ positions|length }}</div>
-      <div class="metric-lbl">Open Positions</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="metric-card h-100">
-      <div class="metric-val" style="color:#58a6ff">{{ wl_counts.get('SEPA', 0) }}</div>
-      <div class="metric-lbl">SEPA Watchlist</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="metric-card h-100">
-      <div class="metric-val" style="color:#e3b341">{{ wl_counts.get('QM', 0) }}</div>
-      <div class="metric-lbl">QM Watchlist</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="metric-card h-100">
-      <div class="metric-val" style="color:#3fb950">{{ wl_counts.get('ML', 0) }}</div>
-      <div class="metric-lbl">ML Watchlist</div>
-    </div>
-  </div>
-</div>
+<div class="row g-3 mb-4 align-items-stretch">
+  <div class="col-12 col-xl-8">
+    <div class="card h-100" style="background:#0d1520; border-color:#1e2d3d;">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-bar-chart-line me-2" style="color:var(--accent)"></i>市場環境摘要 Market Snapshot</span>
+        <div class="d-flex align-items-center gap-2">
+          {% if market_cached_at %}
+          <span class="badge bg-secondary">Cached: {{ market_cached_at }}</span>
+          {% endif %}
+          <button id="dashAssessBtn" class="btn btn-sm btn-accent" onclick="runDashboardAssess()">
+            <i class="bi bi-play-fill me-1"></i>分析 Assess
+          </button>
+        </div>
+      </div>
+      <div class="card-body">
+        {% set m = market_summary or {} %}
+        {% set r = m.get('regime', 'NO_CACHE') %}
+        {% if r in ['BULL_CONFIRMED', 'CONFIRMED_UPTREND'] %}
+          {% set r_cls = 'bg-success' %}
+        {% elif r in ['TRANSITION', 'UPTREND_UNDER_PRESSURE', 'BULL_UNCONFIRMED', 'BEAR_RALLY'] %}
+          {% set r_cls = 'bg-warning text-dark' %}
+        {% elif r == 'NO_CACHE' %}
+          {% set r_cls = 'bg-secondary' %}
+        {% else %}
+          {% set r_cls = 'bg-danger' %}
+        {% endif %}
 
-<div class="row g-3 mb-4">
-  <div class="col-12 col-lg-4 ms-lg-auto">
-    <div class="metric-card h-100" style="cursor:pointer; position:relative;" title="點擊編輯帳戶大小 Click to edit">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+          <span class="badge {{ r_cls }}" style="font-size:0.95rem;">{{ r.replace('_', ' ') }}</span>
+          <span class="text-muted small">Assessed: {{ m.get('assessed_at', '—') }}</span>
+          <span class="text-muted small">SPY Dist: {{ m.get('distribution_days', '—') }} | QQQ Dist: {{ m.get('qqq_dist_days', '—') }}</span>
+        </div>
+
+        <div class="row g-3">
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.6rem;">{{ m.get('distribution_days', '—') }}</div>
+              <div class="metric-lbl">Dist Days</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.6rem; color:#58a6ff;">{% if m.get('breadth_pct') is not none %}{{ m.get('breadth_pct') }}%{% else %}—{% endif %}</div>
+              <div class="metric-lbl">Breadth</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.6rem; color:#3fb950;">{% if m.get('nh_nl_ratio') is not none %}{{ m.get('nh_nl_ratio') }}%{% else %}—{% endif %}</div>
+              <div class="metric-lbl">NH/NL</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.6rem; color:#d29922;">{{ (m.get('action_matrix') or {}).get('max_open_positions', '—') }}</div>
+              <div class="metric-lbl">Max Pos</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="row g-3 mt-1">
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.25rem; color:#58a6ff;">{{ (m.get('action_matrix') or {}).get('max_portfolio_pct', '—') }}{% if (m.get('action_matrix') or {}).get('max_portfolio_pct') is not none %}%{% endif %}</div>
+              <div class="metric-lbl">Deploy Cap</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.1rem; color:#c9d1d9;">{{ (m.get('action_matrix') or {}).get('stop_mode', '—') }}</div>
+              <div class="metric-lbl">Stop Mode</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.1rem; color:#3fb950;">{{ ((m.get('leading_sectors') or [])|length) }}</div>
+              <div class="metric-lbl">Leading Sec</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="metric-card p-2 h-100 text-center">
+              <div class="metric-val" style="font-size:1.1rem; color:#f85149;">{{ ((m.get('lagging_sectors') or [])|length) }}</div>
+              <div class="metric-lbl">Lagging Sec</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-3 small text-muted">
+          Index Trend:
+          SPY {{ (m.get('spy_trend') or {}).get('status', '—') }} |
+          QQQ {{ (m.get('qqq_trend') or {}).get('status', '—') }} |
+          IWM {{ (m.get('iwm_trend') or {}).get('status', '—') }}
+        </div>
+
+        <div class="mt-3 text-muted small" style="min-height:20px;">
+          {{ (m.get('action_matrix') or {}).get('note', '尚無市場快取，按 Market 執行分析。') }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-xl-4">
+    <div class="metric-card h-100" style="position:relative;">
       <div class="metric-val" id="accountSizeDisplay">{{ account_size_display }}</div>
       <div class="metric-lbl">
         Account Size 
-        <button 
-          id="currencyToggleBtn" 
-          class="btn btn-sm btn-outline-secondary ms-2" 
+        <button
+          id="currencyToggleBtn"
+          class="btn btn-sm btn-outline-secondary ms-2"
           style="padding: 2px 6px; font-size: 0.75rem; line-height: 1;"
           onclick="toggleCurrency(event)"
-          title="Click to switch currency / 點擊切換貨幣">
+          title="點擊切換顯示貨幣 Click to switch display currency">
           {{ currency }}
         </button>
         <button
@@ -56,7 +128,6 @@
           title="手動同步 IBKR NAV + 持倉 Manual sync from IBKR">
           Sync
         </button>
-        <i class="bi bi-pencil-square" style="font-size:0.8rem; margin-left:4px; opacity:0.6; cursor:pointer;" onclick="editAccountSize()"></i>
       </div>
       <div style="position:absolute; top:8px; right:8px; font-size:10px;" id="syncStatus" class="text-muted">
         {% if nav_sync_status == 'LIVE' %}
@@ -67,12 +138,6 @@
           <span style="color:#6c757d;" title="使用預設設定值 Using default config"><i class="bi bi-gear"></i> CONFIG</span>
         {% endif %}
       </div>
-      {% if nav_sync_time %}
-      <div style="position:absolute; bottom:8px; right:8px; font-size:9px; opacity:0.7; color:#888;">
-        {{ nav_sync_time }}
-      </div>
-      {% endif %}
-
       <div class="d-flex align-items-center justify-content-center gap-2 mt-2" style="min-height:64px;">
         <div style="width:56px; height:56px; position:relative;">
           <canvas id="accountAssetDonut" width="56" height="56" aria-label="資產分佈 Asset Mix" role="img"></canvas>
@@ -83,6 +148,24 @@
           <div id="assetOtherLine" style="color:#d29922;">其他 Other: --</div>
         </div>
       </div>
+
+      <div class="row g-2 mt-2">
+        <div class="col-6">
+          <div class="metric-card p-2 text-center h-100">
+            <div class="small text-muted">Base</div>
+            <div class="fw-bold" style="color:#58a6ff;">HKD</div>
+          </div>
+        </div>
+        <div class="col-6">
+          <div class="metric-card p-2 text-center h-100">
+            <div class="small text-muted">Display</div>
+            <div class="fw-bold" id="displayCurrencyTag" style="color:#3fb950;">{{ currency }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="small text-muted mt-2">Rate: 1 USD = {{ '%.3f'|format(usd_hkd_rate) }} HKD</div>
+      <div class="small text-muted">Last Sync: {{ nav_sync_time or '—' }}</div>
     </div>
   </div>
 </div>
@@ -128,25 +211,34 @@
     </div>
   </div>
 
-  <!-- SEPA Watchlist preview -->
+  <!-- Unified watchlist preview -->
   <div class="col-12 col-lg-5">
     <div class="card h-100">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-bookmark-star me-2"></i>SEPA Watchlist</span>
+        <span><i class="bi bi-bookmark-star me-2"></i>Watchlist (All Strategies)</span>
         <a href="/watchlist" class="btn btn-sm btn-outline-secondary">All</a>
       </div>
       <div class="card-body p-0">
-        {% if wl.SEPA %}
+        {% if watchlist_rows %}
         <div class="table-responsive">
           <table class="table table-hover mb-0">
-            <thead><tr><th>Ticker</th><th>RS</th><th>VCP</th><th>Pivot</th></tr></thead>
+            <thead><tr><th>Type</th><th>Ticker</th><th>RS</th><th>VCP</th><th>Pivot</th></tr></thead>
             <tbody>
-            {% for t, d in wl.SEPA.items() %}
+            {% for row in watchlist_rows[:10] %}
             <tr>
-              <td><strong><a href="/analyze?ticker={{ t }}" class="text-decoration-none" style="color:var(--accent)">{{ t }}</a></strong></td>
-              <td>{{ d.rs_rank|int if d.rs_rank else '—' }}</td>
-              <td>{% if d.vcp_grade in ['A','B'] %}<span class="tag-vcp">{{ d.vcp_grade }}</span>{% else %}{{ d.vcp_grade or '—' }}{% endif %}</td>
-              <td>{% if d.pivot_price %}${{ "%.2f"|format(d.pivot_price) }}{% else %}—{% endif %}</td>
+              <td>
+                {% if row.strategy == 'SEPA' %}
+                  <span class="badge bg-info">SEPA</span>
+                {% elif row.strategy == 'QM' %}
+                  <span class="badge bg-warning text-dark">QM</span>
+                {% else %}
+                  <span class="badge bg-success">ML</span>
+                {% endif %}
+              </td>
+              <td><strong><a href="{{ row.analyze_url }}" class="text-decoration-none" style="color:var(--accent)">{{ row.ticker }}</a></strong></td>
+              <td>{{ row.rs_rank|int if row.rs_rank else '—' }}</td>
+              <td>{% if row.vcp_grade in ['A','B'] %}<span class="tag-vcp">{{ row.vcp_grade }}</span>{% else %}{{ row.vcp_grade or '—' }}{% endif %}</td>
+              <td>{% if row.pivot_price %}${{ "%.2f"|format(row.pivot_price) }}{% else %}—{% endif %}</td>
             </tr>
             {% endfor %}
             </tbody>
@@ -154,7 +246,7 @@
         </div>
         {% else %}
         <div class="p-4 text-center text-muted">
-          <i class="bi bi-star fs-2 d-block mb-2"></i>No SEPA watchlist stocks yet.
+          <i class="bi bi-star fs-2 d-block mb-2"></i>No watchlist stocks yet.
           <a href="/watchlist" class="d-block mt-2">Add to watchlist →</a>
         </div>
         {% endif %}
@@ -214,12 +306,36 @@
 {% block extra_js %}
 <script>
 let _accountAssetChart = null;
+let _accountBaseHkd = Number({{ account_size|float }}) || 0;
+const _usdHkdRate = Number({{ usd_hkd_rate|float }}) || 7.8;
 
 window.addEventListener('DOMContentLoaded', () => {
   // Load Telegram bot status
   updateTelegramStatus();
   initAccountAssetDonut();
+  const btn = document.getElementById('currencyToggleBtn');
+  if (btn) {
+    btn.textContent = 'HKD';
+    _refreshAccountCurrencyDisplay('HKD');
+  }
 });
+
+function _fmtMoney(v, currency) {
+  const n = Number(v) || 0;
+  if (currency === 'HKD') return `HK$${n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+  return `$${n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+
+function _refreshAccountCurrencyDisplay(currency) {
+  const ccy = (currency || 'HKD').toUpperCase();
+  const displayValue = ccy === 'USD' ? (_accountBaseHkd / _usdHkdRate) : _accountBaseHkd;
+  const display = document.getElementById('accountSizeDisplay');
+  const btn = document.getElementById('currencyToggleBtn');
+  const tag = document.getElementById('displayCurrencyTag');
+  if (display) display.textContent = _fmtMoney(displayValue, ccy);
+  if (btn) btn.textContent = ccy;
+  if (tag) tag.textContent = ccy;
+}
 
 function _fmtPct(v) {
   return `${(Number(v) || 0).toFixed(1)}%`;
@@ -413,29 +529,14 @@ async function restartServer() {
 
 // ── Currency Toggle handler ──────────────────────────────────────────────
 async function toggleCurrency(event) {
-  event.stopPropagation();  // Prevent edit onclick from triggering
+  event.stopPropagation();
   
   try {
-    // Get current currency
     const btn = document.getElementById('currencyToggleBtn');
     const currentCurrency = btn.textContent.trim();
     const newCurrency = currentCurrency === 'USD' ? 'HKD' : 'USD';
-    
-    // Call API to save new currency
-    const r = await fetch('/api/currency', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({currency: newCurrency})
-    }).then(x => x.json());
-    
-    if (r.ok) {
-      // Update display
-      btn.textContent = r.currency;
-      document.getElementById('accountSizeDisplay').textContent = r.nav_display;
-      toast(`✅ Currency changed to ${r.currency}`, true);
-    } else {
-      toast(`❌ ${r.error || 'Failed to change currency'}`, false);
-    }
+    _refreshAccountCurrencyDisplay(newCurrency);
+    toast(`✅ Currency changed to ${newCurrency}`, true);
   } catch(e) {
     toast(`❌ Error: ${e.message}`, false);
   }
@@ -462,13 +563,13 @@ async function manualSyncIbkr(event) {
       return;
     }
 
-    const c = await fetch('/api/currency').then(x => x.json());
-    if (c.ok) {
-      const toggleBtn = document.getElementById('currencyToggleBtn');
-      const display = document.getElementById('accountSizeDisplay');
-      if (toggleBtn) toggleBtn.textContent = c.currency;
-      if (display) display.textContent = c.nav_display;
+    const navResp = await fetch('/api/account/size').then(x => x.json());
+    if (navResp.ok && Number(navResp.nav) > 0) {
+      _accountBaseHkd = Number(navResp.nav);
     }
+
+    const currentCurrency = (document.getElementById('currencyToggleBtn')?.textContent || 'HKD').trim().toUpperCase();
+    _refreshAccountCurrencyDisplay(currentCurrency);
 
     await initAccountAssetDonut();
     toast(`✅ IBKR synced: ${syncResp.data?.synced_count ?? 0} positions`, true);
@@ -481,50 +582,56 @@ async function manualSyncIbkr(event) {
   }
 }
 
-// ── Account Size edit handler ──────────────────────────────────────────────
-async function editAccountSize() {
-  // Show a modal explaining that account size is synced from IBKR
-  const syncStatus = document.getElementById('syncStatus').textContent.trim();
-  
-  const msg = `Your account size is now synchronized from IBKR in real-time.\n\n` +
-              `Status: ${syncStatus}\n` +
-              `Last sync: {{ nav_sync_time or 'Never' }}\n\n` +
-              `To update your account size:\n` +
-              `1. Connect to IBKR (if not connected)\n` +
-              `2. The NAV will auto-sync from your IBKR account\n` +
-              `3. If offline, cached value is used`;
-  
-  alert(msg);
-}
+async function runDashboardAssess() {
+  const btn = document.getElementById('dashAssessBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>分析中...';
+  }
 
-async function saveAccountSize() {
-  // Modal-based account size edit (deprecated in favor of IBKR auto-sync)
-  // This function is kept for backward compatibility with the modal UI
-  alert('Account size is now automatically synchronized from IBKR.\nManual editing is not needed.');
+  try {
+    const start = await fetch('/api/market/run', { method: 'POST' }).then(x => x.json());
+    if (!start.job_id) {
+      toast(`❌ ${start.error || 'Failed to start market assess'}`, false);
+      return;
+    }
+
+    const jobId = start.job_id;
+    await new Promise((resolve) => {
+      const maxTries = 360;
+      let tries = 0;
+      const pollId = setInterval(async () => {
+        tries += 1;
+        try {
+          const job = await fetch(`/api/market/status/${jobId}`).then(x => x.json());
+          if (job.status === 'done') {
+            clearInterval(pollId);
+            toast('✅ 市場分析完成，已更新快取', true);
+            setTimeout(() => location.reload(), 280);
+            resolve();
+            return;
+          }
+          if (job.status === 'error' || tries >= maxTries) {
+            clearInterval(pollId);
+            toast(`❌ ${job.error || 'Market assess failed/timeout'}`, false);
+            resolve();
+          }
+        } catch (e) {
+          clearInterval(pollId);
+          toast(`❌ Market assess polling error: ${e.message}`, false);
+          resolve();
+        }
+      }, 1000);
+    });
+  } catch (e) {
+    toast(`❌ ${e.message}`, false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>分析 Assess';
+    }
+  }
 }
 </script>
-
-<!-- Edit Account Size Modal -->
-<div class="modal fade" id="editAccountModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content" style="background:#161b22; border:1px solid #30363d;">
-      <div class="modal-header" style="border-bottom:1px solid #30363d;">
-        <h5 class="modal-title"><i class="bi bi-pencil-square me-2" style="color:var(--accent)"></i>編輯帳戶大小 / Edit Account Size</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body">
-        <label class="form-label mb-2">帳戶總資產 / Total Account Equity (USD)</label>
-        <input type="number" id="editAccountInput" class="form-control" placeholder="100000" step="1000" style="background:#0d1117; color:#c9d1d9; border:1px solid #30363d; font-size:1.2rem;">
-        <small class="text-muted mt-2 d-block">此金額將用於所有策略的持倉計算。This amount will be used for position sizing across all strategies.</small>
-      </div>
-      <div class="modal-footer" style="border-top:1px solid #30363d;">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-        <button type="button" class="btn btn-accent" onclick="saveAccountSize()">
-          <i class="bi bi-check-circle me-1"></i>儲存 / Save
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
 
 {% endblock %}

@@ -1,5 +1,5 @@
 {
-  "A": {
+  "SEPA": {
     "GCT": {
       "added_date": "2026-02-28",
       "last_updated": "2026-02-28",
@@ -12,7 +12,8 @@
       "pivot": 48.0,
       "price": 44.34,
       "sector": "Technology",
-      "note": ""
+      "note": "",
+      "strategy": "SEPA"
     },
     "FORM": {
       "added_date": "2026-03-03",
@@ -26,7 +27,8 @@
       "pivot": 107.04,
       "price": 99.7,
       "sector": "Technology",
-      "note": ""
+      "note": "",
+      "strategy": "SEPA"
     },
     "KPTI": {
       "added_date": "2026-03-06",
@@ -40,9 +42,26 @@
       "pivot": 10.38,
       "price": 8.82,
       "sector": "Healthcare",
-      "note": "Qm"
+      "note": "Qm",
+      "strategy": "SEPA"
     }
   },
-  "B": {},
-  "C": {}
+  "QM": {
+    "BIOA": {
+      "added_date": "2026-03-07",
+      "last_updated": "2026-03-07",
+      "rs_rank": null,
+      "tt_score": 9,
+      "tt_passes": true,
+      "vcp_grade": "C",
+      "vcp_score": 57,
+      "t_count": 3,
+      "pivot": 23.0,
+      "price": 20.29,
+      "sector": "Healthcare",
+      "note": "",
+      "strategy": "QM"
+    }
+  },
+  "ML": {}
 }

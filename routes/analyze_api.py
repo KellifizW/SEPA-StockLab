@@ -12,7 +12,7 @@ from routes.helpers import (
     _new_job, _finish_job, _get_job,
     _clean, _get_account_size,
     _qm_analyze_cache, _ml_analyze_cache,
-    _load_combined_last,
+    _load_combined_last, _load_market_last,
 )
 
 bp = Blueprint("analyze_api", __name__)
@@ -193,6 +193,21 @@ def htmx_market_result(jid):
     d = job.get("result") or {}
     log_file = job.get("log_file", "")
     return render_template("_market_result.html", d=d, log_file=log_file)
+
+@bp.route("/htmx/market/result/last")
+def htmx_market_result_last():
+    """Render latest cached market assessment if available."""
+    cached = _load_market_last()
+    d = cached.get("result") if isinstance(cached, dict) else None
+    if not isinstance(d, dict) or not d:
+        return make_response(
+            "<p class='text-muted py-3'><i class='bi bi-clock-history me-2'></i>No cached market assessment yet.</p>",
+            200,
+        )
+
+    d = dict(d)
+    d["cached_saved_at"] = cached.get("saved_at", "")
+    return render_template("_market_result.html", d=d, log_file="")
 
 
 @bp.route("/htmx/qm/analyze/result")

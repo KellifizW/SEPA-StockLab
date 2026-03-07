@@ -15,6 +15,7 @@ from routes.helpers import (
     _get_cached, _set_cache,
     _load_watchlist, _load_positions, _latest_report,
     _market_job_ids,
+    _save_market_last, _load_market_last,
 )
 
 bp = Blueprint("market_api", __name__)
@@ -90,6 +91,9 @@ def api_market_run():
                 except Exception as exc:
                     logging.warning("DB market_env write skipped: %s", exc)
 
+            if result:
+                _save_market_last(_clean(result))
+
             log_rel = str(market_log_file.relative_to(ROOT)) if market_log_file.exists() else ""
             _finish_job(jid, result=_clean(result), log_file=log_rel)
         except Exception as exc:
@@ -109,6 +113,21 @@ def api_market_run():
 @bp.route("/api/market/status/<jid>")
 def api_market_status(jid):
     return jsonify(_get_job(jid))
+
+
+@bp.route("/api/market/last", methods=["GET"])
+def api_market_last():
+    """Return the latest cached market assessment snapshot."""
+    cached = _load_market_last()
+    d = cached.get("result") if isinstance(cached, dict) else None
+    if not isinstance(d, dict) or not d:
+        return jsonify({"ok": False, "error": "No cached market assessment"}), 404
+
+    return jsonify({
+        "ok": True,
+        "saved_at": cached.get("saved_at"),
+        "result": d,
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

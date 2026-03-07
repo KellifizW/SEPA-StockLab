@@ -13,9 +13,12 @@ import os
 import sys
 import time
 import json
+import re
 import threading
 import warnings
 import logging
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -68,6 +71,11 @@ PRICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 (ROOT / C.REPORTS_DIR).mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
+
+_sec_lock = threading.Lock()
+_sec_ticker_map_cache: dict[str, int] | None = None
+_sec_companyfacts_cache: dict[int, dict] = {}
+_sec_last_call_ts = 0.0
 
 # ─── Rate-limit helpers ───────────────────────────────────────────────────────
 _last_fvf_call = 0.0
@@ -604,6 +612,328 @@ def get_news_fvf(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _parse_finviz_number(value) -> Optional[float]:
+    """Parse finviz string values like '12.3%', '1.4B', '3,210' into float."""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float, np.number)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text or text in {"-", "N/A", "nan", "None"}:
+        return None
+
+    pct = text.endswith("%")
+    if pct:
+        text = text[:-1].strip()
+
+    unit = 1.0
+    if text and text[-1] in {"K", "M", "B", "T"}:
+        suffix = text[-1]
+        text = text[:-1]
+        unit = {
+            "K": 1e3,
+            "M": 1e6,
+            "B": 1e9,
+            "T": 1e12,
+        }[suffix]
+
+    cleaned = re.sub(r"[^0-9.\-]", "", text)
+    if cleaned in {"", ".", "-", "-."}:
+        return None
+
+    try:
+        val = float(cleaned) * unit
+    except ValueError:
+        return None
+
+    if pct:
+        return val / 100.0
+    return val
+
+
+def _build_info_from_finviz_snapshot(snapshot: dict) -> dict:
+    """Map finviz quote snapshot fields into yfinance-like info keys used by scoring."""
+    if not snapshot:
+        return {}
+
+    earnings_growth = (
+        _parse_finviz_number(snapshot.get("EPS this Q"))
+        or _parse_finviz_number(snapshot.get("EPS this Y"))
+        or _parse_finviz_number(snapshot.get("EPS next Y"))
+    )
+    revenue_growth = (
+        _parse_finviz_number(snapshot.get("Sales Q/Q"))
+        or _parse_finviz_number(snapshot.get("Sales past 5Y"))
+    )
+
+    current_price = (
+        _parse_finviz_number(snapshot.get("Price"))
+        or _parse_finviz_number(snapshot.get("Prev Close"))
+    )
+
+    info = {
+        # Fields consumed by screener.py scoring functions
+        "earningsGrowth": earnings_growth,
+        "revenueGrowth": revenue_growth,
+        "returnOnEquity": _parse_finviz_number(snapshot.get("ROE")),
+        "profitMargins": (
+            _parse_finviz_number(snapshot.get("Profit Margin"))
+            or _parse_finviz_number(snapshot.get("Oper. Margin"))
+        ),
+        "recommendationMean": _parse_finviz_number(snapshot.get("Recom")),
+        "targetMeanPrice": _parse_finviz_number(snapshot.get("Target Price")),
+        "currentPrice": current_price,
+        "regularMarketPrice": current_price,
+        "marketCap": _parse_finviz_number(snapshot.get("Market Cap")),
+    }
+
+    # Remove unresolved keys to avoid polluting cache with None-heavy payloads.
+    return {k: v for k, v in info.items() if v is not None}
+
+
+def _get_finviz_fundamentals_fallback(ticker: str) -> dict | None:
+    """Best-effort free fallback fundamentals from finviz quote snapshot."""
+    if not FVF_AVAILABLE:
+        return None
+    if not bool(getattr(C, "FUNDAMENTALS_ENABLE_FINVIZ_FALLBACK", True)):
+        return None
+
+    try:
+        snapshot = get_snapshot(ticker)
+        info = _build_info_from_finviz_snapshot(snapshot)
+        if not info:
+            return None
+
+        inst_own = _parse_finviz_number(snapshot.get("Inst Own"))
+        inst_df = pd.DataFrame()
+        if inst_own is not None:
+            inst_df = pd.DataFrame([
+                {"holder": "finviz_snapshot", "instOwn": inst_own}
+            ])
+
+        return {
+            "ticker": ticker.upper(),
+            "info": info,
+            "quarterly_eps": pd.DataFrame(),
+            "earnings_surprise": pd.DataFrame(),
+            "eps_revisions": pd.DataFrame(),
+            "eps_trend": pd.DataFrame(),
+            "institutional_holders": inst_df,
+            "insider_transactions": pd.DataFrame(),
+            "analyst_targets": pd.DataFrame(),
+            "quarterly_revenue": pd.DataFrame(),
+            "fundamentals_source": "finviz_live",
+            "fundamentals_quality": "fallback",
+            "stale_age_days": None,
+        }
+    except Exception as exc:
+        logger.debug("finviz fallback get_fundamentals(%s) failed: %s", ticker, exc)
+        return None
+
+
+def _sec_sleep(min_gap: float = 0.2):
+    """Polite delay between SEC requests (free public endpoint)."""
+    global _sec_last_call_ts
+    elapsed = time.time() - _sec_last_call_ts
+    if elapsed < min_gap:
+        time.sleep(min_gap - elapsed)
+    _sec_last_call_ts = time.time()
+
+
+def _http_get_json(url: str, headers: dict | None = None, timeout: float = 8.0) -> Optional[dict]:
+    """Small helper to fetch JSON via stdlib urllib with graceful failures."""
+    req = urlrequest.Request(url, headers=headers or {})
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw)
+    except Exception as exc:
+        logger.debug("HTTP JSON fetch failed: %s (%s)", url, exc)
+        return None
+
+
+def _load_sec_ticker_map() -> dict[str, int]:
+    """Load SEC ticker->CIK map once per process."""
+    global _sec_ticker_map_cache
+    with _sec_lock:
+        if _sec_ticker_map_cache is not None:
+            return _sec_ticker_map_cache
+
+        user_agent = getattr(C, "SEC_USER_AGENT", "SEPA-StockLab/1.0 (local)")
+        timeout = float(getattr(C, "SEC_HTTP_TIMEOUT_SEC", 8.0))
+        _sec_sleep()
+        payload = _http_get_json(
+            "https://www.sec.gov/files/company_tickers.json",
+            headers={"User-Agent": user_agent, "Accept": "application/json"},
+            timeout=timeout,
+        )
+
+        ticker_map: dict[str, int] = {}
+        if isinstance(payload, dict):
+            for rec in payload.values():
+                try:
+                    tkr = str(rec.get("ticker", "")).upper().strip()
+                    cik = int(rec.get("cik_str"))
+                    if tkr:
+                        ticker_map[tkr] = cik
+                except Exception:
+                    continue
+
+        _sec_ticker_map_cache = ticker_map
+        return ticker_map
+
+
+def _get_sec_companyfacts(cik: int) -> Optional[dict]:
+    """Fetch SEC CompanyFacts JSON for a CIK with in-memory cache."""
+    with _sec_lock:
+        cached = _sec_companyfacts_cache.get(cik)
+    if cached is not None:
+        return cached
+
+    user_agent = getattr(C, "SEC_USER_AGENT", "SEPA-StockLab/1.0 (local)")
+    timeout = float(getattr(C, "SEC_HTTP_TIMEOUT_SEC", 8.0))
+    url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+    _sec_sleep()
+    payload = _http_get_json(
+        url,
+        headers={"User-Agent": user_agent, "Accept": "application/json"},
+        timeout=timeout,
+    )
+
+    with _sec_lock:
+        _sec_companyfacts_cache[cik] = payload
+    return payload
+
+
+def _extract_sec_series(company_facts: dict, tag: str, unit: str) -> list[dict]:
+    """Extract one SEC us-gaap series list for a given tag/unit pair."""
+    try:
+        return company_facts["facts"]["us-gaap"][tag]["units"][unit]
+    except Exception:
+        return []
+
+
+def _latest_yoy_growth(series: list[dict]) -> Optional[float]:
+    """Compute YoY growth from SEC fact points using same fiscal period when possible."""
+    if not series:
+        return None
+
+    rows = []
+    for rec in series:
+        try:
+            form = str(rec.get("form", ""))
+            if form not in {"10-Q", "10-Q/A", "10-K", "10-K/A"}:
+                continue
+            val = float(rec.get("val"))
+            fp = rec.get("fp")
+            fy = rec.get("fy")
+            end = rec.get("end")
+            if fy is None or fp is None or end is None:
+                continue
+            rows.append({"val": val, "fp": fp, "fy": int(fy), "end": str(end)})
+        except Exception:
+            continue
+
+    if len(rows) < 2:
+        return None
+
+    rows.sort(key=lambda x: x["end"], reverse=True)
+    latest = rows[0]
+
+    for old in rows[1:]:
+        if old["fp"] == latest["fp"] and old["fy"] == latest["fy"] - 1:
+            base = old["val"]
+            if abs(base) < 1e-9:
+                return None
+            return (latest["val"] - base) / abs(base)
+
+    return None
+
+
+def _get_sec_fundamentals_fallback(ticker: str) -> dict | None:
+    """Best-effort free fallback fundamentals from SEC CompanyFacts (US equities only)."""
+    if not bool(getattr(C, "FUNDAMENTALS_ENABLE_SEC_FALLBACK", True)):
+        return None
+
+    tkr = str(ticker).upper().strip()
+    if not tkr.isalpha() or len(tkr) > 5:
+        # SEC ticker map primarily covers standard US symbols.
+        return None
+
+    ticker_map = _load_sec_ticker_map()
+    cik = ticker_map.get(tkr)
+    if not cik:
+        return None
+
+    facts = _get_sec_companyfacts(cik)
+    if not isinstance(facts, dict):
+        return None
+
+    eps_series = (
+        _extract_sec_series(facts, "EarningsPerShareDiluted", "USD/shares")
+        or _extract_sec_series(facts, "EarningsPerShareBasic", "USD/shares")
+    )
+    rev_series = (
+        _extract_sec_series(facts, "Revenues", "USD")
+        or _extract_sec_series(facts, "RevenueFromContractWithCustomerExcludingAssessedTax", "USD")
+    )
+
+    earnings_growth = _latest_yoy_growth(eps_series)
+    revenue_growth = _latest_yoy_growth(rev_series)
+
+    info = {
+        "earningsGrowth": earnings_growth,
+        "revenueGrowth": revenue_growth,
+    }
+    info = {k: v for k, v in info.items() if v is not None}
+    if not info:
+        return None
+
+    return {
+        "ticker": ticker.upper(),
+        "info": info,
+        "quarterly_eps": pd.DataFrame(),
+        "earnings_surprise": pd.DataFrame(),
+        "eps_revisions": pd.DataFrame(),
+        "eps_trend": pd.DataFrame(),
+        "institutional_holders": pd.DataFrame(),
+        "insider_transactions": pd.DataFrame(),
+        "analyst_targets": pd.DataFrame(),
+        "quarterly_revenue": pd.DataFrame(),
+        "fundamentals_source": "sec_live",
+        "fundamentals_quality": "fallback",
+        "stale_age_days": None,
+    }
+
+
+def _compose_free_fundamentals_fallback(ticker: str) -> dict | None:
+    """Compose free live fallback from SEC + finviz when yfinance info is unavailable."""
+    sec_fb = _get_sec_fundamentals_fallback(ticker)
+    finviz_fb = _get_finviz_fundamentals_fallback(ticker)
+
+    if sec_fb is None and finviz_fb is None:
+        return None
+    if sec_fb is None:
+        return finviz_fb
+    if finviz_fb is None:
+        return sec_fb
+
+    out = dict(sec_fb)
+    # Merge yfinance-like info keys; keep SEC growth metrics and fill gaps from finviz.
+    out_info = dict(finviz_fb.get("info", {}))
+    out_info.update(sec_fb.get("info", {}))
+    out["info"] = out_info
+
+    if out.get("institutional_holders", pd.DataFrame()).empty and not finviz_fb.get("institutional_holders", pd.DataFrame()).empty:
+        out["institutional_holders"] = finviz_fb["institutional_holders"]
+
+    out["fundamentals_source"] = "sec_finviz_live"
+    out["fundamentals_quality"] = "fallback"
+    return out
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # B. yfinance — Historical & Fundamental Data
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -765,6 +1095,41 @@ def get_bulk_historical(tickers: list, period: str = "1y",
     return result
 
 
+def _rehydrate_fundamentals(raw: dict, ticker: str) -> dict:
+    """Convert cached JSON fundamentals payload into runtime dict/DataFrame shape."""
+    data = dict(raw or {})
+    data.setdefault("ticker", ticker.upper())
+    data.setdefault("info", {})
+
+    for key in (
+        "quarterly_eps", "earnings_surprise", "eps_revisions",
+        "eps_trend", "institutional_holders", "insider_transactions",
+        "analyst_targets", "quarterly_revenue",
+    ):
+        val = data.get(key)
+        if isinstance(val, list):
+            data[key] = pd.DataFrame(val) if val else pd.DataFrame()
+        elif isinstance(val, pd.DataFrame):
+            pass
+        else:
+            data[key] = pd.DataFrame()
+    return data
+
+
+def _load_db_fundamentals_cache(ticker: str) -> dict | None:
+    """Best-effort DuckDB fundamentals cache read; returns rehydrated dict or None."""
+    if not getattr(C, "DB_ENABLED", False):
+        return None
+    try:
+        from modules import db
+        cached = db.fund_cache_get(ticker)
+        if cached and cached.get("info"):
+            return _rehydrate_fundamentals(cached, ticker)
+    except Exception as exc:
+        logger.debug("get_fundamentals(%s) DB cache read failed: %s", ticker, exc)
+    return None
+
+
 def get_fundamentals(ticker: str, use_cache: bool = True,
                      scan_mode: bool = False) -> dict:
     """
@@ -786,14 +1151,18 @@ def get_fundamentals(ticker: str, use_cache: bool = True,
     cache_file = PRICE_CACHE_DIR / f"{ticker.upper()}_fundamentals.json"
     meta_file  = cache_file.with_suffix(".fmeta")
     today_str  = date.today().isoformat()
+    stale_fallback = None
+    stale_max_days = int(getattr(C, "FUNDAMENTALS_STALE_FALLBACK_DAYS", 7))
+    use_stale_fallback = bool(getattr(C, "FUNDAMENTALS_USE_STALE_FALLBACK", True))
 
     # ── Try reading cache ────────────────────────────────────────────────
     if use_cache and cache_file.exists() and meta_file.exists():
         try:
             cache_date = meta_file.read_text().strip()
             cached_dt  = date.fromisoformat(cache_date)
-            if (date.today() - cached_dt).days < getattr(C, "FUNDAMENTALS_CACHE_DAYS", 1):
-                raw = json.loads(cache_file.read_text(encoding="utf-8"))
+            raw = json.loads(cache_file.read_text(encoding="utf-8"))
+            cache_age_days = (date.today() - cached_dt).days
+            if cache_age_days < getattr(C, "FUNDAMENTALS_CACHE_DAYS", 1):
                 # If cached info is empty, the cache was written during an auth failure.
                 # Delete the stale files now and fall through to re-fetch.
                 if not raw.get("info"):
@@ -807,19 +1176,30 @@ def get_fundamentals(ticker: str, use_cache: bool = True,
                     except Exception:
                         pass
                 else:
-                    # Restore DataFrames from dict lists
-                    for key in ("quarterly_eps", "earnings_surprise", "eps_revisions",
-                                "eps_trend", "institutional_holders", "insider_transactions",
-                                "analyst_targets", "quarterly_revenue"):
-                        val = raw.get(key)
-                        if isinstance(val, list):
-                            raw[key] = pd.DataFrame(val) if val else pd.DataFrame()
-                        elif not isinstance(val, pd.DataFrame):
-                            raw[key] = pd.DataFrame()
+                    hydrated = _rehydrate_fundamentals(raw, ticker)
+                    hydrated["fundamentals_source"] = "cache_fresh"
+                    hydrated["fundamentals_quality"] = "ok"
                     logger.debug("[Cache HIT] get_fundamentals(%s) from cache", ticker)
-                    return raw
+                    return hydrated
+            elif use_stale_fallback and cache_age_days <= stale_max_days and raw.get("info"):
+                stale_fallback = _rehydrate_fundamentals(raw, ticker)
+                stale_fallback["fundamentals_source"] = "cache_stale"
+                stale_fallback["fundamentals_quality"] = "stale"
+                stale_fallback["stale_age_days"] = cache_age_days
+                logger.debug(
+                    "get_fundamentals(%s) stale cache retained for fallback (age=%sd)",
+                    ticker,
+                    cache_age_days,
+                )
         except Exception:
             pass
+
+    if stale_fallback is None and use_cache and use_stale_fallback:
+        stale_fallback = _load_db_fundamentals_cache(ticker)
+        if stale_fallback is not None:
+            stale_fallback["fundamentals_source"] = "db_cache_stale"
+            stale_fallback["fundamentals_quality"] = "stale"
+            stale_fallback["stale_age_days"] = None
 
     # ── Fetch from yfinance ── (retry with exponential backoff on 401/crumb error) ─────────────
     max_retries = getattr(C, "YFINANCE_MAX_RETRIES", 1)
@@ -882,6 +1262,13 @@ def get_fundamentals(ticker: str, use_cache: bool = True,
                     continue
                 else:
                     break
+
+            if result.get("info"):
+                result["fundamentals_source"] = "live"
+                result["fundamentals_quality"] = "ok"
+            else:
+                result["fundamentals_source"] = "live_empty"
+                result["fundamentals_quality"] = "degraded"
 
             # Quarterly income statement (for EPS acceleration detection)
             # scan_mode: SKIP — not used in SEPA pillar scoring
@@ -981,6 +1368,25 @@ def get_fundamentals(ticker: str, use_cache: bool = True,
                     time.sleep(delay)
                     continue
                 break
+
+    if not result.get("info"):
+        free_fallback = _compose_free_fundamentals_fallback(ticker)
+        if free_fallback is not None:
+            logger.info(
+                "get_fundamentals(%s): live info empty, using free fallback (%s)",
+                ticker,
+                free_fallback.get("fundamentals_source", "free_fallback"),
+            )
+            return free_fallback
+
+    if not result.get("info") and stale_fallback is not None:
+
+        logger.info(
+            "get_fundamentals(%s): live info empty, using stale fallback (%s)",
+            ticker,
+            stale_fallback.get("fundamentals_source", "cache_stale"),
+        )
+        return stale_fallback
 
     # ── Save to cache ────────────────────────────────────────────────────
     # Do NOT cache if info is empty — likely an auth failure.

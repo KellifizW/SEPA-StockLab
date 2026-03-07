@@ -3,9 +3,12 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h4 class="mb-0"><i class="bi bi-bar-chart-line me-2" style="color:var(--accent)"></i>Market Environment</h4>
-  <button class="btn btn-accent" id="btnAssess" onclick="runAssess()">
-    <i class="bi bi-play-fill me-1"></i>Assess Market
-  </button>
+  <div class="d-flex align-items-center gap-2">
+    <span id="marketCacheMeta" class="badge bg-secondary" style="display:none;"></span>
+    <button class="btn btn-accent" id="btnAssess" onclick="runAssess()">
+      <i class="bi bi-play-fill me-1"></i>Assess Market
+    </button>
+  </div>
 </div>
 
 <div class="row g-3 mb-3">
@@ -54,6 +57,37 @@
 let _marketPollId = null;
 let _marketStartTime = null;
 let _marketTimerId = null;
+
+function _setCacheMeta(text, cls = 'bg-secondary') {
+  const el = document.getElementById('marketCacheMeta');
+  if (!el) return;
+  if (!text) {
+    el.style.display = 'none';
+    el.textContent = '';
+    el.className = 'badge bg-secondary';
+    return;
+  }
+  el.style.display = '';
+  el.textContent = text;
+  el.className = `badge ${cls}`;
+}
+
+async function loadCachedAssessment() {
+  try {
+    const meta = await fetch('/api/market/last').then(x => x.json());
+    if (!meta.ok) return false;
+
+    const cachedAt = meta.saved_at || (meta.result || {}).assessed_at || '';
+    _setCacheMeta(`Cached: ${cachedAt}`, 'bg-info text-dark');
+
+    document.getElementById('result').classList.remove('d-none');
+    htmx.ajax('GET', '/htmx/market/result/last', {target: '#result', swap: 'innerHTML'});
+    return true;
+  } catch (e) {
+    console.debug('No market cache available:', e);
+    return false;
+  }
+}
 
 function _updateTimer() {
   if (!_marketStartTime) return;
@@ -132,6 +166,8 @@ async function runAssess() {
         document.getElementById('btnAssess').disabled = false;
         document.getElementById('result').classList.remove('d-none');
         htmx.ajax('GET', `/htmx/market/result/${r.job_id}`, {target: '#result', swap: 'innerHTML'});
+        const assessedAt = (job.result || {}).assessed_at || new Date().toLocaleString('zh-HK');
+        _setCacheMeta(`Latest: ${assessedAt}`, 'bg-success');
         toastCompletion(`✅ 市場評估完成 — 市場狀態: ${(job.result||{}).regime||'UNKNOWN'}`, true);
       }, 400);
     } else if (job.status === 'error') {
@@ -311,6 +347,10 @@ async function loadIndexCharts() {
 window.addEventListener('DOMContentLoaded', () => {
   // Tooltips
   new bootstrap.Tooltip(document.body, {selector: '[data-bs-toggle="tooltip"]'});
+
+  (async () => {
+    await loadCachedAssessment();
+  })();
 });
 
 </script>

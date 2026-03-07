@@ -366,6 +366,7 @@ _LAST_SCAN_FILE = ROOT / C.DATA_DIR / "last_scan.json"
 _QM_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "qm_last_scan.json"
 _ML_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "ml_last_scan.json"
 _COMBINED_LAST_FILE = ROOT / C.DATA_DIR / "combined_last_scan.json"
+_MARKET_LAST_FILE = ROOT / C.DATA_DIR / "market_last_assessment.json"
 
 
 def _save_last_scan(rows: list, all_rows: Optional[list] = None):
@@ -536,6 +537,35 @@ def _load_combined_last() -> dict:
         data.setdefault("ml_count", 0)
 
     return data
+
+
+def _save_market_last(result: dict):
+    """Persist latest market assessment payload for quick page restore."""
+    if not result:
+        return
+    try:
+        payload = {
+            "saved_at": datetime.now().isoformat(),
+            "result": result,
+        }
+        _MARKET_LAST_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logging.warning("Could not save market_last_assessment: %s", exc)
+
+
+def _load_market_last() -> dict:
+    """Load latest market assessment cache payload."""
+    try:
+        if _MARKET_LAST_FILE.exists():
+            data = json.loads(_MARKET_LAST_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        logging.warning("Could not load market_last_assessment: %s", exc)
+    return {}
 
 
 def _save_combined_scan_csv(sepa_df, qm_df, scan_ts=None) -> tuple:

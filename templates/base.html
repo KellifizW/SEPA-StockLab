@@ -95,7 +95,6 @@
     </button>
     <div class="collapse navbar-collapse" id="nav">
       <ul class="navbar-nav me-auto gap-1">
-        <li class="nav-item"><a class="nav-link {% if request.path=='/' %}active{% endif %}" href="/"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a></li>
         <li class="nav-item"><a class="nav-link {% if request.path=='/combined' %}active{% endif %}" href="/combined"><i class="bi bi-lightning-fill me-1" style="color:#00d4ff"></i>Combined Scan 組合掃描</a></li>
         <!-- ── SEPA dropdown ───────────────────────────────────── -->
         <li class="nav-item dropdown">
@@ -211,6 +210,11 @@
         <li class="nav-item d-flex align-items-center gap-1">
           <span id="navClockHK" class="badge bg-dark border border-secondary nav-clock">HK --:--:--</span>
           <span id="navClockET" class="badge bg-dark border border-secondary nav-clock">ET --:--:--</span>
+          <button id="ibkrConnectBtnNav" class="btn btn-sm btn-outline-success"
+                  title="快速連接 IBKR / Quick connect IBKR"
+                  style="font-size:11px; padding:4px 8px;">
+            <i class="bi bi-plug me-1"></i>連接 IBKR
+          </button>
           <!-- ── IBKR Trade Drawer Trigger ────────────────────────────── -->
           <button id="ibkrTradeBtn" class="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
                   data-bs-toggle="offcanvas" data-bs-target="#ibkrDrawer" title="開啟 IBKR 交易面板 / Open IBKR Trading Panel"
@@ -705,6 +709,7 @@ function openIBKRDrawer(ticker = '', action = 'BUY', qty = null) {
 function initIbkrDrawer() {
   try {
     const reconnectBtn = document.getElementById('ibkrConnectBtnSmall');
+    const navConnectBtn = document.getElementById('ibkrConnectBtnNav');
     const disconnectBtn = document.getElementById('ibkrDisconnectBtnSmall');
     const quoteSearchBtn = document.getElementById('ibkrQuoteSearchBtn');
     const tickerInput = document.getElementById('ibkrTickerInput');
@@ -713,6 +718,7 @@ function initIbkrDrawer() {
     const syncPosBtn = document.getElementById('ibkrSyncPositionsBtn');
     
     if (reconnectBtn) reconnectBtn.addEventListener('click', ibkrConnect);
+    if (navConnectBtn) navConnectBtn.addEventListener('click', ibkrConnect);
     if (disconnectBtn) disconnectBtn.addEventListener('click', ibkrDisconnect);
     if (quoteSearchBtn) quoteSearchBtn.addEventListener('click', ibkrSearchQuote);
     if (tickerInput) tickerInput.addEventListener('keyup', e => {
@@ -776,6 +782,7 @@ async function updateIbkrStatus() {
     const subtitle = document.getElementById('ibkrDrawerSubtitle');
     const connBtn = document.getElementById('ibkrConnectBtnSmall');
     const disconnBtn = document.getElementById('ibkrDisconnectBtnSmall');
+    const navConnectBtn = document.getElementById('ibkrConnectBtnNav');
     
     if (connected) {
       if (subtitle) {
@@ -784,6 +791,11 @@ async function updateIbkrStatus() {
       }
       if (connBtn) connBtn.classList.add('d-none');
       if (disconnBtn) disconnBtn.classList.remove('d-none');
+      if (navConnectBtn) {
+        navConnectBtn.className = 'btn btn-sm btn-success';
+        navConnectBtn.innerHTML = '<i class="bi bi-check2-circle me-1"></i>IBKR 已連線';
+        navConnectBtn.disabled = true;
+      }
       
       // If currently viewing history tab, auto-refresh it when connected
       const historyTab = document.getElementById('ibkrTabHistory');
@@ -794,6 +806,11 @@ async function updateIbkrStatus() {
       if (subtitle) subtitle.textContent = '✗ 離線 / Disconnected';
       if (connBtn) connBtn.classList.remove('d-none');
       if (disconnBtn) disconnBtn.classList.add('d-none');
+      if (navConnectBtn) {
+        navConnectBtn.className = 'btn btn-sm btn-outline-success';
+        navConnectBtn.innerHTML = '<i class="bi bi-plug me-1"></i>連接 IBKR';
+        navConnectBtn.disabled = false;
+      }
     }
   } catch(e) {
     console.error('updateIbkrStatus error:', e);
@@ -804,7 +821,9 @@ async function updateIbkrStatus() {
 async function ibkrConnect() {
   try {
     const btn = document.getElementById('ibkrConnectBtnSmall');
+    const navBtn = document.getElementById('ibkrConnectBtnNav');
     if (btn) btn.disabled = true;
+    if (navBtn) navBtn.disabled = true;
     
     const response = await fetch('/api/ibkr/connect', {method: 'POST'});
     if (!response.ok) {
@@ -825,7 +844,9 @@ async function ibkrConnect() {
     toast(`❌ 錯誤: ${e.message}`, false);
   } finally {
     const btn = document.getElementById('ibkrConnectBtnSmall');
+    const navBtn = document.getElementById('ibkrConnectBtnNav');
     if (btn) btn.disabled = false;
+    if (navBtn) navBtn.disabled = false;
   }
 }
 

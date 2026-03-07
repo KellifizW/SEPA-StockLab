@@ -15,18 +15,14 @@
       "primary_exchange": "NASDAQ",
       "currency": "USD",
       "account": "DU3272106",
-      "market_price": 60.519722,
-      "market_value": 423.64,
-      "unrealized_pnl": -27.95,
-      "unrealized_pnl_pct": -6.597582853366066,
+      "market_price": 61.73120115,
+      "market_value": 432.12,
+      "unrealized_pnl": -19.47,
+      "unrealized_pnl_pct": -4.505692863093585,
       "realized_pnl": 0,
       "cost_basis": 451.59199994999994,
       "source": "ibkr_sync_exact",
-      "last_sync": "2026-03-07T01:08:00",
-      "pool": "FREE",
-      "original_shares": 7.0,
-      "partial_sells": [],
-      "partial_sell_count": 0
+      "last_sync": "2026-03-07T16:49:20"
     }
   },
   "closed": [

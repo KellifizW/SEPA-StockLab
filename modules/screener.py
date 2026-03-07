@@ -15,6 +15,8 @@ import sys
 import time
 import threading
 import logging
+import random
+from datetime import date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -825,6 +827,16 @@ def run_stage3(s2_results: list,
     done3 = [0]
     _rows_lock = threading.Lock()
 
+    # Shuffle scoring order to avoid repeatedly penalising late-alphabet tickers
+    # whenever fundamentals API quality degrades mid-run.
+    stage3_worklist = list(s2_results)
+    if getattr(C, "SEPA_STAGE3_SHUFFLE", True) and len(stage3_worklist) > 1:
+        shuffle_seed = getattr(C, "SEPA_STAGE3_SHUFFLE_SEED", None)
+        if shuffle_seed is None:
+            shuffle_seed = int(date.today().strftime("%Y%m%d"))
+        random.Random(shuffle_seed).shuffle(stage3_worklist)
+        logger.info("[Stage 3] Shuffled scoring order (seed=%s)", shuffle_seed)
+
     def _score_one(tt_result):
         """Score a single ticker (thread-safe)."""
         if _cancelled():
@@ -866,7 +878,7 @@ def run_stage3(s2_results: list,
 
     stage3_workers = min(getattr(C, "STAGE3_MAX_WORKERS", 6), total3)
     with ThreadPoolExecutor(max_workers=max(stage3_workers, 1)) as pool:
-        futures = {pool.submit(_score_one, tt): tt["ticker"] for tt in s2_results}
+        futures = {pool.submit(_score_one, tt): tt["ticker"] for tt in stage3_worklist}
         for fut in as_completed(futures):
             if _cancelled():
                 pool.shutdown(wait=False, cancel_futures=True)

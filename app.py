@@ -566,23 +566,59 @@ def _latest_report() -> Optional[Path]:
 
 @app.route("/")
 def dashboard():
-    from routes.helpers import _get_account_size, _load_currency_setting, _convert_amount
+    from routes.helpers import (
+        _get_account_size,
+        _load_currency_setting,
+        _load_market_last,
+    )
 
     wl = _load_watchlist()
     pos = _load_positions()
     wl_counts = {g: len(v) for g, v in wl.items()}
+    total_watchlist = sum(wl_counts.values())
+
+    watchlist_rows = []
+    for strategy in ("SEPA", "QM", "ML"):
+        for ticker, data in (wl.get(strategy, {}) or {}).items():
+            if strategy == "QM":
+                analyze_url = f"/qm/analyze?ticker={ticker}"
+            elif strategy == "ML":
+                analyze_url = f"/ml/analyze?ticker={ticker}"
+            else:
+                analyze_url = f"/analyze?ticker={ticker}"
+            watchlist_rows.append({
+                "strategy": strategy,
+                "ticker": ticker,
+                "rs_rank": data.get("rs_rank"),
+                "vcp_grade": data.get("vcp_grade"),
+                "pivot_price": data.get("pivot_price"),
+                "analyze_url": analyze_url,
+            })
+    watchlist_rows.sort(key=lambda r: r["ticker"])
+
     account_size, nav_sync_time, nav_sync_status = _get_account_size()
-    currency, usd_hkd_rate = _load_currency_setting()
-    _, currency_symbol, account_size_display = _convert_amount(account_size, currency)
+    _, usd_hkd_rate = _load_currency_setting()
+    market_cached = _load_market_last()
+    market_summary = market_cached.get("result") if isinstance(market_cached, dict) else {}
+    market_cached_at = market_cached.get("saved_at") if isinstance(market_cached, dict) else ""
+
+    # Dashboard baseline: treat NAV as HKD native amount for display toggle.
+    display_currency = "HKD"
+    currency_symbol = "HK$"
+    account_size_display = f"HK${account_size:,.2f}"
 
     return render_template(
         "dashboard.html",
         wl=wl,
         wl_counts=wl_counts,
+        total_watchlist=total_watchlist,
+        watchlist_rows=watchlist_rows,
+        market_summary=market_summary or {},
+        market_cached_at=market_cached_at,
         positions=pos,
         account_size=account_size,
         account_size_display=account_size_display,
-        currency=currency,
+        currency=display_currency,
         currency_symbol=currency_symbol,
         usd_hkd_rate=usd_hkd_rate,
         nav_sync_time=nav_sync_time,
@@ -2015,6 +2051,7 @@ def api_vcp_status(jid):
 def api_market_run():
     jid = _new_job()
     _market_job_ids.add(jid)
+    from routes.helpers import _save_market_last
 
     # Create a unique log file for this market assessment
     market_log_file = _LOG_DIR / f"market_{jid}_{datetime.now().isoformat(timespec='seconds').replace(':', '-')}.log"
@@ -2044,6 +2081,9 @@ def api_market_run():
                     append_market_env(result)
                 except Exception as exc:
                     logging.warning(f"DB market_env write skipped: {exc}")
+
+            if result:
+                _save_market_last(_clean(result))
             
             log_rel = str(market_log_file.relative_to(ROOT)) if market_log_file.exists() else ""
             _finish_job(jid, result=_clean(result), log_file=log_rel)
@@ -2065,6 +2105,22 @@ def api_market_run():
 @app.route("/api/market/status/<jid>")
 def api_market_status(jid):
     return jsonify(_get_job(jid))
+
+
+@app.route("/api/market/last", methods=["GET"])
+def api_market_last():
+    from routes.helpers import _load_market_last
+
+    cached = _load_market_last()
+    d = cached.get("result") if isinstance(cached, dict) else None
+    if not isinstance(d, dict) or not d:
+        return jsonify({"ok": False, "error": "No cached market assessment"}), 404
+
+    return jsonify({
+        "ok": True,
+        "saved_at": cached.get("saved_at"),
+        "result": d,
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2560,6 +2616,23 @@ def htmx_market_result(jid):
     d = job.get("result") or {}
     log_file = job.get("log_file", "")
     return render_template("_market_result.html", d=d, log_file=log_file)
+
+
+@app.route("/htmx/market/result/last")
+def htmx_market_result_last():
+    from routes.helpers import _load_market_last
+
+    cached = _load_market_last()
+    d = cached.get("result") if isinstance(cached, dict) else None
+    if not isinstance(d, dict) or not d:
+        return make_response(
+            "<p class='text-muted py-3'><i class='bi bi-clock-history me-2'></i>No cached market assessment yet.</p>",
+            200,
+        )
+
+    d = dict(d)
+    d["cached_saved_at"] = cached.get("saved_at", "")
+    return render_template("_market_result.html", d=d, log_file="")
 
 
 @app.route("/htmx/qm/analyze/result")
