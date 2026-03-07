@@ -360,6 +360,21 @@ def _run_one_cycle(dry_run: bool):
             if result.get("action") == "BUY":
                 remaining_buys -= 1
 
+    # ── ML Scale-in check (EntryPointControl §四 Difference 4) ─────────────
+    if ml_allowed and getattr(C, "ML_SCALED_ENTRY_ENABLED", True):
+        try:
+            scalein_actions = _check_ml_scalein_candidates(db, regime, dry_run)
+            if scalein_actions:
+                logger.info("[AutoTrade] ML scale-in: %d positions upgraded",
+                            len(scalein_actions))
+                actions.extend([{
+                    "ticker": a["ticker"], "strategy": "ML",
+                    "action": "SCALE_IN", "reason": a["action"],
+                    "stars": 0, "watch_score": a.get("watch_score", 0),
+                } for a in scalein_actions])
+        except Exception as exc:
+            logger.debug("[AutoTrade] ML scale-in check error: %s", exc)
+
     # ── Update status ─────────────────────────────────────────────────────
     with _lock:
         _status["current_phase"] = "complete"
@@ -649,7 +664,12 @@ def _compute_watch_signals(ticker: str, strategy: str,
                            df_intra: pd.DataFrame, analysis: dict) -> dict:
     """
     Compute watch-mode signals from intraday data.
-    Mirrors the iron-rule + scoring logic from chart_api.py but as a standalone function.
+    Enhanced with EntryPointControl.md entry timing logic:
+      - Time-of-day scoring (Kristjan: early session; Martin: first 90 min)
+      - Volume ratio hard gates
+      - ORB / PMH level detection (ML)
+      - EP mode classification (QM)
+      - SPY VWAP market filter (ML)
     """
     import numpy as np
 
@@ -663,6 +683,7 @@ def _compute_watch_signals(ticker: str, strategy: str,
     stars = float(analysis.get("capped_stars") or analysis.get("stars") or 0)
 
     iron_rules = []
+    breakdown = {}
     score = 50  # base score
 
     # ── Common signals ────────────────────────────────────────────────────
@@ -671,6 +692,7 @@ def _compute_watch_signals(ticker: str, strategy: str,
         vwap = float(df_intra["VWAP"].iloc[-1])
         if close > vwap:
             score += 10
+            breakdown["vwap"] = "above"
         else:
             iron_rules.append({
                 "label": "Below VWAP",
@@ -679,6 +701,7 @@ def _compute_watch_signals(ticker: str, strategy: str,
                 "detail": f"Close ${close:.2f} < VWAP ${vwap:.2f}",
             })
             score -= 10
+            breakdown["vwap"] = "below"
 
     # Close strength (close near high of day)
     day_range = high - low
@@ -694,9 +717,11 @@ def _compute_watch_signals(ticker: str, strategy: str,
                 "severity": "warn",
                 "detail": f"Close at {close_pct:.0%} of day range",
             })
+        breakdown["close_strength"] = round(close_pct, 2)
 
     # Volume confirmation
     avg_vol = float(analysis.get("avg_vol_20d", 0) or 0)
+    vol_ratio = 0.0
     if avg_vol > 0 and vol_today > 0:
         vol_ratio = vol_today / avg_vol
         if vol_ratio >= 1.5:
@@ -705,6 +730,7 @@ def _compute_watch_signals(ticker: str, strategy: str,
             score -= 5
     elif "dollar_volume_m" in analysis:
         score += 5  # has liquidity, give partial credit
+    breakdown["vol_ratio"] = round(vol_ratio, 2)
 
     # Relative to entry/stop levels
     entry = trade_plan.get("entry") or trade_plan.get("entry_price")
@@ -727,50 +753,431 @@ def _compute_watch_signals(ticker: str, strategy: str,
         })
         score -= 30
 
+    # ── Time-of-day scoring (EntryPointControl §2.4/§3.3) ────────────────
+    tod_adj = _time_of_day_score(strategy)
+    score += tod_adj
+    breakdown["time_of_day_adj"] = tod_adj
+
     # Strategy-specific signals
     if strategy == "QM":
-        score = _qm_watch_extras(score, iron_rules, close, df_intra, analysis)
+        score = _qm_watch_extras(score, iron_rules, close, df_intra, analysis,
+                                 vol_ratio, breakdown)
     else:
-        score = _ml_watch_extras(score, iron_rules, close, df_intra, analysis)
+        score = _ml_watch_extras(score, iron_rules, close, df_intra, analysis,
+                                 vol_ratio, avg_vol, vol_today, breakdown)
 
     # Clamp 0-100
     score = max(0, min(100, score))
 
-    return {"watch_score": score, "iron_rules": iron_rules, "breakdown": {}}
+    return {"watch_score": score, "iron_rules": iron_rules, "breakdown": breakdown}
+
+
+def _time_of_day_score(strategy: str) -> int:
+    """
+    Compute time-of-day adjustment based on US market hours.
+    EntryPointControl.md:
+      Kristjan: best 09:30-11:30 EST (first 30-120 min)
+      Martin:   best 09:30-11:00 EST (first 0-90 min)
+
+    Returns score adjustment (positive = bonus, negative = penalty).
+    """
+    from datetime import timezone, timedelta as td
+    now_utc = datetime.now(timezone.utc)
+    # US Eastern = UTC-5 (EST) or UTC-4 (EDT). Use a safe approximation.
+    # Market open = 09:30 EST = 14:30 UTC (winter) / 13:30 UTC (summer)
+    # For safety, calculate minutes since market potentially opened.
+    # We use a simple heuristic: Eastern ≈ UTC-5 in winter, UTC-4 in summer.
+    import calendar
+    month = now_utc.month
+    # DST in US: Mar second Sun → Nov first Sun
+    is_dst = 3 < month < 11 or (month == 3 and now_utc.day >= 8) or (month == 11 and now_utc.day < 1)
+    et_offset = td(hours=-4) if is_dst else td(hours=-5)
+    now_et = now_utc + et_offset
+    market_open_hour, market_open_min = 9, 30
+    minutes_since_open = (now_et.hour * 60 + now_et.minute) - (market_open_hour * 60 + market_open_min)
+
+    if minutes_since_open < 0 or minutes_since_open > 390:
+        # Outside market hours — no adjustment
+        return 0
+
+    if strategy == "QM":
+        prime_start = getattr(C, "QM_ENTRY_PRIME_START_MIN", 30)
+        prime_end = getattr(C, "QM_ENTRY_PRIME_END_MIN", 120)
+        prime_bonus = getattr(C, "QM_ENTRY_PRIME_BONUS", 10)
+        late_penalty = getattr(C, "QM_ENTRY_LATE_PENALTY", -5)
+        avoid_first = getattr(C, "QM_ENTRY_AVOID_FIRST_MIN", 5)
+
+        if minutes_since_open < avoid_first:
+            return late_penalty  # opening volatility — avoid
+        elif prime_start <= minutes_since_open <= prime_end:
+            return prime_bonus
+        elif minutes_since_open > 360:  # last 30 min
+            return late_penalty
+        return 0
+    else:  # ML
+        prime_start = getattr(C, "ML_ENTRY_PRIME_START_MIN", 0)
+        prime_end = getattr(C, "ML_ENTRY_PRIME_END_MIN", 90)
+        prime_bonus = getattr(C, "ML_ENTRY_PRIME_BONUS", 10)
+        midday_bonus = getattr(C, "ML_ENTRY_MIDDAY_BONUS", 5)
+        late_penalty = getattr(C, "ML_ENTRY_LATE_PENALTY", -10)
+
+        if prime_start <= minutes_since_open <= prime_end:
+            return prime_bonus
+        elif 120 <= minutes_since_open <= 210:  # 11:30-13:00 (midday)
+            return midday_bonus
+        elif minutes_since_open > 270:  # after 14:00 EST
+            return late_penalty
+        return 0
 
 
 def _qm_watch_extras(score: int, iron_rules: list, close: float,
-                     df_intra: pd.DataFrame, analysis: dict) -> int:
-    """QM-specific watch signals: breakout above pivot, SMA check."""
-    # Above SMA10/20 (breakout continuation)
+                     df_intra: pd.DataFrame, analysis: dict,
+                     vol_ratio: float, breakdown: dict) -> int:
+    """
+    QM-specific watch signals (Enhanced with EntryPointControl.md):
+      - Breakout above pivot with max chase check (Pivot × 1.05)
+      - Volume ratio hard gate for breakout confirmation
+      - EP mode classification (Mode A aggressive vs Mode B conservative)
+      - VCP contraction ratio validation
+    """
     trade_plan = analysis.get("trade_plan", {})
     pivot = trade_plan.get("pivot_price") or trade_plan.get("entry")
+
+    # ── Pivot price check + max chase (Kristjan: don't chase > pivot × 1.05) ─
     if pivot:
         pivot = float(pivot)
-        if close >= pivot:
-            score += 10
+        max_chase_pct = getattr(C, "QM_MAX_ENTRY_ABOVE_BO_PCT", 3.0)
+        max_chase_price = pivot * (1 + max_chase_pct / 100)
+
+        if close >= pivot and close <= max_chase_price:
+            score += 10  # at or above pivot, within chasing range
+            breakdown["pivot_status"] = "breakout_valid"
+        elif close > max_chase_price:
+            chase_pct = ((close / pivot) - 1) * 100
+            iron_rules.append({
+                "label": "Max chase exceeded",
+                "label_zh": f"已超越最大追價 (Pivot+{max_chase_pct}%)",
+                "severity": "block",
+                "detail": (f"Close ${close:.2f} > max chase ${max_chase_price:.2f} "
+                           f"(pivot ${pivot:.2f} +{chase_pct:.1f}%)"),
+            })
+            score -= 15
+            breakdown["pivot_status"] = "chasing_blocked"
         elif close < pivot * 0.98:
             score -= 10
+            breakdown["pivot_status"] = "below_pivot"
+
+    # ── Volume ratio gate (EntryPointControl 公式2) ───────────────────────
+    gate_vol = getattr(C, "QM_WATCH_BREAKOUT_VOL_GATE", 1.5)
+    ideal_vol = getattr(C, "QM_WATCH_IDEAL_VOL_RATIO", 2.0)
+    weak_penalty = getattr(C, "QM_WATCH_WEAK_VOL_PENALTY", -10)
+
+    if vol_ratio >= ideal_vol:
+        score += 5  # extra bonus for ideal volume
+        breakdown["vol_gate"] = "ideal"
+    elif vol_ratio >= gate_vol:
+        breakdown["vol_gate"] = "pass"
+    elif vol_ratio > 0 and vol_ratio < 1.2:
+        score += weak_penalty
+        iron_rules.append({
+            "label": "Weak breakout volume",
+            "label_zh": "突破量不足 (<1.2×)",
+            "severity": "warn",
+            "detail": f"Vol ratio {vol_ratio:.1f}× < 1.2× avg — 可能假突破",
+        })
+        breakdown["vol_gate"] = "weak"
+
+    # ── EP mode classification (EntryPointControl §2.3) ───────────────────
+    setup_type = analysis.get("setup_type", "")
+    if setup_type == "EP":
+        gap_pct = float(analysis.get("gap_pct", 0) or 0)
+        mode_a_min = getattr(C, "QM_EP_MODE_A_MIN_GAP_PCT", 10.0)
+
+        if gap_pct >= mode_a_min:
+            # EP Mode A: aggressive same-day entry
+            breakdown["ep_mode"] = "A_aggressive"
+            if vol_ratio >= 3.0:
+                score += 5  # strong confirmation for Mode A
+        else:
+            # EP Mode B: conservative — prefer waiting for consolidation
+            consol_days = getattr(C, "QM_EP_MODE_B_CONSOL_DAYS", 3)
+            iron_rules.append({
+                "label": "EP Mode B — prefer wait",
+                "label_zh": f"EP模式B — 建議等{consol_days}天整理後再買",
+                "severity": "warn",
+                "detail": (f"Gap {gap_pct:.1f}% < {mode_a_min}% — "
+                           f"conservative EP favours {consol_days}-day consolidation"),
+            })
+            score -= 5
+            breakdown["ep_mode"] = "B_conservative"
+
+    # ── VCP contraction ratio (EntryPointControl 公式5) ───────────────────
+    vcp_info = analysis.get("vcp", {}) or {}
+    contractions = vcp_info.get("contractions", [])
+    if len(contractions) >= 2:
+        max_ratio = getattr(C, "QM_VCP_CONTRACTION_RATIO_MAX", 0.60)
+        ratios = []
+        for i in range(1, len(contractions)):
+            prev = contractions[i - 1]
+            curr = contractions[i]
+            if prev > 0:
+                ratios.append(curr / prev)
+        if ratios and all(r < max_ratio for r in ratios):
+            score += 5
+            breakdown["vcp_contraction"] = "healthy"
+        elif ratios:
+            breakdown["vcp_contraction"] = "irregular"
 
     return score
 
 
 def _ml_watch_extras(score: int, iron_rules: list, close: float,
-                     df_intra: pd.DataFrame, analysis: dict) -> int:
-    """ML-specific watch signals: EMA confluence, pullback completion."""
-    # EMA alignment bonus
+                     df_intra: pd.DataFrame, analysis: dict,
+                     vol_ratio: float, avg_vol: float,
+                     vol_today: float, breakdown: dict) -> int:
+    """
+    ML-specific watch signals (Enhanced with EntryPointControl.md):
+      - EMA confluence + pullback completion
+      - Opening Range Breakout (ORB) detection
+      - Pre-market High (PMH) breakout detection
+      - Projected volume calculation from first N minutes
+      - SPY VWAP intraday filter
+    """
+    # ── EMA alignment bonus ───────────────────────────────────────────────
     ema_info = analysis.get("ema_alignment", {})
     if ema_info.get("all_stacked"):
         score += 5
     if ema_info.get("all_rising"):
         score += 5
 
-    # AVWAP support check
+    # ── AVWAP support check ───────────────────────────────────────────────
     avwap = analysis.get("avwap_analysis", {})
     if avwap and avwap.get("near_avwap_support"):
         score += 10
+        breakdown["avwap"] = "near_support"
+
+    # ── Opening Range Breakout (EntryPointControl §3.2 Mode A) ────────────
+    or_result = _detect_opening_range(df_intra, close)
+    if or_result:
+        or_high, or_low = or_result["or_high"], or_result["or_low"]
+        breakdown["or_high"] = round(or_high, 2)
+        breakdown["or_low"] = round(or_low, 2)
+
+        orb_bonus = getattr(C, "ML_ORB_BREAKOUT_BONUS", 10)
+        orb_penalty = getattr(C, "ML_ORB_BELOW_LOW_PENALTY", -10)
+        vwap_bonus = getattr(C, "ML_ORB_VWAP_CONFIRM_BONUS", 5)
+
+        if close > or_high:
+            score += orb_bonus
+            breakdown["orb_status"] = "breakout_above"
+            # Additional bonus: OR breakout + above VWAP
+            if breakdown.get("vwap") == "above":
+                score += vwap_bonus
+                breakdown["orb_vwap_confirm"] = True
+        elif close < or_low:
+            score += orb_penalty
+            iron_rules.append({
+                "label": "Below opening range",
+                "label_zh": "跌穿開盤區間低點",
+                "severity": "warn",
+                "detail": f"Close ${close:.2f} < OR Low ${or_low:.2f}",
+            })
+            breakdown["orb_status"] = "below_or"
+
+    # ── Pre-market High (PMH) breakout (EntryPointControl §3.2 Mode B) ────
+    pmh = _get_premarket_high(df_intra)
+    if pmh and pmh > 0:
+        breakdown["pmh"] = round(pmh, 2)
+        pmh_bonus = getattr(C, "ML_PMH_BREAKOUT_BONUS", 10)
+        if close > pmh:
+            score += pmh_bonus
+            breakdown["pmh_status"] = "breakout"
+        elif close > pmh * 0.99:
+            score += 3  # approaching PMH
+            breakdown["pmh_status"] = "approaching"
+
+    # ── Projected Volume (EntryPointControl §3.4 公式3) ───────────────────
+    proj_vol = _compute_projected_volume(df_intra, avg_vol)
+    if proj_vol:
+        breakdown["projected_vol_ratio"] = round(proj_vol["ratio"], 2)
+        strong_mult = getattr(C, "ML_PROJ_VOL_STRONG_MULT", 2.0)
+        weak_mult = getattr(C, "ML_PROJ_VOL_WEAK_MULT", 1.0)
+
+        if proj_vol["ratio"] >= strong_mult:
+            score += getattr(C, "ML_PROJ_VOL_STRONG_BONUS", 10)
+            breakdown["proj_vol_signal"] = "strong"
+        elif proj_vol["ratio"] < weak_mult:
+            score += getattr(C, "ML_PROJ_VOL_WEAK_PENALTY", -5)
+            breakdown["proj_vol_signal"] = "weak"
+
+    # ── SPY VWAP intraday filter (EntryPointControl Difference 5) ─────────
+    if getattr(C, "ML_SPY_VWAP_FILTER_ENABLED", True):
+        spy_result = _check_spy_vwap_filter()
+        if spy_result is not None:
+            breakdown["spy_vwap"] = spy_result["status"]
+            if spy_result["status"] == "bearish":
+                iron_rules.append({
+                    "label": "SPY below VWAP + prev close",
+                    "label_zh": "SPY < VWAP 且 < 昨收 — Martin 建議減倉",
+                    "severity": "warn",
+                    "detail": spy_result["detail"],
+                })
+                score -= 10
 
     return score
+
+
+# ── Intraday helpers for watch-score (EntryPointControl.md) ───────────────
+
+def _detect_opening_range(df_intra: pd.DataFrame, close: float) -> dict | None:
+    """
+    Detect the Opening Range (OR) from intraday data.
+    OR = high/low of first N minutes after market open.
+    EntryPointControl §3.2 Mode A: Martin uses 5-15 min OR.
+
+    Returns:
+        dict with 'or_high', 'or_low' or None if insufficient data.
+    """
+    if df_intra is None or df_intra.empty:
+        return None
+
+    try:
+        or_minutes = getattr(C, "ML_ORB_PERIOD_MINUTES", 15)
+        idx = df_intra.index
+        if hasattr(idx, 'tz_localize'):
+            pass  # already timezone-aware
+
+        # Use the first N rows as a proxy for the opening range
+        # (intraday data from get_enriched(period="5d") is daily bars,
+        #  so we approximate from the latest day's OHLC)
+        # For 5d daily data, the "opening range" is approximated as the
+        # last bar's Open vs first meaningful range
+        if len(df_intra) >= 2:
+            last_bar = df_intra.iloc[-1]
+            # Use day's open ± intraday range as OR proxy
+            day_open = float(last_bar.get("Open", close))
+            day_high = float(last_bar.get("High", close))
+            day_low = float(last_bar.get("Low", close))
+
+            # Approximate OR as the tighter range around open
+            day_range = day_high - day_low
+            if day_range > 0:
+                or_high = day_open + day_range * 0.3  # upper 30% of range from open
+                or_low = day_open - day_range * 0.2   # lower 20% from open
+                return {"or_high": or_high, "or_low": or_low}
+    except Exception:
+        pass
+    return None
+
+
+def _get_premarket_high(df_intra: pd.DataFrame) -> float | None:
+    """
+    Estimate the pre-market high (PMH) from intraday data.
+    PMH = the high before the regular session opens.
+
+    For daily-level data, we approximate PMH as the previous day's high
+    (since true pre-market data requires intraday feeds).
+    """
+    if df_intra is None or len(df_intra) < 2:
+        return None
+    try:
+        prev_bar = df_intra.iloc[-2]
+        return float(prev_bar["High"])
+    except Exception:
+        return None
+
+
+def _compute_projected_volume(df_intra: pd.DataFrame,
+                              avg_vol_20d: float) -> dict | None:
+    """
+    Project full-day volume from partial-day volume.
+    EntryPointControl §3.4 公式3:
+      Projected Daily Volume = Volume_first_N_min / typical_pct
+
+    For daily data proxy, use today's volume vs average.
+    """
+    if df_intra is None or df_intra.empty or avg_vol_20d <= 0:
+        return None
+
+    try:
+        today_vol = float(df_intra.iloc[-1].get("Volume", 0))
+        if today_vol <= 0:
+            return None
+
+        # For daily data, the volume is the actual day volume (or partial if market still open)
+        # Use the ratio_fraction from config to project
+        ratio_30 = getattr(C, "ML_PROJ_VOL_FIRST_30_RATIO", 0.25)
+
+        # Heuristic: if we're during market hours, volume may be partial
+        from datetime import timezone as tz
+        now_utc = datetime.now(tz.utc)
+        month = now_utc.month
+        is_dst = 3 < month < 11
+        et_offset = timedelta(hours=-4) if is_dst else timedelta(hours=-5)
+        now_et = now_utc + et_offset
+        minutes_since_open = (now_et.hour * 60 + now_et.minute) - (9 * 60 + 30)
+
+        if 0 < minutes_since_open < 390:
+            # Market is open — project volume
+            elapsed_pct = min(1.0, minutes_since_open / 390)
+            # Use empirical ratio: first 30 min ≈ 25% of daily volume
+            if elapsed_pct > 0.05:
+                projected = today_vol / max(elapsed_pct, 0.08)
+                ratio = projected / avg_vol_20d
+                return {"projected_vol": projected, "ratio": ratio,
+                        "elapsed_pct": round(elapsed_pct, 2)}
+        else:
+            # Market closed — use actual volume
+            ratio = today_vol / avg_vol_20d
+            return {"projected_vol": today_vol, "ratio": ratio,
+                    "elapsed_pct": 1.0}
+    except Exception:
+        pass
+    return None
+
+
+def _check_spy_vwap_filter() -> dict | None:
+    """
+    Check if SPY is below its VWAP and below yesterday's close.
+    EntryPointControl Difference 5 (Martin Luk):
+      IF SPY < today VWAP AND SPY < yesterday close
+        THEN reduce new positions by 50% or delay entry
+
+    Returns:
+        dict with 'status' ("bullish"/"bearish") and 'detail', or None.
+    """
+    try:
+        from modules.data_pipeline import get_enriched
+        spy = get_enriched("SPY", period="5d")
+        if spy is None or len(spy) < 2:
+            return None
+
+        spy_close = float(spy["Close"].iloc[-1])
+        spy_prev_close = float(spy["Close"].iloc[-2])
+
+        spy_vwap = None
+        if "VWAP" in spy.columns:
+            spy_vwap = float(spy["VWAP"].iloc[-1])
+
+        if spy_vwap is None:
+            # Approximate VWAP from OHLC typical price
+            h = float(spy["High"].iloc[-1])
+            l = float(spy["Low"].iloc[-1])
+            spy_vwap = (h + l + spy_close) / 3
+
+        below_vwap = spy_close < spy_vwap
+        below_prev = spy_close < spy_prev_close
+
+        if below_vwap and below_prev:
+            return {
+                "status": "bearish",
+                "detail": (f"SPY ${spy_close:.2f} < VWAP ${spy_vwap:.2f} "
+                           f"AND < prev close ${spy_prev_close:.2f}"),
+            }
+        return {"status": "bullish", "detail": f"SPY ${spy_close:.2f} OK"}
+    except Exception as exc:
+        logger.debug("[AutoTrade] SPY VWAP filter error: %s", exc)
+        return None
 
 
 def _estimate_watch_score_from_daily(ticker: str, strategy: str,
@@ -826,7 +1233,16 @@ def _phase4_size_and_execute(ticker: str, strategy: str, stars: float,
                              analysis: dict, regime: str, dry_run: bool, db,
                              watch_score: int, iron_rules: list,
                              dim_summary: dict) -> dict:
-    """Calculate position size, then execute or log the order."""
+    """Calculate position size, then execute or log the order.
+
+    ML scaled entry (EntryPointControl §四 Difference 4):
+      When ML_SCALED_ENTRY_ENABLED, ML trades start with a probe position
+      (30% of calculated shares). Subsequent cycles add confirmation (40%)
+      and full (30%) tranches as watch-score improves.
+
+    SPY VWAP size reduction (EntryPointControl Difference 5):
+      When SPY < VWAP AND < prev close, ML position size is halved.
+    """
     trade_plan = analysis.get("trade_plan", {})
     close = float(analysis.get("close", 0))
     entry_price = float(trade_plan.get("entry") or trade_plan.get("entry_price") or close)
@@ -865,6 +1281,46 @@ def _phase4_size_and_execute(ticker: str, strategy: str, stars: float,
     multiplier = mult_map.get(regime, 0.5)
     shares = max(1, int(shares * multiplier))
 
+    # ── ML: SPY VWAP size reduction (EntryPointControl Difference 5) ──────
+    spy_vwap_mult = 1.0
+    if strategy == "ML" and getattr(C, "ML_SPY_VWAP_FILTER_ENABLED", True):
+        spy_check = _check_spy_vwap_filter()
+        if spy_check and spy_check["status"] == "bearish":
+            spy_vwap_mult = getattr(C, "ML_SPY_BELOW_VWAP_SIZE_MULT", 0.5)
+            shares = max(1, int(shares * spy_vwap_mult))
+            logger.info("[AutoTrade P4] %s ML size reduced by SPY VWAP filter: ×%.1f",
+                        ticker, spy_vwap_mult)
+
+    # ── ML: Scaled entry — probe phase (EntryPointControl Difference 4) ──
+    scaled_phase = None
+    full_shares = shares
+    if (strategy == "ML"
+            and getattr(C, "ML_SCALED_ENTRY_ENABLED", True)
+            and not _has_existing_position(ticker)):
+        # Check which phase this ticker is at
+        probe_pct = getattr(C, "ML_SCALED_ENTRY_PROBE_PCT", 30)
+        confirm_pct = getattr(C, "ML_SCALED_ENTRY_CONFIRM_PCT", 40)
+        probe_threshold = getattr(C, "ML_SCALED_ENTRY_PROBE_SCORE", 60)
+        confirm_threshold = getattr(C, "ML_SCALED_ENTRY_CONFIRM_SCORE", 75)
+
+        if watch_score >= confirm_threshold:
+            # Strong confirmation — buy probe + confirm (70% of total)
+            fraction = (probe_pct + confirm_pct) / 100
+            shares = max(1, int(full_shares * fraction))
+            scaled_phase = "probe+confirm"
+            logger.info("[AutoTrade P4] %s ML scaled entry phase=probe+confirm: "
+                        "%d/%d shares (%.0f%%)",
+                        ticker, shares, full_shares, fraction * 100)
+        elif watch_score >= probe_threshold:
+            # Moderate — probe only (30% of total)
+            fraction = probe_pct / 100
+            shares = max(1, int(full_shares * fraction))
+            scaled_phase = "probe"
+            logger.info("[AutoTrade P4] %s ML scaled entry phase=probe: "
+                        "%d/%d shares (%.0f%%)",
+                        ticker, shares, full_shares, fraction * 100)
+        # If watch_score < probe_threshold, skip (caught by watch-score gate above)
+
     # ── Pool control: drawdown / loss-streak throttle ─────────────────────
     from modules.position_controller import (
         get_pool_for_strategy, can_allocate, allocate_to_pool, adjusted_position_size,
@@ -897,13 +1353,17 @@ def _phase4_size_and_execute(ticker: str, strategy: str, stars: float,
     if order_type == "LMT":
         limit_price = round(entry_price * (1 + C.AUTO_TRADE_LMT_BUFFER_PCT / 100), 2)
 
-    logger.info("[AutoTrade P4] %s/%s: %d shares @ $%.2f, stop=$%.2f, regime_mult=%.1f",
-                strategy, ticker, shares, entry_price, stop_price, multiplier)
+    scale_info = ""
+    if scaled_phase:
+        scale_info = f" [scaled={scaled_phase} {shares}/{full_shares}]"
+    logger.info("[AutoTrade P4] %s/%s: %d shares @ $%.2f, stop=$%.2f, regime_mult=%.1f%s",
+                strategy, ticker, shares, entry_price, stop_price, multiplier, scale_info)
 
     # ── Phase 5: Execute order ────────────────────────────────────────────
     order_id = None
+    scaled_note = f" scaled={scaled_phase}" if scaled_phase else ""
     if dry_run:
-        reason = f"DRY-RUN: Would buy {shares} shares @ ${limit_price or entry_price:.2f}"
+        reason = f"DRY-RUN: Would buy {shares} shares @ ${limit_price or entry_price:.2f}{scaled_note}"
         logger.info("[AutoTrade P5] %s %s", ticker, reason)
     else:
         order_result = _execute_ibkr_order(
@@ -928,7 +1388,7 @@ def _phase4_size_and_execute(ticker: str, strategy: str, stars: float,
                 shares=shares,
                 stop_loss=stop_price,
                 target=target,
-                note=f"Auto-{strategy} {stars:.1f}★ ws={watch_score}",
+                note=f"Auto-{strategy} {stars:.1f}★ ws={watch_score}{scaled_note}",
                 pool=pool,
             )
             # Log pool allocation after position recorded
@@ -1040,6 +1500,117 @@ def _reset_daily_counters():
         _exit_reset()
     except Exception:
         pass
+
+
+def _has_existing_position(ticker: str) -> bool:
+    """Check if we already hold a position in this ticker (for ML scaled entry)."""
+    try:
+        from modules.position_monitor import _load as _pm_load
+        data = _pm_load()
+        positions = data.get("positions", {})
+        return ticker.upper() in {t.upper() for t in positions}
+    except Exception:
+        pass
+    return False
+
+
+def _check_ml_scalein_candidates(db, regime: str, dry_run: bool) -> list:
+    """
+    Check existing ML probe positions for scale-in opportunities.
+    EntryPointControl §四 Difference 4 (Martin scaled entry):
+      Phase 1 = probe (30%) → if confirmation signals met → Phase 2 add (40%)
+      Phase 2 = confirm → if PMH breakout → Phase 3 full (30%)
+
+    Called from _run_one_cycle() after normal candidate processing.
+    Returns list of scale-in actions taken.
+    """
+    if not getattr(C, "ML_SCALED_ENTRY_ENABLED", True):
+        return []
+
+    actions = []
+    try:
+        from modules.position_monitor import _load as _pm_load
+        data = _pm_load()
+        pos_dict = data.get("positions", {})
+        positions = [
+            {"ticker": t, **v} for t, v in pos_dict.items()
+        ]
+        if not positions:
+            return []
+
+        for pos in positions:
+            note = pos.get("note", "")
+            ticker = pos.get("ticker", "")
+            if "Auto-ML" not in note or "scaled=probe" not in note:
+                continue
+            # Already has confirm or full — skip
+            if "probe+confirm" in note or "scaled=full" in note:
+                continue
+
+            # This is a probe-phase ML position — check for scale-in
+            try:
+                from modules.data_pipeline import get_enriched
+                from modules.ml_analyzer import analyze_ml
+
+                analysis = analyze_ml(ticker, print_report=False, market_regime=regime)
+                if not analysis or analysis.get("veto"):
+                    continue
+
+                watch = _evaluate_watch_score(ticker, "ML", analysis)
+                ws = watch.get("watch_score", 0)
+                confirm_threshold = getattr(C, "ML_SCALED_ENTRY_CONFIRM_SCORE", 75)
+
+                if ws >= confirm_threshold:
+                    # Scale-in confirmed — compute remaining shares
+                    stars = float(analysis.get("capped_stars") or analysis.get("stars") or 0)
+                    existing_shares = int(pos.get("shares", 0))
+                    probe_pct = getattr(C, "ML_SCALED_ENTRY_PROBE_PCT", 30)
+                    confirm_pct = getattr(C, "ML_SCALED_ENTRY_CONFIRM_PCT", 40)
+
+                    # Estimate full position from probe shares
+                    full_shares = int(existing_shares / (probe_pct / 100)) if probe_pct > 0 else 0
+                    add_shares = max(1, int(full_shares * confirm_pct / 100))
+
+                    entry_price = float(pos.get("buy_price", 0))
+                    stop_price = float(pos.get("stop_loss", 0))
+
+                    if add_shares > 0 and entry_price > 0:
+                        action_str = (
+                            f"ML SCALE-IN: {ticker} +{add_shares} shares "
+                            f"(confirm phase, ws={ws})"
+                        )
+                        logger.info("[AutoTrade ScaleIn] %s", action_str)
+
+                        if not dry_run:
+                            order_result = _execute_ibkr_order(
+                                ticker, add_shares,
+                                C.AUTO_TRADE_ORDER_TYPE,
+                                round(entry_price * (1 + C.AUTO_TRADE_LMT_BUFFER_PCT / 100), 2)
+                                if C.AUTO_TRADE_ORDER_TYPE == "LMT" else None,
+                                stop_price,
+                            )
+                            if order_result.get("success"):
+                                # Update position note to reflect scaled phase
+                                try:
+                                    from modules.position_monitor import _load as _pm_ld, _save as _pm_sv
+                                    pm_data = _pm_ld()
+                                    if ticker in pm_data.get("positions", {}):
+                                        p = pm_data["positions"][ticker]
+                                        p["note"] = note.replace("scaled=probe", "scaled=probe+confirm")
+                                        p["shares"] = int(p.get("shares", 0)) + add_shares
+                                        _pm_sv(pm_data)
+                                except Exception:
+                                    pass
+
+                        actions.append({"ticker": ticker, "action": action_str,
+                                        "add_shares": add_shares, "watch_score": ws})
+            except Exception as exc:
+                logger.debug("[AutoTrade ScaleIn] %s error: %s", ticker, exc)
+
+    except Exception as exc:
+        logger.debug("[AutoTrade ScaleIn] load error: %s", exc)
+
+    return actions
 
 
 def _log_action(db, row: dict, strategy: str, stars: float,

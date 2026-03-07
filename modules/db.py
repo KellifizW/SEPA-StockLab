@@ -95,6 +95,21 @@ def _ensure_schema(conn):
     """)
 
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_news_history (
+            run_date          DATE NOT NULL,
+            run_time          TIMESTAMP,
+            impact_score      DOUBLE,
+            direction         VARCHAR,
+            confidence        VARCHAR,
+            regime            VARCHAR,
+            headline_count    INTEGER,
+            source_counts_json VARCHAR,
+            top_driver_json   VARCHAR,
+            PRIMARY KEY (run_date, run_time)
+        )
+    """)
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS watchlist_log (
             log_date    DATE    NOT NULL,
             ticker      VARCHAR NOT NULL,
@@ -127,6 +142,7 @@ def _ensure_schema(conn):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rs_date ON rs_history(rank_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rs_ticker ON rs_history(ticker)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_market_date ON market_env_history(env_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_market_news_date ON market_news_history(run_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_date ON watchlist_log(log_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_position_date ON position_log(log_date)")
     except:
@@ -560,6 +576,50 @@ def append_market_env(env: dict, env_date: date = None) -> bool:
             return True
         except Exception as exc:
             logger.error("[DB] append_market_env failed: %s", exc)
+            return False
+
+
+def append_market_news_impact(result: dict, run_date: Optional[date] = None) -> bool:
+    """
+    Persist pre-open market news impact summary.
+
+    Parameters
+    ----------
+    result   : dict from modules.news_impact.build_preopen_news_impact()
+    run_date : defaults to today
+    """
+    if not result:
+        return False
+
+    today = run_date or date.today()
+    run_time = datetime.now()
+
+    top_drivers = result.get("top_drivers") or []
+    source_counts = result.get("source_counts") or {}
+
+    record = {
+        "run_date": today,
+        "run_time": run_time,
+        "impact_score": _to_float(result.get("market_impact_score")),
+        "direction": str(result.get("direction") or ""),
+        "confidence": str(result.get("confidence") or ""),
+        "regime": str(result.get("regime") or ""),
+        "headline_count": _to_int(result.get("headline_count")),
+        "source_counts_json": json.dumps(source_counts, ensure_ascii=False),
+        "top_driver_json": json.dumps(top_drivers[:5], ensure_ascii=False),
+    }
+
+    _init_schema_once()
+    with _lock:
+        try:
+            conn = _get_conn()
+            df = pd.DataFrame([record])
+            conn.execute("INSERT INTO market_news_history SELECT * FROM df")
+            conn.close()
+            logger.info("[DB] market_news_history: saved for %s (%s)", today, record["direction"])
+            return True
+        except Exception as exc:
+            logger.error("[DB] append_market_news_impact failed: %s", exc)
             return False
 
 
@@ -1124,6 +1184,7 @@ def query_price_history(ticker: str, days: int = 90) -> pd.DataFrame:
 def db_stats() -> dict:
     """Return row counts for all tables (for health check / UI display)."""
     tables = ["scan_history", "rs_history", "market_env_history",
+              "market_news_history",
               "watchlist_log", "position_log", "watchlist_store",
               "open_positions", "closed_positions", "fundamentals_cache"]
     stats = {}

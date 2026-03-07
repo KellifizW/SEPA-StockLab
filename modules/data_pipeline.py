@@ -17,6 +17,7 @@ import re
 import threading
 import warnings
 import logging
+import xml.etree.ElementTree as ET
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from datetime import datetime, date, timedelta
@@ -76,6 +77,10 @@ _sec_lock = threading.Lock()
 _sec_ticker_map_cache: dict[str, int] | None = None
 _sec_companyfacts_cache: dict[int, dict] = {}
 _sec_last_call_ts = 0.0
+
+_YAHOO_MARKET_RSS_URL = "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC,%5EIXIC,%5EDJI&region=US&lang=en-US"
+_SEC_8K_ATOM_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-k&company=&dateb=&owner=include&start=0&count=100&output=atom"
+_WSJ_MARKETS_RSS_URL = "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
 
 # ─── Rate-limit helpers ───────────────────────────────────────────────────────
 _last_fvf_call = 0.0
@@ -610,6 +615,146 @@ def get_news_fvf(ticker: str) -> pd.DataFrame:
         return fv.ticker_news()
     except Exception:
         return pd.DataFrame()
+
+
+def _normalize_news_frame(
+    df: pd.DataFrame,
+    source: str,
+    ticker: str = "",
+    max_rows: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Normalize heterogeneous news dataframe columns to a shared contract.
+
+    Output columns:
+      source, published_at, title, url, ticker
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["source", "published_at", "title", "url", "ticker"])
+
+    work = df.copy()
+    col_map = {str(c).strip().lower(): c for c in work.columns}
+
+    title_col = next((col_map[k] for k in ["title", "headline", "news"] if k in col_map), None)
+    link_col = next((col_map[k] for k in ["link", "url"] if k in col_map), None)
+    date_col = next((col_map[k] for k in ["date", "datetime", "published", "time"] if k in col_map), None)
+
+    out = pd.DataFrame(index=work.index)
+    out["published_at"] = pd.to_datetime(work[date_col], errors="coerce", utc=True) if date_col else pd.NaT
+    out["title"] = work[title_col].astype(str).str.strip() if title_col else ""
+    out["url"] = work[link_col].astype(str).str.strip() if link_col else ""
+    out["ticker"] = str(ticker).upper().strip() if ticker else ""
+    out["source"] = str(source or "unknown").strip().lower() or "unknown"
+
+    out = out[out["title"].astype(str).str.len() > 0]
+    out = out.drop_duplicates(subset=["title", "url"], keep="first")
+    out = out.sort_values("published_at", ascending=False, na_position="last")
+
+    if max_rows and max_rows > 0:
+        out = out.head(int(max_rows))
+
+    return out.reset_index(drop=True)
+
+
+def get_wsj_market_news_rss(max_rows: Optional[int] = None) -> pd.DataFrame:
+    """
+    Fetch market-level headlines from WSJ RSS (free headline feed).
+    Returns normalized dataframe with source='wsj'.
+    """
+    cap = max_rows or int(getattr(C, "NEWS_MAX_HEADLINES_PER_SOURCE", 25))
+    timeout = float(getattr(C, "SEC_HTTP_TIMEOUT_SEC", 8.0))
+
+    try:
+        req = urlrequest.Request(
+            _WSJ_MARKETS_RSS_URL,
+            headers={"User-Agent": str(getattr(C, "SEC_USER_AGENT", "SEPA-StockLab/1.0"))},
+        )
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            xml_text = resp.read().decode("utf-8", errors="ignore")
+
+        root = ET.fromstring(xml_text)
+        items = []
+        for node in root.findall("./channel/item"):
+            title = (node.findtext("title") or "").strip()
+            link = (node.findtext("link") or "").strip()
+            published = (node.findtext("pubDate") or "").strip()
+            items.append({"title": title, "url": link, "published": published})
+
+        return _normalize_news_frame(pd.DataFrame(items), source="wsj", max_rows=cap)
+    except Exception as exc:
+        logger.warning("get_wsj_market_news_rss error: %s", exc)
+        return pd.DataFrame(columns=["source", "published_at", "title", "url", "ticker"])
+
+
+def get_news_fvf_normalized(ticker: str, max_rows: Optional[int] = None) -> pd.DataFrame:
+    """Fetch ticker news from Finviz and return normalized rows."""
+    raw = get_news_fvf(ticker)
+    cap = max_rows or int(getattr(C, "NEWS_MAX_HEADLINES_PER_SOURCE", 25))
+    return _normalize_news_frame(raw, source="finviz", ticker=ticker, max_rows=cap)
+
+
+def get_yahoo_market_news_rss(max_rows: Optional[int] = None) -> pd.DataFrame:
+    """
+    Fetch market-level headlines from Yahoo Finance RSS (free, no key).
+    Returns normalized dataframe with source='yahoo'.
+    """
+    cap = max_rows or int(getattr(C, "NEWS_MAX_HEADLINES_PER_SOURCE", 25))
+    timeout = float(getattr(C, "SEC_HTTP_TIMEOUT_SEC", 8.0))
+
+    try:
+        req = urlrequest.Request(
+            _YAHOO_MARKET_RSS_URL,
+            headers={"User-Agent": str(getattr(C, "SEC_USER_AGENT", "SEPA-StockLab/1.0"))},
+        )
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            xml_text = resp.read().decode("utf-8", errors="ignore")
+
+        root = ET.fromstring(xml_text)
+        items = []
+        for node in root.findall("./channel/item"):
+            title = (node.findtext("title") or "").strip()
+            link = (node.findtext("link") or "").strip()
+            published = (node.findtext("pubDate") or "").strip()
+            items.append({"title": title, "url": link, "published": published})
+
+        return _normalize_news_frame(pd.DataFrame(items), source="yahoo", max_rows=cap)
+    except Exception as exc:
+        logger.warning("get_yahoo_market_news_rss error: %s", exc)
+        return pd.DataFrame(columns=["source", "published_at", "title", "url", "ticker"])
+
+
+def get_sec_current_8k_feed(max_rows: Optional[int] = None) -> pd.DataFrame:
+    """
+    Fetch SEC current 8-K feed (Atom, free public endpoint).
+    Returns normalized dataframe with source='sec'.
+    """
+    cap = max_rows or int(getattr(C, "NEWS_MAX_HEADLINES_PER_SOURCE", 25))
+    timeout = float(getattr(C, "SEC_HTTP_TIMEOUT_SEC", 8.0))
+
+    try:
+        req = urlrequest.Request(
+            _SEC_8K_ATOM_URL,
+            headers={"User-Agent": str(getattr(C, "SEC_USER_AGENT", "SEPA-StockLab/1.0"))},
+        )
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            xml_text = resp.read().decode("utf-8", errors="ignore")
+
+        root = ET.fromstring(xml_text)
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+        rows = []
+        for entry in root.findall("a:entry", ns):
+            title = (entry.findtext("a:title", default="", namespaces=ns) or "").strip()
+            updated = (entry.findtext("a:updated", default="", namespaces=ns) or "").strip()
+            link_node = entry.find("a:link", ns)
+            link = ""
+            if link_node is not None:
+                link = str(link_node.attrib.get("href", "")).strip()
+            rows.append({"title": title, "url": link, "published": updated})
+
+        return _normalize_news_frame(pd.DataFrame(rows), source="sec", max_rows=cap)
+    except Exception as exc:
+        logger.warning("get_sec_current_8k_feed error: %s", exc)
+        return pd.DataFrame(columns=["source", "published_at", "title", "url", "ticker"])
 
 
 def _parse_finviz_number(value) -> Optional[float]:

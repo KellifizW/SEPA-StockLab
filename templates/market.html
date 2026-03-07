@@ -20,6 +20,27 @@
       </div>
     </div>
   </div>
+  <div class="col-12">
+    <div class="card" style="background:#0d1520; border-color:#1e2d3d;">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">
+            <i class="bi bi-newspaper me-2" style="color:var(--accent)"></i>
+            開盤前新聞影響 Pre-open News Impact
+          </h6>
+          <button class="btn btn-sm btn-outline-info" id="btnNewsImpact" onclick="runNewsImpact()">
+            <i class="bi bi-lightning-charge me-1"></i>Run News Analysis
+          </button>
+        </div>
+        <div id="newsImpactMeta" class="text-muted small mb-2">No cached pre-open news analysis yet.</div>
+        <div id="newsImpactLoading" class="text-muted small d-none">
+          <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+          Analysing free news sources (Finviz / Yahoo RSS / SEC 8-K)...
+        </div>
+        <div id="newsImpactBody" class="small"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="loading" class="d-none">
@@ -57,6 +78,105 @@
 let _marketPollId = null;
 let _marketStartTime = null;
 let _marketTimerId = null;
+let _newsImpactPollId = null;
+
+function _newsBadgeClass(direction) {
+  const d = String(direction || '').toUpperCase();
+  if (d === 'BULLISH') return 'bg-success';
+  if (d === 'BEARISH') return 'bg-danger';
+  return 'bg-secondary';
+}
+
+function renderNewsImpact(result, savedAt = '') {
+  const body = document.getElementById('newsImpactBody');
+  const meta = document.getElementById('newsImpactMeta');
+  if (!body || !meta) return;
+
+  if (!result || !result.ok) {
+    meta.textContent = 'No cached pre-open news analysis yet.';
+    body.innerHTML = `<div class="text-muted">No data</div>`;
+    return;
+  }
+
+  const score = Number(result.market_impact_score || 0).toFixed(2);
+  const direction = result.direction || 'NEUTRAL';
+  const confidence = result.confidence || 'LOW';
+  const regime = result.regime || 'UNKNOWN';
+  const headlineCount = result.headline_count || 0;
+  const sourceCounts = result.source_counts || {};
+  const sourceTxt = Object.keys(sourceCounts).length
+    ? Object.entries(sourceCounts).map(([k, v]) => `${k}:${v}`).join(' | ')
+    : 'n/a';
+
+  const drivers = (result.top_drivers || []).slice(0, 5).map((d, idx) => {
+    const title = (d.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const w = Number(d.weighted_impact || 0).toFixed(3);
+    const src = d.source || 'unknown';
+    const url = d.url || '#';
+    return `<li class="mb-1">
+      <a href="${url}" target="_blank" rel="noopener" class="text-decoration-none">${idx + 1}. ${title}</a>
+      <span class="text-muted">[${src}] impact=${w}</span>
+    </li>`;
+  }).join('');
+
+  meta.textContent = savedAt ? `Cached: ${savedAt}` : 'Latest run loaded';
+  body.innerHTML = `
+    <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+      <span class="badge ${_newsBadgeClass(direction)}">${direction}</span>
+      <span class="badge bg-info text-dark">Score ${score}</span>
+      <span class="badge bg-dark">Confidence ${confidence}</span>
+      <span class="badge bg-dark">Regime ${regime}</span>
+      <span class="badge bg-dark">Headlines ${headlineCount}</span>
+    </div>
+    <div class="text-muted mb-2">Sources: ${sourceTxt}</div>
+    <ol class="ps-3 mb-0">${drivers || '<li class="text-muted">No high-impact drivers found.</li>'}</ol>
+  `;
+}
+
+async function loadNewsImpactLast() {
+  try {
+    const res = await fetch('/api/news-impact/last').then(x => x.json());
+    if (!res.ok) return false;
+    renderNewsImpact(res.result || {}, res.saved_at || '');
+    return true;
+  } catch (e) {
+    console.debug('No cached news impact available:', e);
+    return false;
+  }
+}
+
+async function runNewsImpact() {
+  const btn = document.getElementById('btnNewsImpact');
+  const loading = document.getElementById('newsImpactLoading');
+  if (btn) btn.disabled = true;
+  if (loading) loading.classList.remove('d-none');
+
+  try {
+    const run = await fetch('/api/news-impact/run', {method: 'POST'}).then(x => x.json());
+    const statusUrl = `/api/news-impact/status/${run.job_id}`;
+
+    if (_newsImpactPollId) clearInterval(_newsImpactPollId);
+    _newsImpactPollId = setInterval(async () => {
+      const job = await fetch(statusUrl).then(x => x.json()).catch(() => ({status: 'error', error: 'network'}));
+      if (job.status === 'done') {
+        clearInterval(_newsImpactPollId);
+        if (btn) btn.disabled = false;
+        if (loading) loading.classList.add('d-none');
+        renderNewsImpact(job.result || {}, new Date().toLocaleString('zh-HK'));
+        toast('開盤前新聞分析完成 Pre-open news analysis complete', true);
+      } else if (job.status === 'error') {
+        clearInterval(_newsImpactPollId);
+        if (btn) btn.disabled = false;
+        if (loading) loading.classList.add('d-none');
+        toast(`News impact error: ${job.error || 'Unknown'}`, false);
+      }
+    }, 1500);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    if (loading) loading.classList.add('d-none');
+    toast(`News impact request failed: ${e}`, false);
+  }
+}
 
 function _setCacheMeta(text, cls = 'bg-secondary') {
   const el = document.getElementById('marketCacheMeta');
@@ -350,6 +470,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   (async () => {
     await loadCachedAssessment();
+    await loadNewsImpactLast();
   })();
 });
 

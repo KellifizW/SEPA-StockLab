@@ -131,6 +131,55 @@ def api_market_last():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Pre-open News Impact (Free-source MVP)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bp.route("/api/news-impact/run", methods=["POST"])
+def api_news_impact_run():
+    jid = _new_job()
+
+    def _run():
+        try:
+            from modules.news_impact import build_preopen_news_impact
+
+            result = build_preopen_news_impact()
+            if getattr(C, "DB_ENABLED", True) and result and result.get("ok"):
+                try:
+                    from modules.db import append_market_news_impact
+                    append_market_news_impact(result)
+                except Exception as exc:
+                    logger.warning("DB market_news_history write skipped: %s", exc)
+
+            _finish_job(jid, result=_clean(result))
+        except Exception as exc:
+            _finish_job(jid, error=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"job_id": jid})
+
+
+@bp.route("/api/news-impact/status/<jid>", methods=["GET"])
+def api_news_impact_status(jid):
+    return jsonify(_get_job(jid))
+
+
+@bp.route("/api/news-impact/last", methods=["GET"])
+def api_news_impact_last():
+    from modules.news_impact import load_last_news_impact
+
+    cached = load_last_news_impact()
+    d = cached.get("result") if isinstance(cached, dict) else None
+    if not isinstance(d, dict) or not d:
+        return jsonify({"ok": False, "error": "No cached news impact snapshot"}), 404
+
+    return jsonify({
+        "ok": True,
+        "saved_at": cached.get("saved_at"),
+        "result": d,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Report
 # ═══════════════════════════════════════════════════════════════════════════════
 

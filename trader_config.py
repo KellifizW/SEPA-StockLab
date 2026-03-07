@@ -177,6 +177,51 @@ DISTRIBUTION_DAYS_WINDOW  = 25     # Look back this many trading days
 EXCESS_DISTRIBUTION_DAYS  = 5      # ≥5 distribution days = market under pressure
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PRE-OPEN NEWS IMPACT (Free-source MVP)
+# ─────────────────────────────────────────────────────────────────────────────
+NEWS_IMPACT_ENABLED = True
+NEWS_LOOKBACK_HOURS = 20                    # Headlines newer than this window are used
+NEWS_MAX_HEADLINES_PER_SOURCE = 25          # Cap per source to keep runtime stable
+NEWS_IMPACT_TICKER_LIMIT = 20               # Max tickers sampled for Finviz ticker news
+NEWS_IMPACT_TTL_SEC = 600                   # API cache TTL (seconds)
+
+# Source weighting for headline impact scoring
+NEWS_SOURCE_WEIGHT_FINVIZ = 1.00
+NEWS_SOURCE_WEIGHT_YAHOO = 0.90
+NEWS_SOURCE_WEIGHT_SEC = 1.10
+NEWS_SOURCE_WEIGHT_WSJ = 1.05
+
+# Optional fallback when a source feed is stale but still useful as context.
+NEWS_INCLUDE_STALE_WSJ_FALLBACK = True
+NEWS_STALE_WSJ_MAX_DAYS = 500                # Discard WSJ items older than this
+NEWS_STALE_WSJ_MAX_ITEMS = 5                 # Max stale WSJ items injected into digest
+NEWS_STALE_WSJ_IMPACT_MULT = 0.15            # Reduce stale WSJ scoring impact
+
+# Time-decay for older headlines: weight *= exp(-hours / half_life)
+NEWS_TIME_DECAY_HALF_LIFE_HOURS = 6.0
+
+# Market and sentiment keyword dictionaries (lowercase tokens)
+NEWS_MARKET_KEYWORDS = [
+    "fed", "fomc", "powell", "cpi", "inflation", "ppi", "nfp", "jobs report",
+    "treasury", "yield", "rate hike", "rate cut", "recession", "gdp", "guidance",
+    "tariff", "geopolitical", "war", "ceasefire", "oil", "opec", "sanction",
+]
+NEWS_POSITIVE_KEYWORDS = [
+    "beat", "beats", "upgrade", "upside", "bullish", "growth", "strong", "surge",
+    "rally", "breakout", "record", "better than expected", "accelerate", "improve",
+]
+NEWS_NEGATIVE_KEYWORDS = [
+    "miss", "misses", "downgrade", "warning", "weak", "decline", "drop", "selloff",
+    "lawsuit", "probe", "investigation", "cut guidance", "below expectations", "layoff",
+    "default", "bankruptcy", "risk", "pressure",
+]
+
+# Optional curated market tickers used when no fresh scan list is available
+NEWS_DEFAULT_MARKET_TICKERS = [
+    "SPY", "QQQ", "IWM", "DIA", "VIX", "TLT", "XLF", "XLK", "XLE", "SMH",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PROFIT-TAKING RULES  (Minervini I1-I5)
 # ─────────────────────────────────────────────────────────────────────────────
 TRAILING_STOP_TABLE = [
@@ -958,6 +1003,66 @@ TG_APPROVAL_ENABLED   = True                                    # 啟用新用�
 TG_MINI_APP_ENABLED   = True                                    # ✅ 已啟用
 TG_MINI_APP_BASE_URL  = os.getenv("TG_MINI_APP_BASE_URL", "https://kathaleen-cephalalgic-leonida.ngrok-free.dev")  # Mini App 根 URL (ngrok tunnel)
 TG_MINI_APP_SHOW_BUTTON = True                                  # 在分析結果中顯示 "打開 Mini App" 按鈕
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTRY TIMING — Kristjan vs Martin 入場時機差異 (EntryPointControl.md)
+# Reference: docs/EntryPointControl.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── QM: Time-of-day scoring (Kristjan: 最強突破在早盤發生 09:30-11:30 EST) ─
+QM_ENTRY_PRIME_START_MIN     = 30      # 開盤後 N 分鐘起算為黃金入場窗口
+QM_ENTRY_PRIME_END_MIN       = 120     # 開盤後 N 分鐘為黃金窗口結束 (11:30 EST)
+QM_ENTRY_PRIME_BONUS         = 10      # 黃金窗口內 watch-score 加分
+QM_ENTRY_LATE_PENALTY        = -5      # 尾盤 30 分鐘入場 watch-score 扣分
+QM_ENTRY_AVOID_FIRST_MIN     = 5       # 開盤前 5 分鐘不入場 (假突破風險)
+
+# ── QM: EP 入場模式分類 (EntryPointControl §2.3) ─────────────────────────
+QM_EP_MODE_A_MIN_GAP_PCT     = 10.0    # EP Mode A (激進): gap ≥ 10% 當日買入
+QM_EP_MODE_B_CONSOL_DAYS     = 3       # EP Mode B (保守): 等 1-5 天窄幅整理後突破
+QM_EP_MODE_B_MAX_RANGE_PCT   = 8.0     # EP Mode B: 整理期間波幅上限 (%)
+
+# ── QM: Volume Ratio 突破確認 (EntryPointControl 公式2) ───────────────────
+QM_WATCH_BREAKOUT_VOL_GATE   = 1.5     # 盯盤模式: 突破日量 ≥ 1.5× 50日均量 才加分
+QM_WATCH_IDEAL_VOL_RATIO     = 2.0     # 理想量比 ≥ 2.0× = 額外加分
+QM_WATCH_WEAK_VOL_PENALTY    = -10     # 量比 < 1.2 → watch-score 扣分 (可能假突破)
+
+# ── QM: VCP 收縮比率驗證 (EntryPointControl 公式5) ───────────────────────
+QM_VCP_CONTRACTION_RATIO_MAX = 0.60    # 每次回調幅度 / 前次回調 < 0.6 = 健康收縮
+
+# ── ML: Time-of-day scoring (Martin: 黃金時段 09:30-11:00 EST) ────────────
+ML_ENTRY_PRIME_START_MIN     = 0       # 開盤即為黃金窗口 (Martin 的主戰場)
+ML_ENTRY_PRIME_END_MIN       = 90      # 開盤後 90 分鐘 (11:00 EST)
+ML_ENTRY_PRIME_BONUS         = 10      # 黃金窗口 watch-score 加分
+ML_ENTRY_MIDDAY_BONUS        = 5       # 午盤 11:30-13:00 (第二次機會) 加分
+ML_ENTRY_LATE_PENALTY        = -10     # 下午盤 (14:00+) 扣分 (HKT 凌晨2-4點)
+
+# ── ML: Opening Range Breakout (EntryPointControl §3.2 Mode A) ───────────
+ML_ORB_PERIOD_MINUTES        = 15      # Opening Range 觀察期: 前 15 分鐘
+ML_ORB_BREAKOUT_BONUS        = 10      # 突破 OR 高點 watch-score 加分
+ML_ORB_BELOW_LOW_PENALTY     = -10     # 跌穿 OR 低點 watch-score 扣分
+ML_ORB_VWAP_CONFIRM_BONUS    = 5       # OR 突破 + VWAP 之上 = 額外確認
+
+# ── ML: Pre-market High (PMH) 追蹤 (EntryPointControl §3.2 Mode B) ──────
+ML_PMH_BREAKOUT_BONUS        = 10      # 突破盤前高 watch-score 加分
+
+# ── ML: Projected Volume 日內量推算 (EntryPointControl §3.4 公式3) ────────
+ML_PROJ_VOL_FIRST_30_RATIO   = 0.25    # 前 30 分鐘成交量佔全日量比例 (近似)
+ML_PROJ_VOL_STRONG_MULT      = 2.0     # 推算全日量 ≥ 2× 均量 = 強確認
+ML_PROJ_VOL_WEAK_MULT        = 1.0     # 推算全日量 < 1× 均量 = 弱信號
+ML_PROJ_VOL_STRONG_BONUS     = 10      # 強成交量推算 watch-score 加分
+ML_PROJ_VOL_WEAK_PENALTY     = -5      # 弱成交量推算 watch-score 扣分
+
+# ── ML: SPY VWAP 即時市場過濾器 (EntryPointControl §五 Difference 5) ─────
+ML_SPY_VWAP_FILTER_ENABLED   = True    # 入場前檢查 SPY VWAP 位置
+ML_SPY_BELOW_VWAP_SIZE_MULT  = 0.5     # SPY < VWAP 且 < 昨收 → 倉位減半
+
+# ── ML: 分批建倉 Scaled Entry (EntryPointControl §四 Difference 4) ───────
+ML_SCALED_ENTRY_ENABLED      = True    # 啟用 ML 分批建倉模式
+ML_SCALED_ENTRY_PROBE_PCT    = 30      # 第1階段: 試探倉 (30% of total)
+ML_SCALED_ENTRY_CONFIRM_PCT  = 40      # 第2階段: 確認後加倉 (40% of total)
+ML_SCALED_ENTRY_FULL_PCT     = 30      # 第3階段: 全面突破後滿倉 (30% of total)
+ML_SCALED_ENTRY_PROBE_SCORE  = 60      # 第1階段最低 watch-score (較寬鬆)
+ML_SCALED_ENTRY_CONFIRM_SCORE = 75     # 第2階段最低 watch-score (標準)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUTO-TRADE — Automated Buy Execution Engine (QM + ML strategy switching)
