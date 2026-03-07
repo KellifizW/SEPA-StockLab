@@ -11,7 +11,7 @@
 {%- set _total = wl.get('SEPA',{})|length + wl.get('QM',{})|length + wl.get('ML',{})|length -%}
 {% for s in ['SEPA','QM','ML'] %}
   {% for ticker, d in wl.get(s, {}).items() %}
-  <tr data-strategy="{{ s }}" id="wl-row-{{ ticker }}">
+  <tr data-strategy="{{ s }}" data-market="{{ d.market|default('US') }}" id="wl-row-{{ ticker }}">
     {% if s == 'QM' %}
       {% set analyze_url = '/qm/analyze?ticker=' ~ ticker %}
     {% elif s == 'ML' %}
@@ -19,7 +19,7 @@
     {% else %}
       {% set analyze_url = '/analyze?ticker=' ~ ticker %}
     {% endif %}
-    <td><span class="badge bg-{{ _sc[s] }}">{{ s }}</span></td>
+    <td><span class="badge bg-{{ _sc[s] }}">{{ d.market|default('US') }}/{{ s }}</span></td>
     <td>
       <a href="{{ analyze_url }}"
          class="fw-bold text-decoration-none" style="color:var(--accent)">{{ ticker }}</a>
@@ -37,19 +37,19 @@
       <div class="btn-group btn-group-sm">
       <button class="btn btn-outline-info" title="Move to SEPA"
         hx-post="/htmx/watchlist/move"
-        hx-vals='{"ticker":"{{ ticker }}","strategy":"SEPA"}'
+        hx-vals='{"ticker":"{{ ticker }}","strategy":"SEPA","market":"{{ active_market|default("US") }}"}'
         hx-target="#wlBody" hx-swap="innerHTML">SEPA</button>
       <button class="btn btn-outline-warning" title="Move to QM"
         hx-post="/htmx/watchlist/move"
-        hx-vals='{"ticker":"{{ ticker }}","strategy":"QM"}'
+        hx-vals='{"ticker":"{{ ticker }}","strategy":"QM","market":"{{ active_market|default("US") }}"}'
         hx-target="#wlBody" hx-swap="innerHTML">QM</button>
       <button class="btn btn-outline-success" title="Move to ML"
         hx-post="/htmx/watchlist/move"
-        hx-vals='{"ticker":"{{ ticker }}","strategy":"ML"}'
+        hx-vals='{"ticker":"{{ ticker }}","strategy":"ML","market":"{{ active_market|default("US") }}"}'
         hx-target="#wlBody" hx-swap="innerHTML">ML</button>
         <button class="btn btn-outline-danger" title="Remove from watchlist"
                 hx-post="/htmx/watchlist/remove"
-                hx-vals='{"ticker":"{{ ticker }}"}'
+                hx-vals='{"ticker":"{{ ticker }}","market":"{{ active_market|default("US") }}"}'
                 hx-target="#wlBody" hx-swap="innerHTML"
                 hx-confirm="Remove {{ ticker }} from watchlist?">
           <i class="bi bi-trash"></i></button>

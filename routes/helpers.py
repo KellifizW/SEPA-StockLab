@@ -28,6 +28,65 @@ logger = logging.getLogger(__name__)
 _LOG_DIR = ROOT / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Market mode persistence (US / HK)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_MARKET_MODE_FILE = ROOT / C.DATA_DIR / "market_mode.json"
+_market_mode_lock = threading.Lock()
+
+
+def _normalize_market(market: Optional[str]) -> str:
+    """Normalize market code to 'US' or 'HK', defaulting safely to config."""
+    default_market = str(getattr(C, "MARKET_DEFAULT", "US")).upper().strip()
+    m = (market or default_market or "US").upper().strip()
+    return m if m in ("US", "HK") else "US"
+
+
+def _load_market_mode() -> str:
+    """Load active market mode from cache file."""
+    with _market_mode_lock:
+        try:
+            if _MARKET_MODE_FILE.exists():
+                data = json.loads(_MARKET_MODE_FILE.read_text(encoding="utf-8"))
+                return _normalize_market(data.get("active_market"))
+        except Exception as exc:
+            logger.warning("Failed to load market mode: %s", exc)
+    return _normalize_market(None)
+
+
+def _save_market_mode(market: str) -> str:
+    """Persist active market mode and return normalized result."""
+    normalized = _normalize_market(market)
+    with _market_mode_lock:
+        try:
+            payload = {
+                "active_market": normalized,
+                "updated_at": datetime.now().isoformat(),
+            }
+            _MARKET_MODE_FILE.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to save market mode: %s", exc)
+    return normalized
+
+
+def _get_market_split_pct(market: str) -> float:
+    """Return configured market capital split percentage."""
+    m = _normalize_market(market)
+    if m == "HK":
+        return float(getattr(C, "ACCOUNT_SPLIT_HK_PCT", 50.0))
+    return float(getattr(C, "ACCOUNT_SPLIT_US_PCT", 50.0))
+
+
+def _get_market_account_size(total_account_size: float, market: str) -> float:
+    """Return market-specific account size based on split percentages."""
+    pct = _get_market_split_pct(market)
+    return float(total_account_size) * pct / 100.0
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # In-memory job store  (scan / market / analyze are slow — run in background)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -369,14 +428,50 @@ _COMBINED_LAST_FILE = ROOT / C.DATA_DIR / "combined_last_scan.json"
 _MARKET_LAST_FILE = ROOT / C.DATA_DIR / "market_last_assessment.json"
 
 
-def _save_last_scan(rows: list, all_rows: Optional[list] = None):
+def _last_scan_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped SEPA last scan file path."""
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"last_scan_{m}.json"
+
+
+def _qm_last_scan_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped QM last scan file path."""
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"qm_last_scan_{m}.json"
+
+
+def _ml_last_scan_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped ML last scan file path."""
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"ml_last_scan_{m}.json"
+
+
+def _market_last_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped market assessment file path."""
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"market_last_assessment_{m}.json"
+
+
+def _combined_last_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped combined summary file path."""
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"combined_last_scan_{m}.json"
+
+
+def _save_last_scan(rows: list, all_rows: Optional[list] = None, market: Optional[str] = None):
     try:
+        normalized_market = _normalize_market(market)
         data = {
             "saved_at": datetime.now().isoformat(),
             "count": len(rows), "rows": rows,
             "all_scored_count": len(all_rows) if all_rows else len(rows),
             "all_scored": all_rows or [],
+            "market": normalized_market,
         }
+        _last_scan_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+
+        # Keep legacy file in sync for backward compatibility.
         _LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
         import csv, io
@@ -407,23 +502,37 @@ def _save_last_scan(rows: list, all_rows: Optional[list] = None):
             logging.warning(f"DB scan_history write skipped: {exc}")
 
 
-def _load_last_scan() -> dict:
+def _load_last_scan(market: Optional[str] = None) -> dict:
+    normalized_market = _normalize_market(market)
+    market_file = _last_scan_file_for_market(normalized_market)
     try:
-        if _LAST_SCAN_FILE.exists():
-            return json.loads(_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
+        if normalized_market == "US" and _LAST_SCAN_FILE.exists():
+            data = json.loads(_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
     except Exception:
         pass
     return {}
 
 
-def _save_qm_last_scan(rows: list, all_rows: Optional[list] = None):
+def _save_qm_last_scan(rows: list, all_rows: Optional[list] = None, market: Optional[str] = None):
     try:
+        normalized_market = _normalize_market(market)
         data = {
             "saved_at": datetime.now().isoformat(),
             "count": len(rows), "rows": rows,
             "all_scored_count": len(all_rows) if all_rows else len(rows),
             "all_scored": all_rows or [],
+            "market": normalized_market,
         }
+        _qm_last_scan_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+
+        # Keep legacy file in sync for backward compatibility.
         _QM_LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
@@ -441,26 +550,41 @@ def _save_qm_last_scan(rows: list, all_rows: Optional[list] = None):
             logging.warning(f"DB qm_scan_history write skipped: {exc}")
 
 
-def _load_qm_last_scan() -> dict:
+def _load_qm_last_scan(market: Optional[str] = None) -> dict:
+    normalized_market = _normalize_market(market)
+    market_file = _qm_last_scan_file_for_market(normalized_market)
     try:
-        if _QM_LAST_SCAN_FILE.exists():
-            return json.loads(_QM_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
+        if normalized_market == "US" and _QM_LAST_SCAN_FILE.exists():
+            data = json.loads(_QM_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
     except Exception:
         pass
     return {}
 
 
 def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None,
-                       triple_summary: Optional[dict] = None):
+                       triple_summary: Optional[dict] = None,
+                       market: Optional[str] = None):
     try:
+        normalized_market = _normalize_market(market)
         data = {
             "saved_at": datetime.now().isoformat(),
             "count": len(rows), "rows": rows,
             "all_scored_count": len(all_rows) if all_rows else len(rows),
             "all_scored": all_rows or [],
+            "market": normalized_market,
         }
         if triple_summary:
             data["triple_summary"] = triple_summary
+        _ml_last_scan_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+
+        # Keep legacy file in sync for backward compatibility.
         _ML_LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
@@ -478,18 +602,27 @@ def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None,
             logging.warning(f"DB ml_scan_history write skipped: {exc}")
 
 
-def _load_ml_last_scan() -> dict:
+def _load_ml_last_scan(market: Optional[str] = None) -> dict:
+    normalized_market = _normalize_market(market)
+    market_file = _ml_last_scan_file_for_market(normalized_market)
     try:
-        if _ML_LAST_SCAN_FILE.exists():
-            return json.loads(_ML_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
+        if normalized_market == "US" and _ML_LAST_SCAN_FILE.exists():
+            data = json.loads(_ML_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
     except Exception:
         pass
     return {}
 
 
 def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
-                        sepa_csv="", qm_csv=""):
+                        sepa_csv="", qm_csv="", market: Optional[str] = None):
     try:
+        normalized_market = _normalize_market(market)
         _default_star = 4.0
         qm_count_4star = sum(
             1 for r in qm_rows
@@ -506,48 +639,79 @@ def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
             "timing": timing,
             "sepa_csv": sepa_csv,
             "qm_csv": qm_csv,
+            "market": normalized_market,
         }
+        _combined_last_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+
+        # Keep legacy file in sync for backward compatibility with older pages.
         _COMBINED_LAST_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
         logging.warning("Could not save combined_last_scan: %s", exc)
 
 
-def _load_combined_last() -> dict:
+def _load_combined_last(market: Optional[str] = None) -> dict:
+    normalized_market = _normalize_market(market)
+    market_file = _combined_last_file_for_market(normalized_market)
     data = {}
     try:
-        if _COMBINED_LAST_FILE.exists():
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+        elif normalized_market == "US" and _COMBINED_LAST_FILE.exists():
+            # Legacy fallback before market-scoped files existed.
             data = json.loads(_COMBINED_LAST_FILE.read_text(encoding="utf-8"))
     except Exception:
         data = {}
 
-    # Backfill ML summary so dashboard combined highlights can show SEPA + QM + ML
-    # even when combined scan did not persist ML fields.
-    try:
-        ml = _load_ml_last_scan()
-        ml_rows = ml.get("rows") or ml.get("ml_rows") or []
-        if "ml_rows" not in data:
-            data["ml_rows"] = ml_rows[:20]
-        if "ml_count" not in data:
-            data["ml_count"] = int(ml.get("count", len(ml_rows)))
-        if "ml_saved_at" not in data and ml.get("saved_at"):
-            data["ml_saved_at"] = ml.get("saved_at")
-    except Exception:
+    # Backfill ML summary only when a combined payload already exists.
+    # This avoids leaking other-market ML cache into an empty market summary.
+    has_combined_payload = bool(
+        data.get("saved_at")
+        or data.get("sepa_rows")
+        or data.get("qm_rows")
+        or data.get("sepa_count")
+        or data.get("qm_count")
+    )
+    if has_combined_payload:
+        try:
+            ml = _load_ml_last_scan(normalized_market)
+            ml_rows = ml.get("rows") or ml.get("ml_rows") or []
+            if "ml_rows" not in data:
+                data["ml_rows"] = ml_rows[:20]
+            if "ml_count" not in data:
+                data["ml_count"] = int(ml.get("count", len(ml_rows)))
+            if "ml_saved_at" not in data and ml.get("saved_at"):
+                data["ml_saved_at"] = ml.get("saved_at")
+        except Exception:
+            data.setdefault("ml_rows", [])
+            data.setdefault("ml_count", 0)
+    else:
         data.setdefault("ml_rows", [])
         data.setdefault("ml_count", 0)
+
+    data.setdefault("market", normalized_market)
 
     return data
 
 
-def _save_market_last(result: dict):
+def _save_market_last(result: dict, market: Optional[str] = None):
     """Persist latest market assessment payload for quick page restore."""
     if not result:
         return
     try:
+        normalized_market = _normalize_market(market)
         payload = {
             "saved_at": datetime.now().isoformat(),
             "result": result,
+            "market": normalized_market,
         }
+        _market_last_file_for_market(normalized_market).write_text(
+            json.dumps(payload, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+        # Keep legacy file in sync for backward compatibility.
         _MARKET_LAST_FILE.write_text(
             json.dumps(payload, ensure_ascii=False, default=str),
             encoding="utf-8",
@@ -556,12 +720,20 @@ def _save_market_last(result: dict):
         logging.warning("Could not save market_last_assessment: %s", exc)
 
 
-def _load_market_last() -> dict:
+def _load_market_last(market: Optional[str] = None) -> dict:
     """Load latest market assessment cache payload."""
+    normalized_market = _normalize_market(market)
+    market_file = _market_last_file_for_market(normalized_market)
     try:
-        if _MARKET_LAST_FILE.exists():
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data.setdefault("market", normalized_market)
+                return data
+        if normalized_market == "US" and _MARKET_LAST_FILE.exists():
             data = json.loads(_MARKET_LAST_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                data.setdefault("market", normalized_market)
                 return data
     except Exception as exc:
         logging.warning("Could not load market_last_assessment: %s", exc)
@@ -601,36 +773,66 @@ def _save_combined_scan_csv(sepa_df, qm_df, scan_ts=None) -> tuple:
 # Data loaders
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _load_watchlist() -> dict:
+def _load_watchlist(market: Optional[str] = None) -> dict:
     try:
         from modules.watchlist import _load
-        return _load()
+        raw = _load()
     except Exception as exc:
         logger.warning("Failed to load watchlist from modules: %s", exc)
         p = ROOT / C.DATA_DIR / "watchlist.json"
         if p.exists():
             try:
-                return json.loads(p.read_text(encoding="utf-8"))
+                raw = json.loads(p.read_text(encoding="utf-8"))
             except Exception:
-                pass
-    return {"SEPA": {}, "QM": {}, "ML": {}}
+                raw = {"SEPA": {}, "QM": {}, "ML": {}}
+        else:
+            raw = {"SEPA": {}, "QM": {}, "ML": {}}
+
+    out = {"SEPA": {}, "QM": {}, "ML": {}}
+    target_market = _normalize_market(market) if market else None
+    for strategy in ("SEPA", "QM", "ML"):
+        bucket = (raw.get(strategy, {}) or {}) if isinstance(raw, dict) else {}
+        if not isinstance(bucket, dict):
+            continue
+        for ticker, entry in bucket.items():
+            e = dict(entry or {})
+            e.setdefault("strategy", strategy)
+            e["market"] = _normalize_market(e.get("market"))
+            if target_market and e["market"] != target_market:
+                continue
+            out[strategy][ticker] = e
+    return out
 
 
-def _load_positions() -> dict:
+def _load_positions(market: Optional[str] = None) -> dict:
     try:
         from modules.position_monitor import _load
         data = _load()
-        return data.get("positions", {})
+        raw = data.get("positions", {})
     except Exception as exc:
         logger.warning("Failed to load positions from modules: %s", exc)
         p = ROOT / C.DATA_DIR / "positions.json"
         if p.exists():
             try:
                 raw = json.loads(p.read_text(encoding="utf-8"))
-                return raw.get("positions", {})
+                raw = raw.get("positions", {})
             except Exception:
-                pass
-    return {}
+                raw = {}
+        else:
+            raw = {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    target_market = _normalize_market(market) if market else None
+    out = {}
+    for ticker, pos in raw.items():
+        p = dict(pos or {})
+        p["market"] = _normalize_market(p.get("market"))
+        if target_market and p["market"] != target_market:
+            continue
+        out[ticker] = p
+    return out
 
 
 def _latest_report() -> Optional[Path]:

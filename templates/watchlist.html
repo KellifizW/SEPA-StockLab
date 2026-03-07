@@ -9,6 +9,7 @@
     </button>
   </div>
 </div>
+<div class="text-muted small mb-3">當前市場 Current Market: <span class="badge {% if active_market == 'US' %}bg-info{% else %}bg-success{% endif %}">{{ active_market_label }}</span></div>
 
 <!-- Add form -->
 <div class="card mb-3">
@@ -84,6 +85,8 @@
 {% endblock %}
 {% block extra_js %}
 <script>
+const ACTIVE_MARKET = '{{ active_market }}';
+
 // ── Strategy filter (CSS-driven, instant — no server round-trip) ─────────────
 function setWlStrategy(strategy, el) {
   document.getElementById('wlBody').dataset.strategyFilter = strategy;
@@ -104,7 +107,7 @@ async function addStock() {
 
   const r = await fetch('/api/watchlist/add', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ticker, strategy, note})
+    body: JSON.stringify({ticker, strategy, note, market: ACTIVE_MARKET})
   }).then(x=>x.json());
 
   pollJob(`/api/watchlist/add/status/${r.job_id}`,
@@ -113,7 +116,7 @@ async function addStock() {
       document.getElementById('wlLoading').classList.add('d-none');
       document.getElementById('addTicker').value = '';
       // Refresh table via htmx — server returns rows + OOB badge updates
-      htmx.ajax('GET', '/htmx/watchlist/body', {target: '#wlBody', swap: 'innerHTML'});
+      htmx.ajax('GET', `/htmx/watchlist/body?market=${ACTIVE_MARKET}`, {target: '#wlBody', swap: 'innerHTML'});
       toast(`✅ ${ticker} added to watchlist`);
     },
     err => {
@@ -128,11 +131,11 @@ async function addStock() {
 async function refreshWatchlist() {
   document.getElementById('wlLoading').classList.remove('d-none');
   document.getElementById('wlLoadMsg').textContent = 'Re-analyzing all watchlist stocks…';
-  const r = await fetch('/api/watchlist/refresh', {method:'POST'}).then(x=>x.json());
+  const r = await fetch(`/api/watchlist/refresh?market=${ACTIVE_MARKET}`, {method:'POST'}).then(x=>x.json());
   pollJob(`/api/watchlist/refresh/status/${r.job_id}`,
     () => {
       document.getElementById('wlLoading').classList.add('d-none');
-      htmx.ajax('GET', '/htmx/watchlist/body', {target: '#wlBody', swap: 'innerHTML'});
+      htmx.ajax('GET', `/htmx/watchlist/body?market=${ACTIVE_MARKET}`, {target: '#wlBody', swap: 'innerHTML'});
       toastCompletion('✅ 觀察列表已重新分析完成', true);
     },
     err => {

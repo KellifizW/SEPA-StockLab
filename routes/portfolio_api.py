@@ -10,6 +10,7 @@ from routes.helpers import (
     _new_job, _finish_job, _get_job,
     _clean,
     _load_watchlist, _load_positions,
+    _load_market_mode, _normalize_market,
     htmx_wl_rows,
 )
 
@@ -23,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 @bp.route("/api/watchlist", methods=["GET"])
 def api_watchlist_get():
-    return jsonify(_load_watchlist())
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return jsonify(_load_watchlist(market))
 
 
 @bp.route("/api/watchlist/add", methods=["POST"])
@@ -32,13 +34,14 @@ def api_watchlist_add():
     ticker = str(data.get("ticker", "")).upper().strip()
     strategy = data.get("strategy") or data.get("grade")
     note = data.get("note", "")
+    market = _normalize_market(data.get("market") or _load_market_mode())
     jid = _new_job()
 
     def _run():
         try:
             from modules.watchlist import add
-            add(ticker, grade=strategy, note=note)
-            _finish_job(jid, result={"ticker": ticker, "watchlist": _load_watchlist()})
+            add(ticker, grade=strategy, note=note, market=market)
+            _finish_job(jid, result={"ticker": ticker, "watchlist": _load_watchlist(market)})
         except Exception as exc:
             _finish_job(jid, error=str(exc))
 
@@ -55,10 +58,11 @@ def api_watchlist_add_status(jid):
 def api_watchlist_remove():
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import remove
-        remove(ticker)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        remove(ticker, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -67,10 +71,11 @@ def api_watchlist_remove():
 def api_watchlist_promote():
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import promote
-        promote(ticker)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        promote(ticker, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -79,10 +84,11 @@ def api_watchlist_promote():
 def api_watchlist_demote():
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import demote
-        demote(ticker)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        demote(ticker, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -92,23 +98,25 @@ def api_watchlist_move():
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
     strategy = str(data.get("strategy", "")).upper().strip()
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import move_to_strategy
-        move_to_strategy(ticker, strategy)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        move_to_strategy(ticker, strategy, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @bp.route("/api/watchlist/refresh", methods=["POST"])
 def api_watchlist_refresh():
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
     jid = _new_job()
 
     def _run():
         try:
             from modules.watchlist import refresh
             refresh()
-            _finish_job(jid, result={"watchlist": _load_watchlist()})
+            _finish_job(jid, result={"watchlist": _load_watchlist(market)})
         except Exception as exc:
             _finish_job(jid, error=str(exc))
 
@@ -127,16 +135,18 @@ def api_watchlist_refresh_status(jid):
 
 @bp.route("/htmx/watchlist/body")
 def htmx_wl_body():
-    return htmx_wl_rows(_load_watchlist())
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return htmx_wl_rows(_load_watchlist(market))
 
 
 @bp.route("/htmx/watchlist/promote", methods=["POST"])
 def htmx_wl_promote():
     ticker = (request.form.get("ticker") or "").upper().strip()
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import promote
-        promote(ticker)
-        return htmx_wl_rows(_load_watchlist(), f"✅ {ticker} promoted")
+        promote(ticker, market=market)
+        return htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} promoted")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -146,10 +156,11 @@ def htmx_wl_promote():
 @bp.route("/htmx/watchlist/demote", methods=["POST"])
 def htmx_wl_demote():
     ticker = (request.form.get("ticker") or "").upper().strip()
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import demote
-        demote(ticker)
-        return htmx_wl_rows(_load_watchlist(), f"✅ {ticker} demoted")
+        demote(ticker, market=market)
+        return htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} demoted")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -159,10 +170,11 @@ def htmx_wl_demote():
 @bp.route("/htmx/watchlist/remove", methods=["POST"])
 def htmx_wl_remove():
     ticker = (request.form.get("ticker") or "").upper().strip()
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import remove
-        remove(ticker)
-        return htmx_wl_rows(_load_watchlist(), f"✅ {ticker} removed from watchlist")
+        remove(ticker, market=market)
+        return htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} removed from watchlist")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -173,10 +185,11 @@ def htmx_wl_remove():
 def htmx_wl_move():
     ticker = (request.form.get("ticker") or "").upper().strip()
     strategy = (request.form.get("strategy") or "").upper().strip()
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import move_to_strategy
-        move_to_strategy(ticker, strategy)
-        return htmx_wl_rows(_load_watchlist(), f"✅ {ticker} moved to {strategy}")
+        move_to_strategy(ticker, strategy, market=market)
+        return htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} moved to {strategy}")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -189,7 +202,8 @@ def htmx_wl_move():
 
 @bp.route("/api/positions", methods=["GET"])
 def api_positions_get():
-    return jsonify(_load_positions())
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return jsonify(_load_positions(market))
 
 
 @bp.route("/api/positions/add", methods=["POST"])
@@ -199,6 +213,7 @@ def api_positions_add():
 
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    market = _normalize_market(data.get("market") or _load_market_mode())
 
     logging.info("[API] positions/add START: %s", ticker)
 
@@ -214,6 +229,7 @@ def api_positions_add():
             float(data["target"]) if data.get("target") else None,
             str(data.get("note", "")),
             str(data.get("pool") or data.get("strategy") or "FREE"),
+            market,
         )
         t2 = time.time()
         logging.info("[API] add_position() completed in %.3fs", t2 - t1)
@@ -241,6 +257,7 @@ def api_positions_add():
                 "rr": round(rr, 2),
                 "risk_dollar": round(risk_dol, 2),
                 "strategy": str(data.get("pool") or data.get("strategy") or "FREE").upper(),
+                "market": market,
                 "buy_date": None,
                 "days_held": 0,
                 "note": str(data.get("note", "")),
@@ -265,6 +282,7 @@ def api_positions_close():
     ticker = str(data.get("ticker", "")).upper().strip()
     exit_price = float(data.get("exit_price", 0) or 0)
     reason = str(data.get("reason", ""))
+    market = _normalize_market(data.get("market") or _load_market_mode())
     shares_to_close_raw = data.get("shares_to_close")
     ibkr_execute = bool(data.get("ibkr_execute", False))
 
@@ -273,7 +291,7 @@ def api_positions_close():
     if exit_price <= 0:
         return jsonify({"ok": False, "error": "exit_price must be > 0"}), 400
 
-    positions = _load_positions()
+    positions = _load_positions(market)
     pos = positions.get(ticker)
     if not pos:
         return jsonify({"ok": False, "error": f"{ticker} not found in open positions"}), 404
@@ -389,6 +407,7 @@ def htmx_positions_add():
         target = float(target_raw) if target_raw else None
         note = request.form.get("note", "")
         pool = (request.form.get("pool") or request.form.get("strategy") or "FREE").upper().strip()
+        market = _normalize_market(request.form.get("market") or _load_market_mode())
 
         if not ticker or not buy_price or not shares or not stop_loss:
             resp = make_response("", 200)
@@ -396,7 +415,7 @@ def htmx_positions_add():
             return resp
 
         from modules.position_monitor import add_position
-        add_position(ticker, buy_price, shares, stop_loss, target, note, pool)
+        add_position(ticker, buy_price, shares, stop_loss, target, note, pool, market)
 
         if target is None:
             risk = buy_price - stop_loss
@@ -412,6 +431,7 @@ def htmx_positions_add():
             "rr": round(rr, 2),
             "risk_dollar": round(risk_dol, 2),
             "strategy": pool,
+            "market": market,
             "days_held": 0,
             "note": note,
         }
@@ -437,6 +457,7 @@ def api_quick_add_watch():
     grade = data.get("grade", "C")
     strategy = data.get("strategy", "")
     note = data.get("note", "")
+    market = _normalize_market(data.get("market") or _load_market_mode())
 
     if not ticker:
         return jsonify({"ok": False, "error": "缺少 Ticker"}), 400
@@ -445,17 +466,18 @@ def api_quick_add_watch():
         from modules.watchlist import add
         from modules import db
 
-        add(ticker, grade=grade, note=note)
+        add(ticker, grade=grade, note=note, market=market)
 
-        wl = _load_watchlist()
+        wl = _load_watchlist(market)
         if grade in wl and ticker in wl[grade]:
             wl[grade][ticker]["strategy"] = strategy
         db.wl_save(wl)
 
-        wl = _load_watchlist()
+        wl = _load_watchlist(market)
         return jsonify({
             "ok": True,
             "message": f"✅ {ticker} 已加入觀察名單 (Grade {grade})",
+            "market": market,
             "watchlist": wl,
         })
     except Exception as exc:
@@ -474,6 +496,7 @@ def api_quick_add_position():
     target = float(target) if target else None
     strategy = data.get("strategy", "")
     note = data.get("note", "")
+    market = _normalize_market(data.get("market") or _load_market_mode())
 
     if not ticker or not buy_price or not shares or not stop_loss:
         return jsonify({"ok": False, "error": "缺少必要資料"}), 400
@@ -482,17 +505,19 @@ def api_quick_add_position():
         from modules.position_monitor import add_position
         from modules import db
 
-        add_position(ticker, buy_price, shares, stop_loss, target, note)
+        pool = str(strategy).upper().strip()
+        pool = pool if pool in ("QM", "ML", "FREE") else "FREE"
+        add_position(ticker, buy_price, shares, stop_loss, target, note, pool, market)
 
-        pos = _load_positions()
-        if ticker in pos["positions"]:
-            pos["positions"][ticker]["strategy"] = strategy
-        db.pos_save(pos)
+        pos_data = _load_positions(market)
+        raw = {"positions": pos_data, "closed": [], "account_high": C.ACCOUNT_SIZE}
+        db.pos_save(raw)
 
-        pos = _load_positions()
+        pos = _load_positions(market)
         return jsonify({
             "ok": True,
             "message": f"✅ {ticker} 持倉已新增",
+            "market": market,
             "positions": pos,
         })
     except Exception as exc:

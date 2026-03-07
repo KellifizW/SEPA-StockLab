@@ -869,7 +869,10 @@
    Combined Scan — Full Parity JavaScript
    SEPA parity: scan.html  |  QM parity: qm_scan.html
 ═══════════════════════════════════════════════════════════════════ */
-const CACHE_KEY = 'combined_scan_v3';
+const ACTIVE_MARKET = '{{ active_market|default("US") }}';
+const MARKET_KEY_SUFFIX = ACTIVE_MARKET.toLowerCase();
+const CACHE_KEY = 'combined_scan_v3_' + MARKET_KEY_SUFFIX;
+const ACTIVE_JID_KEY = 'combined_active_jid_' + MARKET_KEY_SUFFIX;
 const CACHE_VER = '3';
 
 // ── State ──────────────────────────────────────────────────────────
@@ -912,7 +915,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   // Check if there's an in-flight combined scan we can reconnect to
-  var activeJid = localStorage.getItem('combined_active_jid');
+  var activeJid = localStorage.getItem(ACTIVE_JID_KEY);
   if (activeJid) {
     // We have an active job — try to reconnect
     _jid = activeJid;
@@ -988,7 +991,7 @@ document.addEventListener('DOMContentLoaded', function() {
 /* ═══ SCAN CONTROL ══════════════════════════════════════════════════ */
 async function startScan() {
   // Prevent duplicate scans
-  if (localStorage.getItem('combined_active_jid')) {
+  if (localStorage.getItem(ACTIVE_JID_KEY)) {
     alert('⚠️ Combined scan already in progress. Cancel it first.');
     return;
   }
@@ -1026,13 +1029,13 @@ async function startScan() {
     var resp = await fetch('/api/combined/scan/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({refresh_rs: refreshRs, stage1_source: stage1Src, min_star: 3.0, top_n: topNVal >= 9999 ? null : topNVal})
+      body: JSON.stringify({refresh_rs: refreshRs, stage1_source: stage1Src, min_star: 3.0, top_n: topNVal >= 9999 ? null : topNVal, market: ACTIVE_MARKET})
     });
     var r = await resp.json();
     _jid = r.job_id;
     // Persist job ID to localStorage
     try {
-      localStorage.setItem('combined_active_jid', _jid);
+      localStorage.setItem(ACTIVE_JID_KEY, _jid);
     } catch(e) {}
     pollScan();
   } catch(e) { onError(e.message); }
@@ -1040,7 +1043,7 @@ async function startScan() {
 
 function stopScan() {
   if (_jid) {
-    localStorage.removeItem('combined_active_jid');
+    localStorage.removeItem(ACTIVE_JID_KEY);
     fetch('/api/combined/scan/cancel/' + _jid, {method: 'POST'}).catch(function(){});
   }
   resetUI();
@@ -1116,7 +1119,7 @@ function toggleLiveLog() {
 }
 
 function onDone(result) {
-  localStorage.removeItem('combined_active_jid');
+  localStorage.removeItem(ACTIVE_JID_KEY);
   resetUI();
   document.getElementById('progressBar').style.width = '100%';
   for (var i = 1; i <= 5; i++) document.getElementById('step' + i).className = 'step-dot done';
@@ -1199,7 +1202,7 @@ function onDone(result) {
 }
 
 function onError(msg) {
-  localStorage.removeItem('combined_active_jid');
+  localStorage.removeItem(ACTIVE_JID_KEY);
   resetUI();
   setStatus('Error: ' + msg, true);
 }
@@ -1218,7 +1221,7 @@ function setStatus(msg, isErr) {
 
 async function loadLastResults() {
   try {
-    var r = await fetch('/api/scan/last?include_all=1').then(function(x) { return x.json(); });
+    var r = await fetch('/api/scan/last?include_all=1&market=' + encodeURIComponent(ACTIVE_MARKET)).then(function(x) { return x.json(); });
     if (r.rows && r.rows.length) {
       _sepaData    = r.rows.filter(function(x) { return x._passed !== false; });
       _sepaAllData = r.rows;

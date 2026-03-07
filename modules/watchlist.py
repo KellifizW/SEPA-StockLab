@@ -69,6 +69,13 @@ def _load() -> dict:
     return _empty_watchlist()
 
 
+def _normalize_market(market: Optional[str]) -> str:
+    """Normalize market code to US/HK with safe fallback."""
+    default_market = str(getattr(C, "MARKET_DEFAULT", "US")).upper().strip()
+    m = (market or default_market or "US").upper().strip()
+    return m if m in ("US", "HK") else "US"
+
+
 def _save(data: dict):
     """Save watchlist: JSON sync (fast) + DuckDB async background thread."""
     if not data:
@@ -111,7 +118,7 @@ def _bg_wl_db_save(data: dict):
 # Core operations
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def add(ticker: str, grade: Optional[str] = None, note: str = ""):
+def add(ticker: str, grade: Optional[str] = None, note: str = "", market: str = "US"):
     """
     Add a ticker to the watchlist.
     `grade` is kept for backward compatibility and mapped to strategy buckets.
@@ -119,6 +126,7 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
     ticker = ticker.upper().strip()
     wl = _load()
     strategy = _normalize_strategy(grade)
+    market = _normalize_market(market)
 
     # Check if already in watchlist
     for s in STRATEGY_KEYS:
@@ -152,6 +160,7 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
             "sector":       snap.get("Sector", ""),
             "note":         note,
             "strategy":     strategy,
+            "market":       market,
         }
         # Remove from other buckets first
         for s in STRATEGY_KEYS:
@@ -185,6 +194,7 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
             "last_updated": datetime.now().strftime("%Y-%m-%d"),
             "note":         note,
             "error":        str(exc),
+            "market":       market,
         }
         strategy = strategy or "SEPA"
         entry["strategy"] = strategy
@@ -203,14 +213,18 @@ def add(ticker: str, grade: Optional[str] = None, note: str = ""):
             print(f"  Added {ticker} to {strategy} (no analysis data: {exc})")
 
 
-def remove(ticker: str):
+def remove(ticker: str, market: Optional[str] = None):
     """Remove a ticker from any watchlist grade."""
     ticker = ticker.upper().strip()
+    target_market = _normalize_market(market) if market else None
     wl = _load()
     removed = False
     removed_grade = None
     for s in STRATEGY_KEYS:
         if ticker in wl[s]:
+            entry_market = _normalize_market((wl[s][ticker] or {}).get("market"))
+            if target_market and entry_market != target_market:
+                continue
             del wl[s][ticker]
             removed = True
             removed_grade = s
@@ -229,45 +243,58 @@ def remove(ticker: str):
                 pass
 
 
-def promote(ticker: str):
+def promote(ticker: str, market: Optional[str] = None):
     """Backward-compatible wrapper: move ticker to next strategy bucket."""
     ticker = ticker.upper().strip()
+    target_market = _normalize_market(market) if market else None
     wl = _load()
     order = ["SEPA", "QM", "ML"]
     for idx, s in enumerate(order):
         if ticker in wl[s]:
+            entry_market = _normalize_market((wl[s][ticker] or {}).get("market"))
+            if target_market and entry_market != target_market:
+                continue
             if idx == len(order) - 1:
                 print(f"  {ticker} already at {s}")
                 return
-            move_to_strategy(ticker, order[idx + 1])
+            move_to_strategy(ticker, order[idx + 1], market=target_market)
             return
     print(f"  {ticker} not in watchlist — use 'add' first")
 
 
-def demote(ticker: str):
+def demote(ticker: str, market: Optional[str] = None):
     """Backward-compatible wrapper: move ticker to previous strategy bucket."""
     ticker = ticker.upper().strip()
+    target_market = _normalize_market(market) if market else None
     wl = _load()
     order = ["SEPA", "QM", "ML"]
     for idx, s in enumerate(order):
         if ticker in wl[s]:
+            entry_market = _normalize_market((wl[s][ticker] or {}).get("market"))
+            if target_market and entry_market != target_market:
+                continue
             if idx == 0:
                 print(f"  {ticker} already at {s}")
                 return
-            move_to_strategy(ticker, order[idx - 1])
+            move_to_strategy(ticker, order[idx - 1], market=target_market)
             return
     print(f"  {ticker} not in watchlist — use 'add' first")
 
 
-def move_to_strategy(ticker: str, strategy: str):
+def move_to_strategy(ticker: str, strategy: str, market: Optional[str] = None):
     """Move ticker to target strategy bucket (SEPA/QM/ML)."""
     ticker = ticker.upper().strip()
     strategy = _normalize_strategy(strategy) or "SEPA"
+    target_market = _normalize_market(market) if market else None
     wl = _load()
 
     for s in STRATEGY_KEYS:
         if ticker in wl[s]:
             entry = wl[s].pop(ticker)
+            entry_market = _normalize_market((entry or {}).get("market"))
+            if target_market and entry_market != target_market:
+                wl[s][ticker] = entry
+                continue
             entry["last_updated"] = datetime.now().strftime("%Y-%m-%d")
             entry["strategy"] = strategy
             wl[strategy][ticker] = entry
@@ -423,6 +450,7 @@ def _normalize_watchlist(data: dict) -> dict:
             for ticker, entry in bucket.items():
                 e = dict(entry or {})
                 e["strategy"] = target
+                e["market"] = _normalize_market(e.get("market"))
                 out[target][ticker] = e
 
     # New shape: {"SEPA": {...}, "QM": {...}, "ML": {...}}
@@ -433,6 +461,21 @@ def _normalize_watchlist(data: dict) -> dict:
         for ticker, entry in bucket.items():
             e = dict(entry or {})
             e["strategy"] = s
+            e["market"] = _normalize_market(e.get("market"))
             out[s][ticker] = e
 
+    return out
+
+
+def filter_by_market(wl: dict, market: str) -> dict:
+    """Return a strategy-grouped watchlist filtered by market code."""
+    target = _normalize_market(market)
+    src = _normalize_watchlist(wl)
+    out = _empty_watchlist()
+    for s in STRATEGY_KEYS:
+        for ticker, entry in src.get(s, {}).items():
+            e = dict(entry or {})
+            if _normalize_market(e.get("market")) != target:
+                continue
+            out[s][ticker] = e
     return out

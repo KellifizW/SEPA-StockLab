@@ -13,6 +13,7 @@ from routes.helpers import (
     _clean, _get_account_size,
     _qm_analyze_cache, _ml_analyze_cache,
     _load_combined_last, _load_market_last,
+    _normalize_market, _load_market_mode,
 )
 
 bp = Blueprint("analyze_api", __name__)
@@ -197,7 +198,8 @@ def htmx_market_result(jid):
 @bp.route("/htmx/market/result/last")
 def htmx_market_result_last():
     """Render latest cached market assessment if available."""
-    cached = _load_market_last()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    cached = _load_market_last(market=market)
     d = cached.get("result") if isinstance(cached, dict) else None
     if not isinstance(d, dict) or not d:
         return make_response(
@@ -236,7 +238,8 @@ def htmx_ml_analyze_result():
 
 @bp.route("/htmx/dashboard/highlights")
 def htmx_dashboard_highlights():
-    r = _load_combined_last()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    r = _load_combined_last(market=market)
     return render_template("_dashboard_highlights.html", r=r)
 
 

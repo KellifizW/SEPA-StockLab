@@ -69,6 +69,20 @@ app = Flask(__name__)
 app.secret_key = "minervini-sepa-2026"
 app.config['TEMPLATES_AUTO_RELOAD'] = True  # Reload templates on-disk without server restart
 
+
+@app.context_processor
+def _inject_market_context():
+    """Provide active market context for all rendered templates."""
+    try:
+        from routes.helpers import _load_market_mode
+        active_market = _load_market_mode()
+    except Exception:
+        active_market = "US"
+    return {
+        "active_market": active_market,
+        "active_market_label": "美股 US" if active_market == "US" else "港股 HK",
+    }
+
 # ── Telegram Bot State ─────────────────────────────────────────────────────
 _tg_enabled = C.TG_ENABLED  # Track current enable/disable state
 _tg_thread = None           # Will be set in __main__
@@ -110,12 +124,25 @@ def _set_cache(key, data):
 # ── last scan persistence ─────────────────────────────────────────────────────
 _LAST_SCAN_FILE = ROOT / C.DATA_DIR / "last_scan.json"
 
-def _save_last_scan(rows: list, all_rows: Optional[list] = None):
+
+def _last_scan_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped SEPA last scan file path."""
+    from routes.helpers import _normalize_market
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"last_scan_{m}.json"
+
+def _save_last_scan(rows: list, all_rows: Optional[list] = None, market: Optional[str] = None):
+    from routes.helpers import _normalize_market
     try:
+        normalized_market = _normalize_market(market)
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
                 "all_scored_count": len(all_rows) if all_rows else len(rows),
-                "all_scored": all_rows or []}
+                "all_scored": all_rows or [],
+                "market": normalized_market}
+        _last_scan_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+        # Keep legacy file in sync for backward compatibility.
         _LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
         # Also save dated CSV (passed stocks only)
@@ -156,10 +183,19 @@ def _save_last_scan(rows: list, all_rows: Optional[list] = None):
             logging.warning(f"DB scan_history write skipped: {exc}")
 
 
-def _load_last_scan() -> dict:
+def _load_last_scan(market: Optional[str] = None) -> dict:
+    from routes.helpers import _normalize_market
+    normalized_market = _normalize_market(market)
+    market_file = _last_scan_file_for_market(normalized_market)
     try:
-        if _LAST_SCAN_FILE.exists():
-            return json.loads(_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
+        if normalized_market == "US" and _LAST_SCAN_FILE.exists():
+            data = json.loads(_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
     except Exception:
         pass
     return {}
@@ -169,12 +205,25 @@ def _load_last_scan() -> dict:
 _QM_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "qm_last_scan.json"
 
 
-def _save_qm_last_scan(rows: list, all_rows: Optional[list] = None):
+def _qm_last_scan_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped QM last scan file path."""
+    from routes.helpers import _normalize_market
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"qm_last_scan_{m}.json"
+
+
+def _save_qm_last_scan(rows: list, all_rows: Optional[list] = None, market: Optional[str] = None):
+    from routes.helpers import _normalize_market
     try:
+        normalized_market = _normalize_market(market)
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
                 "all_scored_count": len(all_rows) if all_rows else len(rows),
-                "all_scored": all_rows or []}
+                "all_scored": all_rows or [],
+                "market": normalized_market}
+        _qm_last_scan_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+        # Keep legacy file in sync for backward compatibility.
         _QM_LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
@@ -196,10 +245,19 @@ def _save_qm_last_scan(rows: list, all_rows: Optional[list] = None):
             logging.warning(f"DB qm_scan_history write skipped: {exc}")
 
 
-def _load_qm_last_scan() -> dict:
+def _load_qm_last_scan(market: Optional[str] = None) -> dict:
+    from routes.helpers import _normalize_market
+    normalized_market = _normalize_market(market)
+    market_file = _qm_last_scan_file_for_market(normalized_market)
     try:
-        if _QM_LAST_SCAN_FILE.exists():
-            return json.loads(_QM_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
+        if normalized_market == "US" and _QM_LAST_SCAN_FILE.exists():
+            data = json.loads(_QM_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
     except Exception:
         pass
     return {}
@@ -209,12 +267,25 @@ def _load_qm_last_scan() -> dict:
 _ML_LAST_SCAN_FILE = ROOT / C.DATA_DIR / "ml_last_scan.json"
 
 
-def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None):
+def _ml_last_scan_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped ML last scan file path."""
+    from routes.helpers import _normalize_market
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"ml_last_scan_{m}.json"
+
+
+def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None, market: Optional[str] = None):
+    from routes.helpers import _normalize_market
     try:
+        normalized_market = _normalize_market(market)
         data = {"saved_at": datetime.now().isoformat(),
                 "count": len(rows), "rows": rows,
                 "all_scored_count": len(all_rows) if all_rows else len(rows),
-                "all_scored": all_rows or []}
+                "all_scored": all_rows or [],
+                "market": normalized_market}
+        _ml_last_scan_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+        # Keep legacy file in sync for backward compatibility.
         _ML_LAST_SCAN_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
@@ -235,10 +306,19 @@ def _save_ml_last_scan(rows: list, all_rows: Optional[list] = None):
             logging.warning(f"DB ml_scan_history write skipped: {exc}")
 
 
-def _load_ml_last_scan() -> dict:
+def _load_ml_last_scan(market: Optional[str] = None) -> dict:
+    from routes.helpers import _normalize_market
+    normalized_market = _normalize_market(market)
+    market_file = _ml_last_scan_file_for_market(normalized_market)
     try:
-        if _ML_LAST_SCAN_FILE.exists():
-            return json.loads(_ML_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
+        if normalized_market == "US" and _ML_LAST_SCAN_FILE.exists():
+            data = json.loads(_ML_LAST_SCAN_FILE.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
     except Exception:
         pass
     return {}
@@ -248,12 +328,22 @@ def _load_ml_last_scan() -> dict:
 _COMBINED_LAST_FILE = ROOT / C.DATA_DIR / "combined_last_scan.json"
 
 
+def _combined_last_file_for_market(market: Optional[str]) -> Path:
+    """Return market-scoped combined summary file path."""
+    from routes.helpers import _normalize_market
+    m = _normalize_market(market).lower()
+    return ROOT / C.DATA_DIR / f"combined_last_scan_{m}.json"
+
+
 def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
-                        sepa_csv="", qm_csv="", ml_rows=None, ml_csv=""):
+                        sepa_csv="", qm_csv="", ml_rows=None, ml_csv="",
+                        market: Optional[str] = None):
     """Persist last combined scan summary for dashboard display."""
+    from routes.helpers import _normalize_market
     if ml_rows is None:
         ml_rows = []
     try:
+        normalized_market = _normalize_market(market)
         # Compute a ≥4-star filtered count to match the default display filter
         # in combined_scan.html (minStar default = 4)
         _default_star = 4.0
@@ -281,17 +371,31 @@ def _save_combined_last(sepa_rows, qm_rows, market_env, timing,
             "sepa_csv":      sepa_csv,
             "qm_csv":        qm_csv,
             "ml_csv":        ml_csv,
+            "market":        normalized_market,
         }
+        _combined_last_file_for_market(normalized_market).write_text(
+            json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+
+        # Keep legacy file in sync for backward compatibility.
         _COMBINED_LAST_FILE.write_text(
             json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception as exc:
         logging.warning("Could not save combined_last_scan: %s", exc)
 
 
-def _load_combined_last() -> dict:
+def _load_combined_last(market: Optional[str] = None) -> dict:
+    from routes.helpers import _normalize_market
+    normalized_market = _normalize_market(market)
+    market_file = _combined_last_file_for_market(normalized_market)
     try:
-        if _COMBINED_LAST_FILE.exists():
-            return json.loads(_COMBINED_LAST_FILE.read_text(encoding="utf-8"))
+        if market_file.exists():
+            data = json.loads(market_file.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
+        if normalized_market == "US" and _COMBINED_LAST_FILE.exists():
+            data = json.loads(_COMBINED_LAST_FILE.read_text(encoding="utf-8"))
+            data.setdefault("market", normalized_market)
+            return data
     except Exception:
         pass
     return {}
@@ -518,39 +622,23 @@ def _clean(obj):
 # Helper: load persisted data
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _load_watchlist() -> dict:
-    """Load watchlist from modules (supports both DuckDB and JSON)."""
+def _load_watchlist(market: Optional[str] = None) -> dict:
+    """Load watchlist via shared helpers (supports market filter)."""
     try:
-        from modules.watchlist import _load
-        return _load()
+        from routes.helpers import _load_watchlist as _shared_load_watchlist
+        return _shared_load_watchlist(market)
     except Exception as exc:
-        logger.warning("Failed to load watchlist from modules: %s", exc)
-        # Fallback to direct JSON read
-        p = ROOT / C.DATA_DIR / "watchlist.json"
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        logger.warning("Failed to load watchlist from shared helpers: %s", exc)
     return {"SEPA": {}, "QM": {}, "ML": {}}
 
 
-def _load_positions() -> dict:
-    """Load positions from modules (supports both DuckDB and JSON)."""
+def _load_positions(market: Optional[str] = None) -> dict:
+    """Load positions via shared helpers (supports market filter)."""
     try:
-        from modules.position_monitor import _load
-        data = _load()
-        return data.get("positions", {})
+        from routes.helpers import _load_positions as _shared_load_positions
+        return _shared_load_positions(market)
     except Exception as exc:
-        logger.warning("Failed to load positions from modules: %s", exc)
-        # Fallback to direct JSON read
-        p = ROOT / C.DATA_DIR / "positions.json"
-        if p.exists():
-            try:
-                raw = json.loads(p.read_text(encoding="utf-8"))
-                return raw.get("positions", {})
-            except Exception:
-                pass
+        logger.warning("Failed to load positions from shared helpers: %s", exc)
     return {}
 
 
@@ -570,10 +658,14 @@ def dashboard():
         _get_account_size,
         _load_currency_setting,
         _load_market_last,
+        _load_market_mode,
+        _get_market_account_size,
+        _get_market_split_pct,
     )
 
-    wl = _load_watchlist()
-    pos = _load_positions()
+    active_market = _load_market_mode()
+    wl = _load_watchlist(active_market)
+    pos = _load_positions(active_market)
     wl_counts = {g: len(v) for g, v in wl.items()}
     total_watchlist = sum(wl_counts.values())
 
@@ -597,15 +689,16 @@ def dashboard():
     watchlist_rows.sort(key=lambda r: r["ticker"])
 
     account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    market_account_size = _get_market_account_size(account_size, active_market)
     _, usd_hkd_rate = _load_currency_setting()
-    market_cached = _load_market_last()
+    market_cached = _load_market_last(active_market)
     market_summary = market_cached.get("result") if isinstance(market_cached, dict) else {}
     market_cached_at = market_cached.get("saved_at") if isinstance(market_cached, dict) else ""
 
     # Dashboard baseline: treat NAV as HKD native amount for display toggle.
     display_currency = "HKD"
     currency_symbol = "HK$"
-    account_size_display = f"HK${account_size:,.2f}"
+    account_size_display = f"HK${market_account_size:,.2f}"
 
     return render_template(
         "dashboard.html",
@@ -616,11 +709,12 @@ def dashboard():
         market_summary=market_summary or {},
         market_cached_at=market_cached_at,
         positions=pos,
-        account_size=account_size,
+        account_size=market_account_size,
         account_size_display=account_size_display,
         currency=display_currency,
         currency_symbol=currency_symbol,
         usd_hkd_rate=usd_hkd_rate,
+        market_split_pct=_get_market_split_pct(active_market),
         nav_sync_time=nav_sync_time,
         nav_sync_status=nav_sync_status,
         today=date.today().isoformat(),
@@ -645,15 +739,27 @@ def analyze_page():
 
 @app.route("/watchlist")
 def watchlist_page():
-    wl = _load_watchlist()
+    from routes.helpers import _load_market_mode
+    active_market = _load_market_mode()
+    wl = _load_watchlist(active_market)
     return render_template("watchlist.html", wl=wl)
 
 
 @app.route("/positions")
 def positions_page():
-    pos = _load_positions()
-    return render_template("positions.html", positions=pos,
-                           account_size=C.ACCOUNT_SIZE)
+    from routes.helpers import _load_market_mode, _get_market_account_size, _get_account_size, _get_market_split_pct
+    active_market = _load_market_mode()
+    pos = _load_positions(active_market)
+    total_account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    market_account_size = _get_market_account_size(total_account_size, active_market)
+    return render_template(
+        "positions.html",
+        positions=pos,
+        account_size=market_account_size,
+        market_split_pct=_get_market_split_pct(active_market),
+        nav_sync_time=nav_sync_time,
+        nav_sync_status=nav_sync_status,
+    )
 
 
 @app.route("/market")
@@ -738,7 +844,9 @@ def ml_guide_page():
 
 @app.route("/api/scan/run", methods=["POST"])
 def api_scan_run():
+    from routes.helpers import _load_market_mode, _normalize_market
     data        = request.get_json(silent=True) or {}
+    market      = _normalize_market(data.get("market") or _load_market_mode())
     refresh_rs    = data.get("refresh_rs", False)
     stage1_source = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
     jid           = _new_job()
@@ -802,7 +910,7 @@ def api_scan_run():
 
             rows = _to_rows(df_passed)
             all_rows = _to_rows(df_all)
-            _save_last_scan(rows, all_rows=all_rows)
+            _save_last_scan(rows, all_rows=all_rows, market=market)
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
         except Exception as exc:
@@ -843,7 +951,9 @@ def api_scan_cancel(jid):
 @app.route("/api/scan/last", methods=["GET"])
 def api_scan_last():
     """Return passed-only or all-scored results depending on ?include_all=1."""
-    data = _load_last_scan()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    data = _load_last_scan(market=market)
     include_all = request.args.get("include_all", "0") == "1"
     if not include_all:
         # Strip the heavy all_scored list to reduce payload
@@ -974,7 +1084,9 @@ def api_scan_status(jid):
 
 @app.route("/api/qm/scan/run", methods=["POST"])
 def api_qm_scan_run():
+    from routes.helpers import _load_market_mode, _normalize_market
     data     = request.get_json(silent=True) or {}
+    market   = _normalize_market(data.get("market") or _load_market_mode())
     min_star = float(data.get("min_star", getattr(C, "QM_SCAN_MIN_STAR", 3.0)))
     top_n    = int(data.get("top_n", getattr(C, "QM_SCAN_TOP_N", 50)))
     stage1_source = data.get("stage1_source") or None  # None → use C.STAGE1_SOURCE
@@ -1036,7 +1148,7 @@ def api_qm_scan_run():
 
             rows = _to_rows(df_passed)
             all_rows = _to_rows(df_all)
-            _save_qm_last_scan(rows, all_rows=all_rows)
+            _save_qm_last_scan(rows, all_rows=all_rows, market=market)
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
         except Exception as exc:
@@ -1064,7 +1176,9 @@ def api_qm_scan_run():
 @app.route("/api/combined/scan/run", methods=["POST"])
 def api_combined_scan_run():
     """Run unified combined SEPA + QM scan with shared data pipeline."""
+    from routes.helpers import _load_market_mode, _normalize_market
     data          = request.get_json(silent=True) or {}
+    market        = _normalize_market(data.get("market") or _load_market_mode())
     refresh_rs    = data.get("refresh_rs", False)
     stage1_source = data.get("stage1_source") or None
     min_star      = float(data["min_star"]) if "min_star" in data else None
@@ -1226,17 +1340,17 @@ def api_combined_scan_run():
             logging.info(f"[COMBINED SCAN {jid}] Saving combined summary...")
             _save_combined_last(sepa_rows, qm_rows, market_env, timing,
                                 sepa_csv_path, qm_csv_path, ml_rows=ml_rows,
-                                ml_csv=ml_csv_path)
+                                ml_csv=ml_csv_path, market=market)
 
             # ── Mirror results to individual scan endpoints ──────────────
             # This makes /api/scan/last and /api/qm/scan/last reflect the
             # latest combined run, so individual scan pages stay up-to-date.
             logging.info(f"[COMBINED SCAN {jid}] Mirroring results to individual endpoints...")
-            _save_last_scan(sepa_rows, all_rows=sepa_all_rows)
+            _save_last_scan(sepa_rows, all_rows=sepa_all_rows, market=market)
             if not qm_was_blocked:
-                _save_qm_last_scan(qm_rows, all_rows=qm_all_rows)
+                _save_qm_last_scan(qm_rows, all_rows=qm_all_rows, market=market)
             if not ml_was_blocked:
-                _save_ml_last_scan(ml_rows, all_rows=ml_all_rows)
+                _save_ml_last_scan(ml_rows, all_rows=ml_all_rows, market=market)
 
             result = {
                 "sepa": {
@@ -1258,6 +1372,7 @@ def api_combined_scan_run():
                 "sepa_csv": sepa_csv_path,
                 "qm_csv":   qm_csv_path,
                 "ml_csv":   ml_csv_path,
+                "active_market": market,
             }
 
             log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
@@ -1385,7 +1500,9 @@ def api_combined_scan_cancel(jid):
 @app.route("/api/combined/scan/last", methods=["GET"])
 def api_combined_scan_last():
     """Return the most recent combined scan summary for dashboard display."""
-    return jsonify(_load_combined_last())
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return jsonify(_load_combined_last(market=market))
 
 
 @app.route("/api/qm/scan/cancel/<jid>", methods=["POST"])
@@ -1404,7 +1521,9 @@ def api_qm_scan_cancel(jid):
 @app.route("/api/qm/scan/last", methods=["GET"])
 def api_qm_scan_last():
     """Return last QM scan results (passed-only by default, all if ?include_all=1)."""
-    data = _load_qm_last_scan()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    data = _load_qm_last_scan(market=market)
     include_all = request.args.get("include_all", "0") == "1"
     if not include_all:
         data.pop("all_scored", None)
@@ -1533,7 +1652,9 @@ def api_qm_analyze():
 
 @app.route("/api/ml/scan/run", methods=["POST"])
 def api_ml_scan_run():
+    from routes.helpers import _load_market_mode, _normalize_market
     data               = request.get_json(silent=True) or {}
+    market             = _normalize_market(data.get("market") or _load_market_mode())
     min_star           = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
     top_n              = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
     scanner_mode       = str(data.get("scanner_mode", "standard")).strip().lower()
@@ -1615,7 +1736,7 @@ def api_ml_scan_run():
                     clean_rows.append(row)
                 rows = clean_rows
             
-            _save_ml_last_scan(rows, all_rows=all_rows)
+            _save_ml_last_scan(rows, all_rows=all_rows, market=market)
 
             # Theme report and triple channel summary
             themes = []
@@ -1700,7 +1821,9 @@ def api_ml_scan_cancel(jid):
 @app.route("/api/ml/scan/last", methods=["GET"])
 def api_ml_scan_last():
     """Return last ML scan results."""
-    data = _load_ml_last_scan()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    data = _load_ml_last_scan(market=market)
     include_all = request.args.get("include_all", "0") == "1"
     if not include_all:
         data.pop("all_scored", None)
@@ -2049,6 +2172,9 @@ def api_vcp_status(jid):
 
 @app.route("/api/market/run", methods=["POST"])
 def api_market_run():
+    data = request.get_json(silent=True) or {}
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     jid = _new_job()
     _market_job_ids.add(jid)
     from routes.helpers import _save_market_last
@@ -2083,7 +2209,7 @@ def api_market_run():
                     logging.warning(f"DB market_env write skipped: {exc}")
 
             if result:
-                _save_market_last(_clean(result))
+                _save_market_last(_clean(result), market=market)
             
             log_rel = str(market_log_file.relative_to(ROOT)) if market_log_file.exists() else ""
             _finish_job(jid, result=_clean(result), log_file=log_rel)
@@ -2109,9 +2235,11 @@ def api_market_status(jid):
 
 @app.route("/api/market/last", methods=["GET"])
 def api_market_last():
-    from routes.helpers import _load_market_last
+    from routes.helpers import _load_market_last, _load_market_mode, _normalize_market
 
-    cached = _load_market_last()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+
+    cached = _load_market_last(market=market)
     d = cached.get("result") if isinstance(cached, dict) else None
     if not isinstance(d, dict) or not d:
         return jsonify({"ok": False, "error": "No cached market assessment"}), 404
@@ -2119,6 +2247,7 @@ def api_market_last():
     return jsonify({
         "ok": True,
         "saved_at": cached.get("saved_at"),
+        "market": cached.get("market") or market,
         "result": d,
     })
 
@@ -2129,7 +2258,9 @@ def api_market_last():
 
 @app.route("/api/watchlist", methods=["GET"])
 def api_watchlist_get():
-    return jsonify(_load_watchlist())
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return jsonify(_load_watchlist(market))
 
 
 @app.route("/api/watchlist/add", methods=["POST"])
@@ -2138,13 +2269,15 @@ def api_watchlist_add():
     ticker = str(data.get("ticker", "")).upper().strip()
     strategy = data.get("strategy") or data.get("grade")
     note   = data.get("note", "")
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     jid    = _new_job()
 
     def _run():
         try:
             from modules.watchlist import add
-            add(ticker, grade=strategy, note=note)
-            _finish_job(jid, result={"ticker": ticker, "watchlist": _load_watchlist()})
+            add(ticker, grade=strategy, note=note, market=market)
+            _finish_job(jid, result={"ticker": ticker, "watchlist": _load_watchlist(market)})
         except Exception as exc:
             _finish_job(jid, error=str(exc))
 
@@ -2161,10 +2294,12 @@ def api_watchlist_add_status(jid):
 def api_watchlist_remove():
     data   = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import remove
-        remove(ticker)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        remove(ticker, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -2173,10 +2308,12 @@ def api_watchlist_remove():
 def api_watchlist_promote():
     data   = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import promote
-        promote(ticker)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        promote(ticker, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -2185,23 +2322,27 @@ def api_watchlist_promote():
 def api_watchlist_demote():
     data   = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import demote
-        demote(ticker)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        demote(ticker, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.route("/api/watchlist/refresh", methods=["POST"])
 def api_watchlist_refresh():
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
     jid = _new_job()
 
     def _run():
         try:
             from modules.watchlist import refresh
             refresh()
-            _finish_job(jid, result={"watchlist": _load_watchlist()})
+            _finish_job(jid, result={"watchlist": _load_watchlist(market)})
         except Exception as exc:
             _finish_job(jid, error=str(exc))
 
@@ -2219,10 +2360,12 @@ def api_watchlist_move():
     data = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
     strategy = str(data.get("strategy", "")).upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     try:
         from modules.watchlist import move_to_strategy
-        move_to_strategy(ticker, strategy)
-        return jsonify({"ok": True, "watchlist": _load_watchlist()})
+        move_to_strategy(ticker, strategy, market=market)
+        return jsonify({"ok": True, "watchlist": _load_watchlist(market)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -2256,16 +2399,20 @@ def _htmx_wl_rows(wl, trigger_msg=None):
 @app.route("/htmx/watchlist/body")
 def htmx_wl_body():
     """Return full tbody rows + OOB badge updates.  Called via htmx.ajax() after async jobs."""
-    return _htmx_wl_rows(_load_watchlist())
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return _htmx_wl_rows(_load_watchlist(market))
 
 
 @app.route("/htmx/watchlist/promote", methods=["POST"])
 def htmx_wl_promote():
     ticker = (request.form.get("ticker") or "").upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import promote
-        promote(ticker)
-        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} promoted")
+        promote(ticker, market=market)
+        return _htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} promoted")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -2275,10 +2422,12 @@ def htmx_wl_promote():
 @app.route("/htmx/watchlist/demote", methods=["POST"])
 def htmx_wl_demote():
     ticker = (request.form.get("ticker") or "").upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import demote
-        demote(ticker)
-        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} demoted")
+        demote(ticker, market=market)
+        return _htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} demoted")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -2288,10 +2437,12 @@ def htmx_wl_demote():
 @app.route("/htmx/watchlist/remove", methods=["POST"])
 def htmx_wl_remove():
     ticker = (request.form.get("ticker") or "").upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import remove
-        remove(ticker)
-        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} removed from watchlist")
+        remove(ticker, market=market)
+        return _htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} removed from watchlist")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -2302,10 +2453,12 @@ def htmx_wl_remove():
 def htmx_wl_move():
     ticker = (request.form.get("ticker") or "").upper().strip()
     strategy = (request.form.get("strategy") or "").upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.form.get("market") or _load_market_mode())
     try:
         from modules.watchlist import move_to_strategy
-        move_to_strategy(ticker, strategy)
-        return _htmx_wl_rows(_load_watchlist(), f"✅ {ticker} moved to {strategy}")
+        move_to_strategy(ticker, strategy, market=market)
+        return _htmx_wl_rows(_load_watchlist(market), f"✅ {ticker} moved to {strategy}")
     except Exception as exc:
         resp = make_response("", 200)
         resp.headers["HX-Trigger"] = json.dumps({"showToast": f"❌ {exc}"})
@@ -2318,7 +2471,9 @@ def htmx_wl_move():
 
 @app.route("/api/positions", methods=["GET"])
 def api_positions_get():
-    return jsonify(_load_positions())
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return jsonify(_load_positions(market))
 
 
 @app.route("/api/positions/add", methods=["POST"])
@@ -2328,6 +2483,8 @@ def api_positions_add():
     
     data   = request.get_json(silent=True) or {}
     ticker = str(data.get("ticker", "")).upper().strip()
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     
     logging.info(f"[API] positions/add START: {ticker}")
     
@@ -2343,6 +2500,7 @@ def api_positions_add():
             float(data["target"]) if data.get("target") else None,
             str(data.get("note", "")),
             str(data.get("pool") or data.get("strategy") or "FREE"),
+            market,
         )
         t2 = time.time()
         logging.info(f"[API] add_position() completed in {(t2-t1):.3f}s")
@@ -2372,6 +2530,7 @@ def api_positions_add():
                 "rr": round(rr, 2),
                 "risk_dollar": round(risk_dol, 2),
                 "strategy": str(data.get("pool") or data.get("strategy") or "FREE").upper(),
+                "market": market,
                 "buy_date": None,
                 "days_held": 0,
                 "note": str(data.get("note", "")),
@@ -2396,6 +2555,8 @@ def api_positions_close():
     ticker = str(data.get("ticker", "")).upper().strip()
     exit_price = float(data.get("exit_price", 0) or 0)
     reason = str(data.get("reason", ""))
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     shares_to_close_raw = data.get("shares_to_close")
     ibkr_execute = bool(data.get("ibkr_execute", False))
 
@@ -2404,7 +2565,7 @@ def api_positions_close():
     if exit_price <= 0:
         return jsonify({"ok": False, "error": "exit_price must be > 0"}), 400
 
-    positions = _load_positions()
+    positions = _load_positions(market)
     pos = positions.get(ticker)
     if not pos:
         return jsonify({"ok": False, "error": f"{ticker} not found in open positions"}), 404
@@ -2458,7 +2619,7 @@ def api_positions_close():
         )
         return jsonify({
             "ok": True,
-            "positions": _load_positions(),
+            "positions": _load_positions(market),
             "ibkr": ibkr_result,
             "closed_shares": qty_to_sell,
         })
@@ -2524,6 +2685,8 @@ def htmx_positions_add():
         target    = float(target_raw) if target_raw else None
         note      = request.form.get("note", "")
         pool      = (request.form.get("pool") or request.form.get("strategy") or "FREE").upper().strip()
+        from routes.helpers import _load_market_mode, _normalize_market
+        market    = _normalize_market(request.form.get("market") or _load_market_mode())
 
         if not ticker or not buy_price or not shares or not stop_loss:
             resp = make_response("", 200)
@@ -2531,7 +2694,7 @@ def htmx_positions_add():
             return resp
 
         from modules.position_monitor import add_position
-        add_position(ticker, buy_price, shares, stop_loss, target, note, pool)
+        add_position(ticker, buy_price, shares, stop_loss, target, note, pool, market)
 
         # Compute display values (mirrors api_positions_add logic)
         if target is None:
@@ -2548,6 +2711,7 @@ def htmx_positions_add():
             "rr":          round(rr, 2),
             "risk_dollar": round(risk_dol, 2),
             "strategy":    pool,
+            "market":      market,
             "days_held":   0,
             "note":        note,
         }
@@ -2620,9 +2784,11 @@ def htmx_market_result(jid):
 
 @app.route("/htmx/market/result/last")
 def htmx_market_result_last():
-    from routes.helpers import _load_market_last
+    from routes.helpers import _load_market_last, _load_market_mode, _normalize_market
 
-    cached = _load_market_last()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+
+    cached = _load_market_last(market=market)
     d = cached.get("result") if isinstance(cached, dict) else None
     if not isinstance(d, dict) or not d:
         return make_response(
@@ -2680,6 +2846,8 @@ def api_quick_add_watch():
     ticker = str(data.get("ticker", "")).upper().strip()
     strategy = (data.get("strategy") or data.get("grade") or "SEPA")
     note = data.get("note", "")
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     
     if not ticker:
         return jsonify({"ok": False, "error": "缺少 Ticker"}), 400
@@ -2689,14 +2857,15 @@ def api_quick_add_watch():
         from modules import db
         
         # Add to watchlist with target strategy bucket
-        add(ticker, grade=strategy, note=note)
-        db.wl_save(_load_watchlist())
+        add(ticker, grade=strategy, note=note, market=market)
+        db.wl_save(_load_watchlist(market))
         
         # Store in session for potential client-side tracking
-        wl = _load_watchlist()
+        wl = _load_watchlist(market)
         return jsonify({
             "ok": True,
             "message": f"✅ {ticker} 已加入觀察名單 ({str(strategy).upper()})",
+            "market": market,
             "watchlist": wl
         })
     except Exception as exc:
@@ -2716,6 +2885,8 @@ def api_quick_add_position():
     target = float(target) if target else None
     strategy = str(data.get("strategy") or "FREE").upper().strip()
     note = data.get("note", "")
+    from routes.helpers import _load_market_mode, _normalize_market
+    market = _normalize_market(data.get("market") or _load_market_mode())
     
     if not ticker or not buy_price or not shares or not stop_loss:
         return jsonify({"ok": False, "error": "缺少必要資料"}), 400
@@ -2725,12 +2896,13 @@ def api_quick_add_position():
         
         # Add position into selected pool so exit engine applies corresponding rules.
         pool = strategy if strategy in ("QM", "ML", "FREE") else "FREE"
-        add_position(ticker, buy_price, shares, stop_loss, target, note, pool)
+        add_position(ticker, buy_price, shares, stop_loss, target, note, pool, market)
 
-        pos = _load_positions()
+        pos = _load_positions(market)
         return jsonify({
             "ok": True,
             "message": f"✅ {ticker} 持倉已新增",
+            "market": market,
             "positions": pos
         })
     except Exception as exc:
@@ -5064,8 +5236,9 @@ register_blueprints(app)
 @app.route("/htmx/dashboard/highlights")
 def htmx_dashboard_highlights():
     try:
-        from routes.helpers import _load_combined_last
-        r = _load_combined_last()
+        from routes.helpers import _load_combined_last, _load_market_mode, _normalize_market
+        market = _normalize_market(request.args.get("market") or _load_market_mode())
+        r = _load_combined_last(market=market)
     except Exception:
         r = {}
     return render_template("_dashboard_highlights.html", r=r)

@@ -40,6 +40,7 @@
     </div>
   </div>
 </div>
+<div class="text-muted small mb-3">當前市場 Current Market: <span class="badge {% if active_market == 'US' %}bg-info{% else %}bg-success{% endif %}">{{ active_market_label }}</span></div>
 
 <!-- Add Position Form -->
 <div class="card mb-3">
@@ -55,6 +56,7 @@
             hx-target="#posBody"
             hx-swap="beforeend"
             hx-on::after-request="handlePosAdded(event)">
+      <input type="hidden" name="market" value="{{ active_market }}">
       <div class="row g-2 align-items-end">
         <div class="col-6 col-md-2">
           <label class="form-label text-muted small">Ticker</label>
@@ -132,11 +134,11 @@
           {% else %}
             {% set analyze_url = '/analyze?ticker=' ~ t %}
           {% endif %}
-          <tr id="pos-{{ t }}" data-ticker="{{ t }}" data-strategy="{{ p.strategy|default('FREE') }}">
+          <tr id="pos-{{ t }}" data-ticker="{{ t }}" data-strategy="{{ p.strategy|default('FREE') }}" data-market="{{ p.market|default('US') }}">
             <td><a href="{{ analyze_url }}" class="fw-bold text-decoration-none" style="color:var(--accent)">{{ t }}</a></td>
             <td>
               {%- if p.strategy -%}
-                <span class="badge bg-dark" style="border:1px solid #30363d; color:#58a6ff; font-size:0.75rem;">{{ p.strategy }}</span>
+                <span class="badge bg-dark" style="border:1px solid #30363d; color:#58a6ff; font-size:0.75rem;">{{ p.market|default('US') }}/{{ p.strategy }}</span>
               {%- else -%}
                 <span class="text-muted small">—</span>
               {%- endif -%}
@@ -283,6 +285,7 @@ async function confirmClose() {
       exit_price:exitP,
       reason,
       shares_to_close: sharesToClose,
+      market: '{{ active_market }}',
       ibkr_execute: ibkrExecute,
     })
   }).then(x=>x.json());

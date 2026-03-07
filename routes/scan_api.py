@@ -18,6 +18,7 @@ from routes.helpers import (
     _save_ml_last_scan, _load_ml_last_scan,
     _save_combined_last, _load_combined_last,
     _save_combined_scan_csv,
+    _normalize_market, _load_market_mode,
     _cache_lock,
 )
 
@@ -31,6 +32,7 @@ bp = Blueprint("scan_api", __name__)
 @bp.route("/api/scan/run", methods=["POST"])
 def api_scan_run():
     data = request.get_json(silent=True) or {}
+    market = _normalize_market(data.get("market") or _load_market_mode())
     refresh_rs = data.get("refresh_rs", False)
     stage1_source = data.get("stage1_source") or None
     jid = _new_job()
@@ -58,7 +60,7 @@ def api_scan_run():
                 df_all = scan_result
             rows = df_to_rows(df_passed, "SEPA")
             all_rows = df_to_rows(df_all, "SEPA-all")
-            _save_last_scan(rows, all_rows=all_rows)
+            _save_last_scan(rows, all_rows=all_rows, market=market)
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
         except Exception as exc:
@@ -90,7 +92,8 @@ def api_scan_cancel(jid):
 
 @bp.route("/api/scan/last", methods=["GET"])
 def api_scan_last():
-    data = _load_last_scan()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    data = _load_last_scan(market=market)
     include_all = request.args.get("include_all", "0") == "1"
     if not include_all:
         data.pop("all_scored", None)
@@ -198,6 +201,7 @@ def api_scan_status(jid):
 @bp.route("/api/qm/scan/run", methods=["POST"])
 def api_qm_scan_run():
     data = request.get_json(silent=True) or {}
+    market = _normalize_market(data.get("market") or _load_market_mode())
     min_star = float(data.get("min_star", getattr(C, "QM_SCAN_MIN_STAR", 3.0)))
     top_n = int(data.get("top_n", getattr(C, "QM_SCAN_TOP_N", 50)))
     stage1_source = data.get("stage1_source") or None
@@ -227,7 +231,7 @@ def api_qm_scan_run():
                 df_all = result
             rows = df_to_rows(df_passed, "QM")
             all_rows = df_to_rows(df_all, "QM-all")
-            _save_qm_last_scan(rows, all_rows=all_rows)
+            _save_qm_last_scan(rows, all_rows=all_rows, market=market)
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
         except Exception as exc:
@@ -260,7 +264,8 @@ def api_qm_scan_cancel(jid):
 
 @bp.route("/api/qm/scan/last", methods=["GET"])
 def api_qm_scan_last():
-    data = _load_qm_last_scan()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    data = _load_qm_last_scan(market=market)
     include_all = request.args.get("include_all", "0") == "1"
     if not include_all:
         data.pop("all_scored", None)
@@ -322,6 +327,7 @@ def api_qm_scan_logs(jid):
 @bp.route("/api/combined/scan/run", methods=["POST"])
 def api_combined_scan_run():
     data = request.get_json(silent=True) or {}
+    market = _normalize_market(data.get("market") or _load_market_mode())
     refresh_rs = data.get("refresh_rs", False)
     stage1_source = data.get("stage1_source") or None
     min_star = float(data["min_star"]) if "min_star" in data else None
@@ -383,16 +389,17 @@ def api_combined_scan_run():
                 sepa_result.get("passed"), qm_result.get("passed"), scan_ts=_scan_ts,
             )
             _save_combined_last(sepa_rows, qm_rows, market_env, timing,
-                                sepa_csv_path, qm_csv_path)
-            _save_last_scan(sepa_rows, all_rows=sepa_all_rows)
+                                sepa_csv_path, qm_csv_path, market=market)
+            _save_last_scan(sepa_rows, all_rows=sepa_all_rows, market=market)
             if not qm_was_blocked:
-                _save_qm_last_scan(qm_rows, all_rows=qm_all_rows)
+                _save_qm_last_scan(qm_rows, all_rows=qm_all_rows, market=market)
 
             result = {
                 "sepa": {"passed": sepa_rows, "count": len(sepa_rows)},
                 "qm": {"passed": qm_rows, "count": len(qm_rows), "blocked": qm_was_blocked},
                 "market": market_env, "timing": timing,
                 "sepa_csv": sepa_csv_path, "qm_csv": qm_csv_path,
+                "active_market": market,
             }
             log_rel = str(combined_log_file.relative_to(ROOT)) if combined_log_file.exists() else ""
             _finish_job(jid, result=result, log_file=log_rel)
@@ -449,7 +456,8 @@ def api_combined_scan_cancel(jid):
 
 @bp.route("/api/combined/scan/last", methods=["GET"])
 def api_combined_scan_last():
-    return jsonify(_load_combined_last())
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    return jsonify(_load_combined_last(market=market))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -459,6 +467,7 @@ def api_combined_scan_last():
 @bp.route("/api/ml/scan/run", methods=["POST"])
 def api_ml_scan_run():
     data = request.get_json(silent=True) or {}
+    market = _normalize_market(data.get("market") or _load_market_mode())
     min_star = float(data.get("min_star", getattr(C, "ML_SCAN_MIN_STAR", 3.0)))
     top_n = int(data.get("top_n", getattr(C, "ML_SCAN_TOP_N", 50)))
     stage1_source = data.get("stage1_source") or None
@@ -527,7 +536,7 @@ def api_ml_scan_run():
             except Exception:
                 triple_summary = {"GAP": 0, "GAINER": 0, "LEADER": 0}
 
-            _save_ml_last_scan(rows, all_rows=all_rows, triple_summary=triple_summary)
+            _save_ml_last_scan(rows, all_rows=all_rows, triple_summary=triple_summary, market=market)
             log_rel = str(scan_log_file.relative_to(ROOT)) if scan_log_file.exists() else ""
             _finish_job(jid, result=rows, log_file=log_rel)
             try:
@@ -577,7 +586,8 @@ def api_ml_scan_cancel(jid):
 
 @bp.route("/api/ml/scan/last", methods=["GET"])
 def api_ml_scan_last():
-    data = _load_ml_last_scan()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    data = _load_ml_last_scan(market=market)
     include_all = request.args.get("include_all", "0") == "1"
     if not include_all:
         data.pop("all_scored", None)

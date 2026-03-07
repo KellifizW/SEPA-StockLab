@@ -16,6 +16,7 @@ from routes.helpers import (
     _load_watchlist, _load_positions, _latest_report,
     _market_job_ids,
     _save_market_last, _load_market_last,
+    _normalize_market, _load_market_mode,
 )
 
 bp = Blueprint("market_api", __name__)
@@ -63,6 +64,8 @@ def api_vcp_status(jid):
 
 @bp.route("/api/market/run", methods=["POST"])
 def api_market_run():
+    data = request.get_json(silent=True) or {}
+    market = _normalize_market(data.get("market") or _load_market_mode())
     jid = _new_job()
     _market_job_ids.add(jid)
 
@@ -92,7 +95,7 @@ def api_market_run():
                     logging.warning("DB market_env write skipped: %s", exc)
 
             if result:
-                _save_market_last(_clean(result))
+                _save_market_last(_clean(result), market=market)
 
             log_rel = str(market_log_file.relative_to(ROOT)) if market_log_file.exists() else ""
             _finish_job(jid, result=_clean(result), log_file=log_rel)
@@ -118,7 +121,8 @@ def api_market_status(jid):
 @bp.route("/api/market/last", methods=["GET"])
 def api_market_last():
     """Return the latest cached market assessment snapshot."""
-    cached = _load_market_last()
+    market = _normalize_market(request.args.get("market") or _load_market_mode())
+    cached = _load_market_last(market=market)
     d = cached.get("result") if isinstance(cached, dict) else None
     if not isinstance(d, dict) or not d:
         return jsonify({"ok": False, "error": "No cached market assessment"}), 404
@@ -126,6 +130,7 @@ def api_market_last():
     return jsonify({
         "ok": True,
         "saved_at": cached.get("saved_at"),
+        "market": cached.get("market") or market,
         "result": d,
     })
 

@@ -250,6 +250,7 @@ let _jobId = null;
 let _pollInterval = null;
 let _scanStartTime = null;
 let _lastRows = [];
+const ACTIVE_MARKET = '{{ active_market|default("US") }}';
 
 // Enable tooltips
 document.addEventListener('DOMContentLoaded', () => {
@@ -283,7 +284,7 @@ async function startScan() {
     const resp = await fetch('/api/qm/scan/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ min_star: minStar, top_n: topN, stage1_source: stage1Source })
+      body: JSON.stringify({ min_star: minStar, top_n: topN, stage1_source: stage1Source, market: ACTIVE_MARKET })
     });
     const data = await resp.json();
     _jobId = data.job_id;
@@ -386,7 +387,7 @@ function escapeHtml(text) {
 
 async function loadLast() {
   try {
-    const data = await fetch('/api/qm/scan/last').then(r => r.json());
+    const data = await fetch('/api/qm/scan/last?market=' + encodeURIComponent(ACTIVE_MARKET)).then(r => r.json());
     if (data.rows && data.rows.length > 0) {
       renderResults(data.rows);
       toast(`已載入上次掃描結果（${data.rows.length} 個設置）`, true);

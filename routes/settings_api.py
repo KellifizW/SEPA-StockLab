@@ -15,6 +15,8 @@ from routes.helpers import (
     ROOT, _LOG_DIR,
     _get_account_size, _save_nav_cache, _load_nav_cache,
     _load_currency_setting, _save_currency_setting, _convert_amount,
+    _load_market_mode, _save_market_mode, _normalize_market,
+    _get_market_account_size, _get_market_split_pct,
     _tg_enabled, _tg_thread,
 )
 
@@ -90,8 +92,43 @@ def api_update_account_size():
 def api_get_account_size():
     """Get current account size from IBKR or cache."""
     nav, last_sync, status = _get_account_size()
-    return jsonify({"ok": True, "nav": nav, "last_sync": last_sync,
-                    "sync_status": status})
+    market = _load_market_mode()
+    market_nav = _get_market_account_size(nav, market)
+    return jsonify({
+        "ok": True,
+        "nav": nav,
+        "market": market,
+        "market_nav": market_nav,
+        "market_split_pct": _get_market_split_pct(market),
+        "last_sync": last_sync,
+        "sync_status": status,
+    })
+
+
+@bp.route("/api/market-mode", methods=["GET"])
+def api_get_market_mode():
+    """Get currently active market mode (US/HK)."""
+    market = _load_market_mode()
+    return jsonify({
+        "ok": True,
+        "market": market,
+        "label": "美股 US" if market == "US" else "港股 HK",
+        "split_pct": _get_market_split_pct(market),
+    })
+
+
+@bp.route("/api/market-mode", methods=["POST"])
+def api_set_market_mode():
+    """Switch active market mode (US/HK)."""
+    data = request.get_json(silent=True) or {}
+    requested = _normalize_market(data.get("market"))
+    saved = _save_market_mode(requested)
+    return jsonify({
+        "ok": True,
+        "market": saved,
+        "label": "美股 US" if saved == "US" else "港股 HK",
+        "split_pct": _get_market_split_pct(saved),
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -273,6 +273,7 @@ let _jobId = null;
 let _pollInterval = null;
 let _scanStartTime = null;
 let _lastRows = [];
+const ACTIVE_MARKET = '{{ active_market|default("US") }}';
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("[data-bs-toggle=\"tooltip\"]").forEach(el =>
     new bootstrap.Tooltip(el, { placement: "top" })
@@ -314,7 +315,7 @@ async function loadCacheInfo() {
 
 async function loadSituationalAwareness() {
   try {
-    const data = await fetch("/api/market/env").then(r => r.json());
+    const data = await fetch("/api/market/env?market=" + encodeURIComponent(ACTIVE_MARKET)).then(r => r.json());
     if (!data) return;
     const regime = data.regime || "";
     const regimeClass = {
@@ -380,7 +381,8 @@ async function startScan() {
       body: JSON.stringify({
         min_star: minStar, top_n: topN,
         stage1_source: source,
-        use_universe_cache: useCache
+        use_universe_cache: useCache,
+        market: ACTIVE_MARKET
       })
     });
     const data = await resp.json();
@@ -454,7 +456,7 @@ function resetScanUI(done) {
 
 async function loadLast() {
   try {
-    const data = await fetch("/api/ml/scan/last").then(r => r.json());
+    const data = await fetch("/api/ml/scan/last?market=" + encodeURIComponent(ACTIVE_MARKET)).then(r => r.json());
     if (data.rows && data.rows.length > 0) {
       renderResults(data.rows);
       if (data.themes) renderThemes(data.themes);      if (data.triple_summary) renderTripleSummary(data.triple_summary);      toast("已載入上次掃描結果 (" + data.rows.length + " 隻)", true);

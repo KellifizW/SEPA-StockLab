@@ -79,6 +79,7 @@ let _marketPollId = null;
 let _marketStartTime = null;
 let _marketTimerId = null;
 let _newsImpactPollId = null;
+const ACTIVE_MARKET = '{{ active_market|default("US") }}';
 
 function _newsBadgeClass(direction) {
   const d = String(direction || '').toUpperCase();
@@ -194,14 +195,19 @@ function _setCacheMeta(text, cls = 'bg-secondary') {
 
 async function loadCachedAssessment() {
   try {
-    const meta = await fetch('/api/market/last').then(x => x.json());
+    const meta = await fetch('/api/market/last?market=' + encodeURIComponent(ACTIVE_MARKET)).then(x => x.json());
     if (!meta.ok) return false;
+    const responseMarket = String(meta.market || '').toUpperCase();
+    if (!responseMarket || responseMarket !== String(ACTIVE_MARKET).toUpperCase()) {
+      _setCacheMeta(`No ${ACTIVE_MARKET} cache`, 'bg-secondary');
+      return false;
+    }
 
     const cachedAt = meta.saved_at || (meta.result || {}).assessed_at || '';
     _setCacheMeta(`Cached: ${cachedAt}`, 'bg-info text-dark');
 
     document.getElementById('result').classList.remove('d-none');
-    htmx.ajax('GET', '/htmx/market/result/last', {target: '#result', swap: 'innerHTML'});
+    htmx.ajax('GET', '/htmx/market/result/last?market=' + encodeURIComponent(ACTIVE_MARKET), {target: '#result', swap: 'innerHTML'});
     return true;
   } catch (e) {
     console.debug('No market cache available:', e);
@@ -265,7 +271,11 @@ async function runAssess() {
   _marketStartTime = Date.now();
   _marketTimerId = setInterval(_updateTimer, 500);
 
-  const r = await fetch('/api/market/run', {method:'POST'}).then(x=>x.json());
+  const r = await fetch('/api/market/run', {
+    method:'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({market: ACTIVE_MARKET})
+  }).then(x=>x.json());
   const statusUrl = `/api/market/status/${r.job_id}`;
 
   _marketPollId = setInterval(async () => {

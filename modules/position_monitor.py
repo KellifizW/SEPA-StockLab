@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = ROOT / C.DATA_DIR / "positions.json"
 
+
+def _normalize_market(market: Optional[str]) -> str:
+    """Normalize market code to US/HK with safe fallback."""
+    default_market = str(getattr(C, "MARKET_DEFAULT", "US")).upper().strip()
+    m = (market or default_market or "US").upper().strip()
+    return m if m in ("US", "HK") else "US"
+
 _GREEN  = "\033[92m"
 _YELLOW = "\033[93m"
 _RED    = "\033[91m"
@@ -58,6 +65,7 @@ def _load() -> dict:
             # ── backward compat: fill pool fields for legacy positions ──
             for _tk, pos in data.get("positions", {}).items():
                 pos.setdefault("pool", "FREE")
+                pos["market"] = _normalize_market(pos.get("market"))
                 pos.setdefault("original_shares", pos.get("shares", 0))
                 pos.setdefault("partial_sells", [])
                 pos.setdefault("partial_sell_count", 0)
@@ -116,7 +124,7 @@ def _bg_db_save(data: dict):
 
 def add_position(ticker: str, buy_price: float, shares: int,
                  stop_loss: float, target: Optional[float] = None,
-                 note: str = "", pool: str = "FREE"):
+                 note: str = "", pool: str = "FREE", market: str = "US"):
     """
     Record a new position.
     stop_loss: absolute price (not percentage).
@@ -126,6 +134,7 @@ def add_position(ticker: str, buy_price: float, shares: int,
     import time
     ticker = ticker.upper().strip()
     pool = pool.upper().strip() if pool else "FREE"
+    market = _normalize_market(market)
     if pool not in ("ML", "QM", "FREE"):
         pool = "FREE"
     start = time.time()
@@ -160,6 +169,7 @@ def add_position(ticker: str, buy_price: float, shares: int,
         "max_price":      buy_price,    # track high water mark for trailing stop
         "note":           note,
         "pool":           pool,
+        "market":         market,
         "original_shares": shares,
         "partial_sells":  [],
         "partial_sell_count": 0,
@@ -167,10 +177,10 @@ def add_position(ticker: str, buy_price: float, shares: int,
     _save(data)
     
     elapsed = time.time() - start
-    logger.info("[add_position] %s pool=%s shares=%d @ $%.2f in %.1fms",
-                ticker, pool, shares, buy_price, elapsed * 1000)
+    logger.info("[add_position] %s market=%s pool=%s shares=%d @ $%.2f in %.1fms",
+                ticker, market, pool, shares, buy_price, elapsed * 1000)
     
-    print(f"  ✓ {ticker} [{pool}]: {shares} shares @ ${buy_price:.2f}  "
+    print(f"  ✓ {ticker} [{market}/{pool}]: {shares} shares @ ${buy_price:.2f}  "
           f"Stop: ${stop_loss:.2f} (-{stop_pct:.1f}%)  "
           f"Target: ${target:.2f}  R:R {rr:.1f}:1")
 
@@ -593,3 +603,15 @@ def get_positions_by_pool() -> dict:
             pool = "FREE"
         grouped[pool][ticker] = pos
     return grouped
+
+
+def get_positions_by_market(market: str) -> dict:
+    """Return open positions filtered by market code."""
+    target = _normalize_market(market)
+    data = _load()
+    out = {}
+    for ticker, pos in data.get("positions", {}).items():
+        if _normalize_market(pos.get("market")) != target:
+            continue
+        out[ticker] = pos
+    return out

@@ -980,6 +980,11 @@ ACCOUNT_BASE_CURRENCY = "USD"       # Base currency used for account NAV in app 
 DEFAULT_CURRENCY      = "USD"       # UI default display currency (USD/HKD toggle)
 USD_TO_HKD_RATE       = 7.80        # Fallback FX rate for display/estimate when live quote unavailable
 
+# Market mode defaults (US / HK dual-view)
+MARKET_DEFAULT        = "US"       # Startup market mode for UI and APIs
+ACCOUNT_SPLIT_US_PCT  = 50.0        # Total capital split to US market book
+ACCOUNT_SPLIT_HK_PCT  = 50.0        # Total capital split to HK market book
+
 IBKR_ENABLED          = True          # 主開關 — False 則完全停用 IBKR 功能
 IBKR_HOST             = "127.0.0.1"   # IBKR Gateway / TWS 地址 (localhost)
 IBKR_PORT_PAPER       = 4002          # IB Gateway 模擬盤埠號 (TWS 模擬: 7497)

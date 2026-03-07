@@ -184,6 +184,25 @@
         </li>
       </ul>
       <ul class="navbar-nav gap-1">
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle d-flex align-items-center" href="#" data-bs-toggle="dropdown" aria-expanded="false">
+            <span class="badge {% if active_market == 'US' %}bg-info{% else %}bg-success{% endif %}"
+                  style="font-size:11px; letter-spacing:.3px;">{{ active_market_label }}</span>
+          </a>
+          <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark" style="background:#161b22;border-color:#30363d">
+            <li><h6 class="dropdown-header" style="color:#8b949e;font-size:10px">MARKET MODE 市場模式</h6></li>
+            <li>
+              <button type="button" class="dropdown-item" onclick="switchMarketMode('US')">
+                <i class="bi bi-flag me-2"></i>美股 US
+              </button>
+            </li>
+            <li>
+              <button type="button" class="dropdown-item" onclick="switchMarketMode('HK')">
+                <i class="bi bi-flag-fill me-2"></i>港股 HK
+              </button>
+            </li>
+          </ul>
+        </li>
         <!-- ── Global scan progress indicator ──────────────────────────────── -->
         <li class="nav-item d-none" id="globalScanIndicator">
           <div class="d-flex align-items-center gap-2 px-3 py-1"
@@ -311,6 +330,26 @@ function scoreClass(v) {
 // ── Format number helpers ─────────────────────────────────────────────────────
 function fmt2(v) { return (v == null) ? '—' : Number(v).toFixed(2); }
 function fmtPct(v) { return (v == null) ? '—' : Number(v).toFixed(1) + '%'; }
+
+// ── Market mode switcher (US/HK) ───────────────────────────────────────────
+async function switchMarketMode(market) {
+  try {
+    const r = await fetch('/api/market-mode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({market}),
+    }).then(x => x.json());
+
+    if (!r.ok) {
+      toast('切換市場失敗 / Failed to switch market', false);
+      return;
+    }
+    toast(`已切換到 ${r.label}`, true);
+    setTimeout(() => window.location.reload(), 250);
+  } catch (e) {
+    toast(`切換市場失敗: ${e.message}`, false);
+  }
+}
 
 // ── Restart Server ────────────────────────────────────────────────────────────
 async function restartServer() {

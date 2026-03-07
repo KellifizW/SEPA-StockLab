@@ -7,15 +7,28 @@ from routes.helpers import (
     ROOT, _load_watchlist, _load_positions, _get_account_size,
     _load_currency_setting, _load_combined_last,
     _latest_report, _load_market_last,
+    _load_market_mode, _get_market_account_size, _get_market_split_pct,
 )
 
 bp = Blueprint("pages", __name__)
 
 
+@bp.app_context_processor
+def inject_market_context() -> dict:
+    """Inject active market context for all templates."""
+    active_market = _load_market_mode()
+    market_label = "美股 US" if active_market == "US" else "港股 HK"
+    return {
+        "active_market": active_market,
+        "active_market_label": market_label,
+    }
+
+
 @bp.route("/")
 def dashboard():
-    wl = _load_watchlist()
-    pos = _load_positions()
+    active_market = _load_market_mode()
+    wl = _load_watchlist(active_market)
+    pos = _load_positions(active_market)
     wl_counts = {g: len(v) for g, v in wl.items()}
     total_watchlist = sum(wl_counts.values())
 
@@ -39,15 +52,16 @@ def dashboard():
     watchlist_rows.sort(key=lambda r: r["ticker"])
 
     account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    market_account_size = _get_market_account_size(account_size, active_market)
     _, usd_hkd_rate = _load_currency_setting()
-    market_cached = _load_market_last()
+    market_cached = _load_market_last(active_market)
     market_summary = market_cached.get("result") if isinstance(market_cached, dict) else {}
     market_cached_at = market_cached.get("saved_at") if isinstance(market_cached, dict) else ""
 
     # Dashboard baseline: treat NAV as HKD native amount for display toggle.
     display_currency = "HKD"
     currency_symbol = "HK$"
-    account_size_display = f"HK${account_size:,.2f}"
+    account_size_display = f"HK${market_account_size:,.2f}"
 
     return render_template(
         "dashboard.html",
@@ -56,10 +70,11 @@ def dashboard():
         watchlist_rows=watchlist_rows,
         market_summary=market_summary or {},
         market_cached_at=market_cached_at,
-        positions=pos, account_size=account_size,
+        positions=pos, account_size=market_account_size,
         account_size_display=account_size_display,
         currency=display_currency, currency_symbol=currency_symbol,
         usd_hkd_rate=usd_hkd_rate,
+        market_split_pct=_get_market_split_pct(active_market),
         nav_sync_time=nav_sync_time,
         nav_sync_status=nav_sync_status,
         today=date.today().isoformat(),
@@ -84,17 +99,21 @@ def analyze_page():
 
 @bp.route("/watchlist")
 def watchlist_page():
-    wl = _load_watchlist()
+    active_market = _load_market_mode()
+    wl = _load_watchlist(active_market)
     return render_template("watchlist.html", wl=wl)
 
 
 @bp.route("/positions")
 def positions_page():
-    pos = _load_positions()
-    account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    active_market = _load_market_mode()
+    pos = _load_positions(active_market)
+    total_account_size, nav_sync_time, nav_sync_status = _get_account_size()
+    market_account_size = _get_market_account_size(total_account_size, active_market)
     return render_template(
         "positions.html", positions=pos,
-        account_size=account_size,
+        account_size=market_account_size,
+        market_split_pct=_get_market_split_pct(active_market),
         nav_sync_time=nav_sync_time,
         nav_sync_status=nav_sync_status,
     )
